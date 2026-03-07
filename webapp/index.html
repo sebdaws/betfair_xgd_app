@@ -1,0 +1,50 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width,initial-scale=1" />
+  <title>Betfair Handicap Viewer</title>
+  <link rel="stylesheet" href="/styles.css" />
+</head>
+<body>
+  <header class="topbar">
+    <h1>Betfair Handicap Viewer</h1>
+    <div class="actions">
+      <button id="refreshBtn" type="button">Refresh</button>
+      <button id="scanLinksBtn" type="button" disabled>Scan Betdaq Game Links</button>
+      <span id="statusText">Loading...</span>
+    </div>
+  </header>
+
+  <main>
+    <section class="view-tabs">
+      <button id="calendarTabBtn" class="tab-btn active" type="button">Calendar</button>
+      <button id="manualTabBtn" class="tab-btn" type="button" disabled>Manual Mapping</button>
+    </section>
+
+    <section id="calendarTab" class="tab-panel">
+      <section class="day-nav">
+        <button id="prevDayBtn" type="button">Previous Day</button>
+        <h2 id="dayLabel">Day</h2>
+        <button id="scanDayBtn" type="button" disabled>Scan Betdaq Day</button>
+        <button id="nextDayBtn" type="button">Next Day</button>
+      </section>
+      <section id="calendarView" class="calendar-view"></section>
+    </section>
+  </main>
+
+  <aside id="detailsPanel" class="details-panel hidden" aria-live="polite">
+    <div class="details-header">
+      <h2 id="detailsTitle">Game</h2>
+      <div class="details-actions">
+        <button id="recalcBtn" type="button">Recalculate xGD</button>
+        <button id="closeDetails" type="button">Close</button>
+      </div>
+    </div>
+    <p id="detailsMeta" class="meta"></p>
+    <div id="linesContainer"></div>
+  </aside>
+
+  <script src="/app.js"></script>
+</body>
+</html>
