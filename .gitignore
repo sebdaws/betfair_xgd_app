@@ -2,3 +2,4 @@ __pycache__/
 *.pyc
 betfair_credentials.py
 .DS_Store
+.vscode/

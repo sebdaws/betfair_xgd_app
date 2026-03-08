@@ -179,13 +179,23 @@ class BetfairClient:
         rows.sort(key=lambda row: row.name.lower())
         return rows
 
-    def list_handicap_markets(self, competition_ids: list[str]) -> list[dict[str, Any]]:
+    def list_markets(
+        self,
+        competition_ids: list[str],
+        market_types: list[str] | None = None,
+        text_query: str | None = None,
+    ) -> list[dict[str, Any]]:
+        if not competition_ids:
+            return []
         market_filter: dict[str, Any] = {
             "eventTypeIds": [FOOTBALL_EVENT_TYPE_ID],
-            "marketTypeCodes": self.config.market_types,
             "inPlayOnly": (not self.config.pre_match_only),
             "competitionIds": competition_ids,
         }
+        if market_types:
+            market_filter["marketTypeCodes"] = market_types
+        if text_query:
+            market_filter["textQuery"] = text_query
 
         params = {
             "filter": market_filter,
@@ -200,6 +210,9 @@ class BetfairClient:
         }
         result = self._rpc("listMarketCatalogue", params)
         return result or []
+
+    def list_handicap_markets(self, competition_ids: list[str]) -> list[dict[str, Any]]:
+        return self.list_markets(competition_ids, self.config.market_types)
 
     def list_market_books(self, market_ids: list[str], chunk_size: int = 25) -> list[dict[str, Any]]:
         if not market_ids:

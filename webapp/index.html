@@ -11,23 +11,24 @@
     <h1>Betfair Handicap Viewer</h1>
     <div class="actions">
       <button id="refreshBtn" type="button">Refresh</button>
-      <button id="scanLinksBtn" type="button" disabled>Scan Betdaq Game Links</button>
       <span id="statusText">Loading...</span>
     </div>
   </header>
 
   <main>
-    <section class="view-tabs">
-      <button id="calendarTabBtn" class="tab-btn active" type="button">Calendar</button>
-      <button id="manualTabBtn" class="tab-btn" type="button" disabled>Manual Mapping</button>
-    </section>
-
-    <section id="calendarTab" class="tab-panel">
+    <section id="calendarTab">
       <section class="day-nav">
         <button id="prevDayBtn" type="button">Previous Day</button>
         <h2 id="dayLabel">Day</h2>
-        <button id="scanDayBtn" type="button" disabled>Scan Betdaq Day</button>
         <button id="nextDayBtn" type="button">Next Day</button>
+      </section>
+      <section class="table-controls">
+        <label for="leagueFilterBtn" class="control-label">Leagues</label>
+        <div class="league-filter" id="leagueFilter">
+          <button id="leagueFilterBtn" type="button" aria-haspopup="true" aria-expanded="false">All Leagues</button>
+          <div id="leagueFilterMenu" class="league-filter-menu hidden" role="menu" aria-label="League filter options"></div>
+        </div>
+        <button id="sortModeBtn" type="button">Sort: Kickoff</button>
       </section>
       <section id="calendarView" class="calendar-view"></section>
     </section>
@@ -42,6 +43,10 @@
       </div>
     </div>
     <p id="detailsMeta" class="meta"></p>
+    <div class="details-options">
+      <label for="recentMatchesInput">Previous matches per team</label>
+      <input id="recentMatchesInput" type="number" min="1" max="20" step="1" value="5" />
+    </div>
     <div id="linesContainer"></div>
   </aside>
 

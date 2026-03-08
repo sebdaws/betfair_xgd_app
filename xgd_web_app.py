@@ -44,6 +44,16 @@ FINISHED_STATUSES = {
     "ft",
 }
 
+REQUIRED_SOFASCORE_TABLES = {
+    "matches",
+    "teams",
+    "competitions",
+    "seasons",
+    "match_stats",
+    "match_shots",
+    "stat_definitions",
+}
+
 TOKEN_REPLACEMENTS = {
     "utd": "united",
     "munchen": "munich",
@@ -83,6 +93,31 @@ TOP5_LEAGUE_TARGETS = [
         "aliases": ["french ligue 1", "ligue 1"],
     },
 ]
+
+ASIAN_GOAL_MARKET_TYPES = [
+    "ALT_TOTAL_GOALS",
+]
+
+GOAL_MARKET_NAME_RE = re.compile(
+    r"(?:over\s*/\s*under|goal\s*line|total\s*goals?)\s*([0-9]+(?:\.[0-9]+)?)",
+    flags=re.IGNORECASE,
+)
+GOAL_MARKET_TYPE_RE = re.compile(r"OVER_UNDER_(\d+)$", flags=re.IGNORECASE)
+GOAL_RUNNER_RE = re.compile(r"\b(?:over|under)\s*([0-9]+(?:\.[0-9]+)?)\b", flags=re.IGNORECASE)
+NON_GOAL_MARKET_TERMS = {
+    "corner",
+    "booking",
+    "bookings",
+    "card",
+    "cards",
+    "offside",
+    "offsides",
+    "throw",
+    "shots",
+    "shot",
+    "foul",
+    "penalty",
+}
 
 
 def parse_args() -> argparse.Namespace:
@@ -165,6 +200,396 @@ def split_event_teams(event_name: str | None) -> tuple[str | None, str | None]:
         if left and right:
             return left, right
     return None, None
+
+
+def normalize_runner_name(value: str | None) -> str:
+    return normalize_team_name(value)
+
+
+def runner_name_matches(candidate: str | None, target: str | None) -> bool:
+    c = normalize_runner_name(candidate)
+    t = normalize_runner_name(target)
+    if not c or not t:
+        return False
+    return c == t or c in t or t in c
+
+
+def parse_handicap_value(value: Any) -> float | None:
+    if isinstance(value, (int, float)):
+        return float(value)
+    return None
+
+
+def get_best_offer_price(ex_data: dict[str, Any], side: str) -> float | None:
+    offers = ex_data.get(side, [])
+    if not offers:
+        return None
+    prices = [offer.get("price") for offer in offers if isinstance(offer.get("price"), (int, float))]
+    if not prices:
+        return None
+    return max(prices) if side == "availableToBack" else min(prices)
+
+
+def format_handicap_value(value: Any) -> str:
+    if not isinstance(value, (int, float)):
+        return "-"
+    if float(value).is_integer():
+        return f"{int(value):+d}"
+    return f"{float(value):+g}"
+
+
+def format_price_value(value: Any) -> str:
+    if not isinstance(value, (int, float)):
+        return "-"
+    return f"{float(value):.2f}"
+
+
+def format_goal_line_value(value: Any) -> str:
+    if not isinstance(value, (int, float)):
+        return "-"
+    number = float(value)
+    if number.is_integer():
+        return f"{int(number)}.0"
+    return f"{number:g}"
+
+
+def parse_goal_line_from_catalogue(catalogue: dict[str, Any]) -> float | None:
+    market_name = str(catalogue.get("marketName", "")).strip()
+    match = GOAL_MARKET_NAME_RE.search(market_name)
+    if match:
+        try:
+            return float(match.group(1))
+        except ValueError:
+            pass
+
+    market_type_raw = str(
+        catalogue.get("marketType")
+        or (catalogue.get("description", {}) or {}).get("marketType")
+        or ""
+    ).strip()
+    match = GOAL_MARKET_TYPE_RE.search(market_type_raw)
+    if match:
+        try:
+            return float(match.group(1)) / 10.0
+        except ValueError:
+            pass
+
+    found_values: set[float] = set()
+    for runner in catalogue.get("runners", []):
+        runner_name = str(runner.get("runnerName", "")).strip()
+        runner_match = GOAL_RUNNER_RE.search(runner_name)
+        if not runner_match:
+            continue
+        try:
+            found_values.add(float(runner_match.group(1)))
+        except ValueError:
+            continue
+    if len(found_values) == 1:
+        return next(iter(found_values))
+    return None
+
+
+def extract_goal_runner_handicaps(catalogue: dict[str, Any]) -> set[float]:
+    values: set[float] = set()
+    for runner in catalogue.get("runners", []):
+        handicap = parse_handicap_value(runner.get("handicap"))
+        if handicap is not None:
+            values.add(float(handicap))
+    return values
+
+
+def is_goal_line_market(catalogue: dict[str, Any]) -> bool:
+    market_name = str(catalogue.get("marketName", "")).strip().lower()
+    if not market_name:
+        return False
+    has_goal_line_label = (
+        ("over/under" in market_name)
+        or ("over under" in market_name)
+        or ("goal line" in market_name)
+        or ("total goals" in market_name)
+    )
+    if not has_goal_line_label:
+        return False
+    if any(term in market_name for term in NON_GOAL_MARKET_TERMS):
+        return False
+
+    market_type = str(
+        (catalogue.get("description", {}) or {}).get("marketType")
+        or catalogue.get("marketType")
+        or ""
+    ).strip().upper()
+    runner_lines = extract_goal_runner_handicaps(catalogue)
+    if market_type == "ALT_TOTAL_GOALS":
+        if not runner_lines:
+            return False
+        return any(abs((line * 4) - round(line * 4)) < 1e-6 for line in runner_lines)
+
+    goal_line = parse_goal_line_from_catalogue(catalogue)
+    if goal_line is None and not runner_lines:
+        return False
+
+    candidate_lines = set(runner_lines)
+    if goal_line is not None:
+        candidate_lines.add(float(goal_line))
+    return any(abs((line * 4) - round(line * 4)) < 1e-6 for line in candidate_lines)
+
+
+def goal_market_snapshot(catalogue: dict[str, Any], market_book: dict[str, Any] | None) -> dict[str, Any]:
+    market_level_line = parse_goal_line_from_catalogue(catalogue)
+    if not market_book:
+        return {
+            "goal_line": market_level_line,
+            "score": float("inf"),
+            "under_mid": None,
+            "over_mid": None,
+        }
+
+    runner_info: dict[int, str] = {}
+    for runner in catalogue.get("runners", []):
+        selection_id = runner.get("selectionId")
+        if isinstance(selection_id, int):
+            runner_info[selection_id] = str(runner.get("runnerName", "")).strip()
+
+    over_rows_by_line: dict[float, dict[str, float | None]] = {}
+    under_rows_by_line: dict[float, dict[str, float | None]] = {}
+
+    def store_best(bucket: dict[float, dict[str, float | None]], line: float, row: dict[str, float | None]) -> None:
+        key = round(float(line), 6)
+        existing = bucket.get(key)
+        if existing is None:
+            bucket[key] = row
+            return
+        row_spread = row.get("spread")
+        existing_spread = existing.get("spread")
+        if row_spread is None and existing_spread is None:
+            return
+        if existing_spread is None:
+            bucket[key] = row
+            return
+        if row_spread is None:
+            return
+        if float(row_spread) < float(existing_spread):
+            bucket[key] = row
+
+    for runner in market_book.get("runners", []):
+        selection_id = runner.get("selectionId")
+        if not isinstance(selection_id, int):
+            continue
+
+        name = runner_info.get(selection_id, "").strip().lower()
+        if not name:
+            continue
+
+        line_value = parse_handicap_value(runner.get("handicap"))
+        if line_value is None:
+            line_value = market_level_line
+        if line_value is None:
+            continue
+
+        ex = runner.get("ex", {})
+        back = get_best_offer_price(ex, "availableToBack")
+        lay = get_best_offer_price(ex, "availableToLay")
+        row = {
+            "mid": ((float(back) + float(lay)) / 2.0) if (back is not None and lay is not None) else None,
+            "spread": (float(lay) - float(back)) if (back is not None and lay is not None) else None,
+        }
+        if "over" in name:
+            store_best(over_rows_by_line, float(line_value), row)
+        elif "under" in name:
+            store_best(under_rows_by_line, float(line_value), row)
+
+    candidate_lines = sorted(set(over_rows_by_line.keys()) & set(under_rows_by_line.keys()))
+    if not candidate_lines:
+        return {
+            "goal_line": market_level_line,
+            "score": float("inf"),
+            "under_mid": None,
+            "over_mid": None,
+        }
+
+    lines: list[dict[str, float | None]] = []
+    for line in candidate_lines:
+        over_row = over_rows_by_line.get(line, {})
+        under_row = under_rows_by_line.get(line, {})
+        over_mid = over_row.get("mid")
+        under_mid = under_row.get("mid")
+        score = (
+            abs(float(over_mid) - 2.0) + abs(float(under_mid) - 2.0)
+            if (over_mid is not None and under_mid is not None)
+            else float("inf")
+        )
+        lines.append(
+            {
+                "goal_line": float(line),
+                "score": float(score),
+                "under_mid": (float(under_mid) if under_mid is not None else None),
+                "over_mid": (float(over_mid) if over_mid is not None else None),
+            }
+        )
+
+    priced_lines = [line for line in lines if line.get("under_mid") is not None and line.get("over_mid") is not None]
+    if priced_lines:
+        best = min(priced_lines, key=lambda row: (float(row["score"]), abs(float(row["goal_line"]) - 2.5)))
+    else:
+        best = min(lines, key=lambda row: abs(float(row["goal_line"]) - 2.5))
+    return {
+        "goal_line": best["goal_line"],
+        "score": best["score"],
+        "under_mid": best.get("under_mid"),
+        "over_mid": best.get("over_mid"),
+    }
+
+
+def event_goal_mainline_snapshot(
+    goal_catalogues: list[dict[str, Any]],
+    goal_books_by_market_id: dict[str, dict[str, Any]],
+) -> dict[str, str]:
+    snapshots: list[dict[str, Any]] = []
+    for cat in goal_catalogues:
+        market_id = str(cat.get("marketId", "")).strip()
+        snapshot = goal_market_snapshot(cat, goal_books_by_market_id.get(market_id))
+        if snapshot.get("goal_line") is None:
+            continue
+        snapshots.append(snapshot)
+
+    if not snapshots:
+        return {"goal_mainline": "-", "goal_under_price": "-", "goal_over_price": "-"}
+
+    priced = [row for row in snapshots if row.get("score", float("inf")) != float("inf")]
+    if priced:
+        best = min(priced, key=lambda row: (float(row["score"]), abs(float(row["goal_line"]) - 2.5)))
+    else:
+        best = min(snapshots, key=lambda row: abs(float(row["goal_line"]) - 2.5))
+    return {
+        "goal_mainline": format_goal_line_value(best["goal_line"]),
+        "goal_under_price": format_price_value(best.get("under_mid")),
+        "goal_over_price": format_price_value(best.get("over_mid")),
+    }
+
+
+def market_mainline_snapshot(catalogue: dict[str, Any], market_book: dict[str, Any] | None) -> dict[str, str]:
+    default = {"mainline": "-", "home_price": "-", "away_price": "-"}
+    if not market_book:
+        return default
+
+    event_name = str(catalogue.get("event", {}).get("name", "")).strip()
+    home_team, away_team = split_event_teams(event_name)
+    if not home_team or not away_team:
+        return default
+
+    runner_info: dict[int, dict[str, Any]] = {}
+    for runner in catalogue.get("runners", []):
+        selection_id = runner.get("selectionId")
+        if not isinstance(selection_id, int):
+            continue
+        runner_info[selection_id] = {
+            "name": str(runner.get("runnerName", "")).strip(),
+            "handicap": runner.get("handicap"),
+        }
+
+    home_candidates: list[dict[str, Any]] = []
+    away_candidates: list[dict[str, Any]] = []
+    for runner in market_book.get("runners", []):
+        selection_id = runner.get("selectionId")
+        if not isinstance(selection_id, int):
+            continue
+        info = runner_info.get(selection_id, {})
+        runner_name = str(info.get("name", "")).strip() or f"Selection {selection_id}"
+        handicap = parse_handicap_value(runner.get("handicap", info.get("handicap")))
+        if handicap is None:
+            continue
+
+        ex = runner.get("ex", {})
+        back = get_best_offer_price(ex, "availableToBack")
+        lay = get_best_offer_price(ex, "availableToLay")
+        row = {
+            "handicap": float(handicap),
+            "back": float(back) if back is not None else None,
+            "lay": float(lay) if lay is not None else None,
+            "spread": (float(lay) - float(back)) if (back is not None and lay is not None) else None,
+        }
+        if runner_name_matches(runner_name, home_team):
+            home_candidates.append(row)
+        elif runner_name_matches(runner_name, away_team):
+            away_candidates.append(row)
+
+    def best_by_handicap(rows: list[dict[str, Any]]) -> dict[float, dict[str, Any]]:
+        out: dict[float, dict[str, Any]] = {}
+        for row in rows:
+            key = round(float(row["handicap"]), 6)
+            existing = out.get(key)
+            if existing is None:
+                out[key] = row
+                continue
+
+            row_spread = row.get("spread")
+            existing_spread = existing.get("spread")
+            if row_spread is None and existing_spread is None:
+                continue
+            if existing_spread is None:
+                out[key] = row
+                continue
+            if row_spread is None:
+                continue
+            if float(row_spread) < float(existing_spread):
+                out[key] = row
+        return out
+
+    home_by_hcp = best_by_handicap(home_candidates)
+    away_by_hcp = best_by_handicap(away_candidates)
+    if not home_by_hcp or not away_by_hcp:
+        return default
+
+    lines: list[dict[str, Any]] = []
+    for home_hcp_key, home_row in home_by_hcp.items():
+        away_hcp_key = round(-home_hcp_key, 6)
+        away_row = away_by_hcp.get(away_hcp_key)
+        if away_row is None:
+            continue
+
+        home_back = home_row.get("back")
+        home_lay = home_row.get("lay")
+        away_back = away_row.get("back")
+        away_lay = away_row.get("lay")
+        home_mid = (
+            (float(home_back) + float(home_lay)) / 2.0
+            if (home_back is not None and home_lay is not None)
+            else None
+        )
+        away_mid = (
+            (float(away_back) + float(away_lay)) / 2.0
+            if (away_back is not None and away_lay is not None)
+            else None
+        )
+        score = (
+            abs(home_mid - 2.0) + abs(away_mid - 2.0)
+            if (home_mid is not None and away_mid is not None)
+            else float("inf")
+        )
+        lines.append(
+            {
+                "home_handicap": float(home_row["handicap"]),
+                "home_mid": home_mid,
+                "away_mid": away_mid,
+                "score": score,
+            }
+        )
+
+    if not lines:
+        return default
+
+    priced_lines = [line for line in lines if line.get("home_mid") is not None and line.get("away_mid") is not None]
+    if priced_lines:
+        best_line = min(priced_lines, key=lambda line: (line["score"], abs(line["home_handicap"])))
+    else:
+        # Fallback: still show a handicap line even if prices are currently unavailable.
+        best_line = min(lines, key=lambda line: abs(line["home_handicap"]))
+
+    return {
+        "mainline": format_handicap_value(best_line["home_handicap"]),
+        "home_price": format_price_value(best_line["home_mid"]),
+        "away_price": format_price_value(best_line["away_mid"]),
+    }
 
 
 def normalize_team_name(value: str | None) -> str:
@@ -265,10 +690,59 @@ def parse_season_date(value: Any, is_end: bool) -> pd.Timestamp | pd.NaT:
     return ts
 
 
+def _sqlite_table_names(path: Path) -> set[str]:
+    conn = sqlite3.connect(str(path))
+    try:
+        rows = conn.execute("SELECT name FROM sqlite_master WHERE type='table'").fetchall()
+    finally:
+        conn.close()
+    return {str(row[0]) for row in rows if row and row[0]}
+
+
+def resolve_sofascore_db_path(db_path: str) -> Path:
+    requested = Path(db_path).expanduser().resolve()
+    fallback = (WORKSPACE_DIR / "Sofascore_scraper" / "sofascore_local.db").resolve()
+
+    candidates: list[Path] = []
+    for candidate in (requested, fallback):
+        if candidate not in candidates:
+            candidates.append(candidate)
+
+    checked: list[tuple[Path, set[str] | None]] = []
+    for candidate in candidates:
+        if not candidate.exists():
+            checked.append((candidate, None))
+            continue
+        try:
+            tables = _sqlite_table_names(candidate)
+        except Exception:
+            checked.append((candidate, None))
+            continue
+        checked.append((candidate, tables))
+        if REQUIRED_SOFASCORE_TABLES.issubset(tables):
+            return candidate
+
+    detail_lines: list[str] = []
+    for candidate, tables in checked:
+        if tables is None:
+            if candidate.exists():
+                detail_lines.append(f"- {candidate}: unreadable or invalid sqlite file")
+            else:
+                detail_lines.append(f"- {candidate}: not found")
+            continue
+        missing = sorted(REQUIRED_SOFASCORE_TABLES - tables)
+        detail_lines.append(f"- {candidate}: missing tables: {', '.join(missing)}")
+
+    details = "\n".join(detail_lines)
+    raise RuntimeError(
+        "SofaScore DB is missing required schema (expected tables like 'matches'). "
+        "Set --db-path to a valid sofascore_local.db.\n"
+        f"Checked:\n{details}"
+    )
+
+
 def load_sofascore_inputs(db_path: str) -> tuple[pd.DataFrame, pd.DataFrame, list[str]]:
-    path = Path(db_path).expanduser().resolve()
-    if not path.exists():
-        raise FileNotFoundError(f"SofaScore DB not found: {path}")
+    path = resolve_sofascore_db_path(db_path)
 
     finished_sql = """
     WITH xg_stats AS (
@@ -292,6 +766,18 @@ def load_sofascore_inputs(db_path: str) -> tuple[pd.DataFrame, pd.DataFrame, lis
             SUM(CASE WHEN is_home = 0 THEN COALESCE(CAST(NULLIF(xgot, '') AS REAL), 0) ELSE 0 END) AS away_xgot_shots
         FROM match_shots
         GROUP BY match_id
+    ),
+    keeper_aggs AS (
+        SELECT
+            ms.match_id,
+            MAX(COALESCE(CAST(NULLIF(ms.home_value_num, '') AS REAL), CAST(NULLIF(ms.home_value_text, '') AS REAL))) AS home_goalkeeper_goals_prevented,
+            MAX(COALESCE(CAST(NULLIF(ms.away_value_num, '') AS REAL), CAST(NULLIF(ms.away_value_text, '') AS REAL))) AS away_goalkeeper_goals_prevented
+        FROM match_stats ms
+        JOIN stat_definitions sd
+            ON sd.id = ms.stat_definition_id
+        WHERE LOWER(COALESCE(sd.metric, '')) = 'goals prevented'
+          AND UPPER(COALESCE(ms.period, '')) = 'ALL'
+        GROUP BY ms.match_id
     )
     SELECT
         m.id AS match_id,
@@ -312,7 +798,9 @@ def load_sofascore_inputs(db_path: str) -> tuple[pd.DataFrame, pd.DataFrame, lis
         sa.home_xg_shots,
         sa.away_xg_shots,
         sa.home_xgot_shots,
-        sa.away_xgot_shots
+        sa.away_xgot_shots,
+        ka.home_goalkeeper_goals_prevented,
+        ka.away_goalkeeper_goals_prevented
     FROM matches m
     JOIN teams ht ON ht.id = m.home_team_id
     JOIN teams at ON at.id = m.away_team_id
@@ -320,6 +808,7 @@ def load_sofascore_inputs(db_path: str) -> tuple[pd.DataFrame, pd.DataFrame, lis
     LEFT JOIN seasons s ON s.id = m.season_id
     LEFT JOIN xg_stats xg ON xg.match_id = m.id
     LEFT JOIN shot_aggs sa ON sa.match_id = m.id
+    LEFT JOIN keeper_aggs ka ON ka.match_id = m.id
     WHERE m.kickoff_ts IS NOT NULL
       AND COALESCE(m.home_ft_score, m.home_score_final) IS NOT NULL
       AND COALESCE(m.away_ft_score, m.away_score_final) IS NOT NULL
@@ -356,10 +845,35 @@ def load_sofascore_inputs(db_path: str) -> tuple[pd.DataFrame, pd.DataFrame, lis
     raw_finished["season_start_date"] = raw_finished["season_start_date"].apply(lambda v: parse_season_date(v, False))
     raw_finished["season_end_date"] = raw_finished["season_end_date"].apply(lambda v: parse_season_date(v, True))
 
+    numeric_cols = [
+        "home_goals",
+        "away_goals",
+        "home_xg_stat",
+        "away_xg_stat",
+        "home_xg_shots",
+        "away_xg_shots",
+        "home_xgot_shots",
+        "away_xgot_shots",
+        "home_goalkeeper_goals_prevented",
+        "away_goalkeeper_goals_prevented",
+    ]
+    for col in numeric_cols:
+        if col in raw_finished.columns:
+            raw_finished[col] = pd.to_numeric(raw_finished[col], errors="coerce")
+
     raw_finished["home_xg"] = raw_finished["home_xg_stat"].where(raw_finished["home_xg_stat"].notna(), raw_finished["home_xg_shots"])
     raw_finished["away_xg"] = raw_finished["away_xg_stat"].where(raw_finished["away_xg_stat"].notna(), raw_finished["away_xg_shots"])
-    raw_finished["home_xgot"] = raw_finished["home_xgot_shots"].where(raw_finished["home_xgot_shots"].notna(), raw_finished["home_xg"])
-    raw_finished["away_xgot"] = raw_finished["away_xgot_shots"].where(raw_finished["away_xgot_shots"].notna(), raw_finished["away_xg"])
+    raw_finished["home_xgot_keeper"] = raw_finished["home_goals"] + raw_finished["away_goalkeeper_goals_prevented"]
+    raw_finished["away_xgot_keeper"] = raw_finished["away_goals"] + raw_finished["home_goalkeeper_goals_prevented"]
+
+    # Prefer xGoT derived from goals + opponent goalkeeper goals prevented.
+    raw_finished["home_xgot"] = raw_finished["home_xgot_keeper"]
+    raw_finished.loc[raw_finished["home_xgot"].isna(), "home_xgot"] = raw_finished["home_xgot_shots"]
+    raw_finished.loc[raw_finished["home_xgot"].isna(), "home_xgot"] = raw_finished["home_xg"]
+
+    raw_finished["away_xgot"] = raw_finished["away_xgot_keeper"]
+    raw_finished.loc[raw_finished["away_xgot"].isna(), "away_xgot"] = raw_finished["away_xgot_shots"]
+    raw_finished.loc[raw_finished["away_xgot"].isna(), "away_xgot"] = raw_finished["away_xg"]
 
     finished = raw_finished[
         [
@@ -661,6 +1175,56 @@ def to_native(value: Any) -> Any:
     return str(value)
 
 
+def clamp_int(value: Any, default: int, min_value: int, max_value: int) -> int:
+    try:
+        out = int(value)
+    except Exception:
+        out = int(default)
+    return max(min_value, min(max_value, out))
+
+
+def build_recent_form_rows(source_df: Any, recent_n: int) -> list[dict[str, Any]]:
+    if not isinstance(source_df, pd.DataFrame) or source_df.empty:
+        return []
+
+    preferred_cols = [
+        "date_time",
+        "competition_name",
+        "team",
+        "opponent",
+        "venue",
+        "GF",
+        "GA",
+        "xG",
+        "xGA",
+        "xGoT",
+        "xGoTA",
+    ]
+    cols = [c for c in preferred_cols if c in source_df.columns]
+    if not cols:
+        return []
+
+    recent_df = source_df.copy()
+    if "date_time" in recent_df.columns:
+        recent_df["date_time"] = pd.to_datetime(recent_df["date_time"], errors="coerce", utc=True)
+        recent_df = recent_df.sort_values("date_time")
+    recent_df = recent_df.tail(int(recent_n))
+    if "date_time" in recent_df.columns:
+        recent_df = recent_df.sort_values("date_time", ascending=False)
+
+    rows: list[dict[str, Any]] = []
+    for row in recent_df[cols].to_dict(orient="records"):
+        out: dict[str, Any] = {}
+        for key, value in row.items():
+            if key == "date_time":
+                ts = pd.to_datetime(value, errors="coerce", utc=True)
+                out[key] = ts.strftime("%Y-%m-%d %H:%M") if not pd.isna(ts) else to_native(value)
+            else:
+                out[key] = to_native(value)
+        rows.append(out)
+    return rows
+
+
 def format_day_label(day_iso: str) -> str:
     try:
         dt_obj = dt.datetime.strptime(day_iso, "%Y-%m-%d")
@@ -835,7 +1399,7 @@ class AppState:
         now_ts = pd.Timestamp.now(tz="UTC")
         horizon = None if self.horizon_days <= 0 else now_ts + pd.Timedelta(days=self.horizon_days)
 
-        rows: list[dict[str, Any]] = []
+        candidate_markets: list[dict[str, Any]] = []
         for cat in deduped:
             market_id = str(cat.get("marketId", "")).strip()
             kickoff_raw = str(cat.get("marketStartTime", "")).strip()
@@ -849,17 +1413,92 @@ class AppState:
 
             event_name = str(cat.get("event", {}).get("name", "")).strip()
             home_raw, away_raw = split_event_teams(event_name)
+            event_id = str(cat.get("event", {}).get("id", "")).strip()
+            candidate_markets.append(
+                {
+                    "catalogue": cat,
+                    "market_id": market_id,
+                    "event_id": event_id,
+                    "kickoff_raw": kickoff_raw,
+                    "kickoff_time": kickoff_ts,
+                    "event_name": event_name,
+                    "home_raw": home_raw,
+                    "away_raw": away_raw,
+                }
+            )
+
+        market_ids = [row["market_id"] for row in candidate_markets]
+        books = client.list_market_books(market_ids) if market_ids else []
+        book_by_market_id: dict[str, dict[str, Any]] = {}
+        for book in books:
+            market_id = str(book.get("marketId", "")).strip()
+            if market_id:
+                book_by_market_id[market_id] = book
+
+        goal_catalogues = client.list_markets(competition_ids, ASIAN_GOAL_MARKET_TYPES)
+        candidate_event_ids = {
+            str(row.get("event_id", "")).strip()
+            for row in candidate_markets
+            if str(row.get("event_id", "")).strip()
+        }
+        candidate_goal_catalogues: list[dict[str, Any]] = []
+        for cat in goal_catalogues:
+            market_id = str(cat.get("marketId", "")).strip()
+            kickoff_raw = str(cat.get("marketStartTime", "")).strip()
+            kickoff_ts = parse_iso_utc(kickoff_raw)
+            event_id = str(cat.get("event", {}).get("id", "")).strip()
+            if not market_id or pd.isna(kickoff_ts) or not event_id:
+                continue
+            if kickoff_ts <= now_ts:
+                continue
+            if horizon is not None and kickoff_ts > horizon:
+                continue
+            if candidate_event_ids and event_id not in candidate_event_ids:
+                continue
+            if not is_goal_line_market(cat):
+                continue
+            candidate_goal_catalogues.append(cat)
+
+        goal_market_ids = [str(cat.get("marketId", "")).strip() for cat in candidate_goal_catalogues]
+        goal_books = client.list_market_books(goal_market_ids) if goal_market_ids else []
+        goal_books_by_market_id: dict[str, dict[str, Any]] = {}
+        for book in goal_books:
+            market_id = str(book.get("marketId", "")).strip()
+            if market_id:
+                goal_books_by_market_id[market_id] = book
+
+        goal_catalogues_by_event: dict[str, list[dict[str, Any]]] = {}
+        for cat in candidate_goal_catalogues:
+            event_id = str(cat.get("event", {}).get("id", "")).strip()
+            if not event_id:
+                continue
+            goal_catalogues_by_event.setdefault(event_id, []).append(cat)
+
+        rows: list[dict[str, Any]] = []
+        for market in candidate_markets:
+            cat = market["catalogue"]
+            market_id = market["market_id"]
+            mainline_snapshot = market_mainline_snapshot(cat, book_by_market_id.get(market_id))
+            goal_snapshot = event_goal_mainline_snapshot(
+                goal_catalogues_by_event.get(str(market.get("event_id", "")).strip(), []),
+                goal_books_by_market_id,
+            )
             rows.append(
                 {
                     "market_id": market_id,
-                    "event_name": event_name,
+                    "event_name": market["event_name"],
                     "competition": str(cat.get("competition", {}).get("name", "")).strip(),
                     "market_name": str(cat.get("marketName", "")).strip(),
-                    "kickoff_time": kickoff_ts,
-                    "kickoff_raw": kickoff_raw,
-                    "home_raw": home_raw,
-                    "away_raw": away_raw,
-                    "mainline": "-",
+                    "kickoff_time": market["kickoff_time"],
+                    "kickoff_raw": market["kickoff_raw"],
+                    "home_raw": market["home_raw"],
+                    "away_raw": market["away_raw"],
+                    "mainline": mainline_snapshot["mainline"],
+                    "home_price": mainline_snapshot["home_price"],
+                    "away_price": mainline_snapshot["away_price"],
+                    "goal_mainline": goal_snapshot["goal_mainline"],
+                    "goal_under_price": goal_snapshot["goal_under_price"],
+                    "goal_over_price": goal_snapshot["goal_over_price"],
                 }
             )
 
@@ -897,6 +1536,11 @@ class AppState:
                         "kickoff_raw": str(row.get("kickoff_raw", "")),
                         "kickoff_utc": kickoff_utc,
                         "mainline": str(row.get("mainline", "-") or "-"),
+                        "home_price": str(row.get("home_price", "-") or "-"),
+                        "away_price": str(row.get("away_price", "-") or "-"),
+                        "goal_mainline": str(row.get("goal_mainline", "-") or "-"),
+                        "goal_under_price": str(row.get("goal_under_price", "-") or "-"),
+                        "goal_over_price": str(row.get("goal_over_price", "-") or "-"),
                     }
                 )
             days_out.append({"date": day, "date_label": format_day_label(day), "games": games})
@@ -907,8 +1551,9 @@ class AppState:
             "last_refresh_utc": last_refresh.isoformat() if last_refresh else None,
         }
 
-    def get_game_xgd(self, market_id: str) -> dict[str, Any]:
+    def get_game_xgd(self, market_id: str, recent_n: int = 5) -> dict[str, Any]:
         self.refresh_games(force=False)
+        recent_n = clamp_int(recent_n, default=5, min_value=1, max_value=20)
         with self.lock:
             games_df = self.games_df.copy()
 
@@ -937,9 +1582,17 @@ class AppState:
                 "competition": str(game_row.get("competition", "")),
                 "kickoff_raw": str(game_row.get("kickoff_raw", "")),
                 "mainline": str(game_row.get("mainline", "-")),
+                "home_price": str(game_row.get("home_price", "-")),
+                "away_price": str(game_row.get("away_price", "-")),
+                "goal_mainline": str(game_row.get("goal_mainline", "-")),
+                "goal_under_price": str(game_row.get("goal_under_price", "-")),
+                "goal_over_price": str(game_row.get("goal_over_price", "-")),
                 "summary": None,
                 "period_rows": [],
                 "mapping_rows": [],
+                "recent_n": recent_n,
+                "home_recent_rows": [],
+                "away_recent_rows": [],
                 "warning": "No xGD output produced for this game.",
             }
 
@@ -987,15 +1640,59 @@ class AppState:
         mapping_df = prediction_df[mapping_cols].drop_duplicates().reset_index(drop=True)
         mapping_rows = [{k: to_native(v) for k, v in row.items()} for row in mapping_df.to_dict(orient="records")]
 
+        home_recent_rows: list[dict[str, Any]] = []
+        away_recent_rows: list[dict[str, Any]] = []
+        if not mapping_df.empty:
+            mapping_row = mapping_df.iloc[0].to_dict()
+            home_sofa = mapping_row.get("home_sofa")
+            away_sofa = mapping_row.get("away_sofa")
+            kickoff_time = game_row.get("kickoff_time")
+            if home_sofa and away_sofa and not pd.isna(kickoff_time):
+                model_games_df = pd.DataFrame(
+                    [
+                        {
+                            "home": home_sofa,
+                            "away": away_sofa,
+                            "match_date": kickoff_time,
+                            "season_id": mapping_row.get("fixture_season_id"),
+                            "competition_name": mapping_row.get("fixture_competition"),
+                            "area_name": mapping_row.get("fixture_area"),
+                        }
+                    ]
+                )
+                try:
+                    _, source_games = self.xgd_module.calc_wyscout_form_tables(
+                        model_games_df,
+                        self.form_df,
+                        periods=self.periods,
+                        return_source_games=True,
+                        min_games=self.min_games,
+                    )
+                    if source_games:
+                        source = source_games[0]
+                        home_recent_rows = build_recent_form_rows(source.get("home_source_games"), recent_n)
+                        away_recent_rows = build_recent_form_rows(source.get("away_source_games"), recent_n)
+                except Exception:
+                    home_recent_rows = []
+                    away_recent_rows = []
+
         return {
             "market_id": market_id,
             "event_name": str(game_row.get("event_name", "")),
             "competition": str(game_row.get("competition", "")),
             "kickoff_raw": str(game_row.get("kickoff_raw", "")),
             "mainline": str(game_row.get("mainline", "-")),
+            "home_price": str(game_row.get("home_price", "-")),
+            "away_price": str(game_row.get("away_price", "-")),
+            "goal_mainline": str(game_row.get("goal_mainline", "-")),
+            "goal_under_price": str(game_row.get("goal_under_price", "-")),
+            "goal_over_price": str(game_row.get("goal_over_price", "-")),
             "summary": summary,
             "period_rows": period_rows,
             "mapping_rows": mapping_rows,
+            "recent_n": recent_n,
+            "home_recent_rows": home_recent_rows,
+            "away_recent_rows": away_recent_rows,
             "warning": None,
         }
 
@@ -1018,7 +1715,9 @@ class AppHandler(BaseHTTPRequestHandler):
         if path == "/api/game-xgd":
             query = parse_qs(parsed.query)
             market_id = (query.get("market_id") or [""])[0]
-            return self._serve_game_xgd(market_id)
+            recent_n_raw = (query.get("recent_n") or ["5"])[0]
+            recent_n = clamp_int(recent_n_raw, default=5, min_value=1, max_value=20)
+            return self._serve_game_xgd(market_id, recent_n)
 
         self._json({"error": "Not found"}, status=HTTPStatus.NOT_FOUND)
 
@@ -1029,12 +1728,12 @@ class AppHandler(BaseHTTPRequestHandler):
         except Exception as exc:
             self._json({"error": str(exc)}, status=HTTPStatus.INTERNAL_SERVER_ERROR)
 
-    def _serve_game_xgd(self, market_id: str) -> None:
+    def _serve_game_xgd(self, market_id: str, recent_n: int) -> None:
         if not market_id:
             self._json({"error": "market_id is required"}, status=HTTPStatus.BAD_REQUEST)
             return
         try:
-            payload = self.state.get_game_xgd(market_id)
+            payload = self.state.get_game_xgd(market_id, recent_n=recent_n)
             self._json(payload)
         except KeyError:
             self._json({"error": "Market not found"}, status=HTTPStatus.NOT_FOUND)
