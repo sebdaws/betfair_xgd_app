@@ -150,11 +150,13 @@ main {
   border: 1px solid var(--line);
   border-radius: 12px;
   margin-bottom: 14px;
-  overflow: hidden;
+  overflow: visible;
   box-shadow: 0 6px 18px rgba(15, 23, 42, 0.05);
 }
 
 .day-header {
+  position: relative;
+  z-index: 2;
   padding: 10px 14px;
   border-bottom: 1px solid var(--line);
   background: #f8fafc;
@@ -180,7 +182,7 @@ main {
 
 .games-table th,
 .games-table td {
-  text-align: left;
+  text-align: center;
   padding: 11px 12px;
   border-bottom: 1px solid #edf2f7;
   font-size: 0.91rem;
@@ -207,19 +209,23 @@ main {
 .games-table td:nth-child(7),
 .games-table td:nth-child(8),
 .games-table td:nth-child(9) { white-space: nowrap; }
+.games-table td.no-games-row {
+  text-align: center;
+  color: #64748b;
+  font-style: italic;
+  white-space: normal;
+}
 .games-table td:nth-child(3) { font-weight: 600; }
 .games-table th.home-price-col,
 .games-table td.home-price-col {
-  text-align: right;
   width: 84px;
 }
 .games-table th.away-price-col,
 .games-table td.away-price-col {
-  text-align: left;
   width: 84px;
 }
-.games-table td.home-price-col { padding-right: 7px; font-size: 0.84rem; }
-.games-table td.away-price-col { padding-left: 7px; font-size: 0.84rem; }
+.games-table td.home-price-col,
+.games-table td.away-price-col { font-size: 0.84rem; }
 .games-table th.line-col,
 .games-table td.line-col {
   text-align: center;
@@ -237,16 +243,14 @@ main {
 }
 .games-table th.goal-under-price-col,
 .games-table td.goal-under-price-col {
-  text-align: right;
   width: 84px;
 }
 .games-table th.goal-over-price-col,
 .games-table td.goal-over-price-col {
-  text-align: left;
   width: 84px;
 }
-.games-table td.goal-under-price-col { padding-right: 7px; font-size: 0.84rem; }
-.games-table td.goal-over-price-col { padding-left: 7px; font-size: 0.84rem; }
+.games-table td.goal-under-price-col,
+.games-table td.goal-over-price-col { font-size: 0.84rem; }
 .games-table td.goal-line-col {
   font-size: 1rem;
   font-weight: 700;
@@ -288,6 +292,7 @@ main {
 .details-options {
   display: flex;
   align-items: center;
+  flex-wrap: wrap;
   gap: 10px;
   margin-bottom: 12px;
 }
@@ -337,6 +342,7 @@ main {
 
 .lines-table th,
 .lines-table td {
+  text-align: center;
   padding: 10px 10px;
   border-bottom: 1px solid #edf2f7;
   font-size: 0.88rem;
@@ -357,22 +363,56 @@ main {
   font-size: 0.98rem;
 }
 
-.recent-grid {
-  display: grid;
-  grid-template-columns: repeat(2, minmax(0, 1fr));
-  gap: 10px;
-  margin-bottom: 12px;
-}
-
 .recent-team-block h4 {
   margin: 0 0 6px;
   font-size: 0.9rem;
+}
+
+.recent-switch {
+  display: inline-flex;
+  gap: 6px;
+  margin-bottom: 10px;
+  padding: 4px;
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  background: #f8fafc;
+}
+
+.recent-switch-btn {
+  border: 1px solid transparent;
+  background: transparent;
+  color: #334155;
+  font-size: 0.84rem;
+  font-weight: 600;
+  padding: 6px 10px;
+  border-radius: 8px;
+}
+.recent-switch-btn:hover {
+  border-color: #cbd5e1;
+}
+.recent-switch-btn.active {
+  background: #ffffff;
+  border-color: #cbd5e1;
+  color: #0f766e;
+}
+
+.recent-table-wrap {
+  width: 100%;
+  overflow-x: auto;
 }
 
 .recent-lines-table th,
 .recent-lines-table td {
   font-size: 0.8rem;
   padding: 8px;
+}
+.recent-lines-table th .metric-suffix {
+  font-size: 0.72em;
+  vertical-align: sub;
+  line-height: 0;
+}
+.recent-lines-table {
+  min-width: 760px;
 }
 
 .recent-empty {
@@ -393,8 +433,5 @@ main {
 @media (max-width: 900px) {
   .metric-grid {
     grid-template-columns: repeat(2, minmax(0, 1fr));
-  }
-  .recent-grid {
-    grid-template-columns: 1fr;
   }
 }

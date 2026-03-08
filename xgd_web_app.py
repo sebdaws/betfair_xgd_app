@@ -1225,6 +1225,44 @@ def build_recent_form_rows(source_df: Any, recent_n: int) -> list[dict[str, Any]
     return rows
 
 
+def build_team_venue_recent_rows(
+    form_df: pd.DataFrame,
+    team_name: str | None,
+    kickoff_time: Any,
+    recent_n: int,
+    season_id: Any = None,
+    competition_name: str | None = None,
+    area_name: str | None = None,
+) -> dict[str, list[dict[str, Any]]]:
+    if not team_name or form_df.empty:
+        return {"home": [], "away": []}
+
+    df = form_df[form_df["team"] == team_name].copy()
+    if df.empty:
+        return {"home": [], "away": []}
+
+    kickoff_ts = pd.to_datetime(kickoff_time, errors="coerce", utc=True)
+    if not pd.isna(kickoff_ts) and "date_time" in df.columns:
+        df["date_time"] = pd.to_datetime(df["date_time"], errors="coerce", utc=True)
+        df = df[df["date_time"] < kickoff_ts]
+
+    if season_id is not None and not pd.isna(season_id) and "season_id" in df.columns:
+        df = df[df["season_id"] == season_id]
+
+    if competition_name and "competition_name" in df.columns:
+        df = df[df["competition_name"] == competition_name]
+    if area_name and "area_name" in df.columns:
+        df = df[df["area_name"] == area_name]
+
+    home_df = df[df["venue"].astype(str).str.lower() == "home"].copy() if "venue" in df.columns else df.iloc[0:0].copy()
+    away_df = df[df["venue"].astype(str).str.lower() == "away"].copy() if "venue" in df.columns else df.iloc[0:0].copy()
+
+    return {
+        "home": build_recent_form_rows(home_df, recent_n),
+        "away": build_recent_form_rows(away_df, recent_n),
+    }
+
+
 def format_day_label(day_iso: str) -> str:
     try:
         dt_obj = dt.datetime.strptime(day_iso, "%Y-%m-%d")
@@ -1367,6 +1405,15 @@ class AppState:
                 return client
             raise
 
+    @staticmethod
+    def _is_invalid_session_error(exc: Exception) -> bool:
+        msg = str(exc)
+        return (
+            "INVALID_SESSION_INFORMATION" in msg
+            or "ANGX-0003" in msg
+            or "invalid session" in msg.lower()
+        )
+
     def refresh_games(self, force: bool = False) -> None:
         now = dt.datetime.now(dt.timezone.utc)
         with self.lock:
@@ -1376,7 +1423,21 @@ class AppState:
                     return
 
         client = self._login_client()
-        competitions = client.list_competitions()
+        try:
+            competitions = client.list_competitions()
+        except RuntimeError as exc:
+            has_cert_bundle = bool(
+                str(self.credentials.get("username") or "").strip()
+                and str(self.credentials.get("password") or "").strip()
+                and str(self.credentials.get("cert_file") or "").strip()
+                and str(self.credentials.get("key_file") or "").strip()
+            )
+            if has_cert_bundle and self._is_invalid_session_error(exc):
+                client = self._build_client(use_session_token=False)
+                client.login()
+                competitions = client.list_competitions()
+            else:
+                raise
         competition_ids, missing = select_top5_competition_ids(competitions)
         if missing:
             raise RuntimeError("Missing top-5 leagues in Betfair API: " + ", ".join(missing))
@@ -1551,9 +1612,10 @@ class AppState:
             "last_refresh_utc": last_refresh.isoformat() if last_refresh else None,
         }
 
-    def get_game_xgd(self, market_id: str, recent_n: int = 5) -> dict[str, Any]:
+    def get_game_xgd(self, market_id: str, recent_n: int = 5, venue_recent_n: int = 5) -> dict[str, Any]:
         self.refresh_games(force=False)
         recent_n = clamp_int(recent_n, default=5, min_value=1, max_value=20)
+        venue_recent_n = clamp_int(venue_recent_n, default=5, min_value=1, max_value=20)
         with self.lock:
             games_df = self.games_df.copy()
 
@@ -1593,6 +1655,9 @@ class AppState:
                 "recent_n": recent_n,
                 "home_recent_rows": [],
                 "away_recent_rows": [],
+                "venue_recent_n": venue_recent_n,
+                "home_team_venue_rows": {"home": [], "away": []},
+                "away_team_venue_rows": {"home": [], "away": []},
                 "warning": "No xGD output produced for this game.",
             }
 
@@ -1642,6 +1707,8 @@ class AppState:
 
         home_recent_rows: list[dict[str, Any]] = []
         away_recent_rows: list[dict[str, Any]] = []
+        home_team_venue_rows: dict[str, list[dict[str, Any]]] = {"home": [], "away": []}
+        away_team_venue_rows: dict[str, list[dict[str, Any]]] = {"home": [], "away": []}
         if not mapping_df.empty:
             mapping_row = mapping_df.iloc[0].to_dict()
             home_sofa = mapping_row.get("home_sofa")
@@ -1676,6 +1743,25 @@ class AppState:
                     home_recent_rows = []
                     away_recent_rows = []
 
+                home_team_venue_rows = build_team_venue_recent_rows(
+                    form_df=self.form_df,
+                    team_name=home_sofa,
+                    kickoff_time=kickoff_time,
+                    recent_n=venue_recent_n,
+                    season_id=mapping_row.get("fixture_season_id"),
+                    competition_name=mapping_row.get("fixture_competition"),
+                    area_name=mapping_row.get("fixture_area"),
+                )
+                away_team_venue_rows = build_team_venue_recent_rows(
+                    form_df=self.form_df,
+                    team_name=away_sofa,
+                    kickoff_time=kickoff_time,
+                    recent_n=venue_recent_n,
+                    season_id=mapping_row.get("fixture_season_id"),
+                    competition_name=mapping_row.get("fixture_competition"),
+                    area_name=mapping_row.get("fixture_area"),
+                )
+
         return {
             "market_id": market_id,
             "event_name": str(game_row.get("event_name", "")),
@@ -1693,6 +1779,9 @@ class AppState:
             "recent_n": recent_n,
             "home_recent_rows": home_recent_rows,
             "away_recent_rows": away_recent_rows,
+            "venue_recent_n": venue_recent_n,
+            "home_team_venue_rows": home_team_venue_rows,
+            "away_team_venue_rows": away_team_venue_rows,
             "warning": None,
         }
 
@@ -1717,7 +1806,9 @@ class AppHandler(BaseHTTPRequestHandler):
             market_id = (query.get("market_id") or [""])[0]
             recent_n_raw = (query.get("recent_n") or ["5"])[0]
             recent_n = clamp_int(recent_n_raw, default=5, min_value=1, max_value=20)
-            return self._serve_game_xgd(market_id, recent_n)
+            venue_recent_n_raw = (query.get("venue_recent_n") or ["5"])[0]
+            venue_recent_n = clamp_int(venue_recent_n_raw, default=5, min_value=1, max_value=20)
+            return self._serve_game_xgd(market_id, recent_n, venue_recent_n)
 
         self._json({"error": "Not found"}, status=HTTPStatus.NOT_FOUND)
 
@@ -1728,12 +1819,12 @@ class AppHandler(BaseHTTPRequestHandler):
         except Exception as exc:
             self._json({"error": str(exc)}, status=HTTPStatus.INTERNAL_SERVER_ERROR)
 
-    def _serve_game_xgd(self, market_id: str, recent_n: int) -> None:
+    def _serve_game_xgd(self, market_id: str, recent_n: int, venue_recent_n: int) -> None:
         if not market_id:
             self._json({"error": "market_id is required"}, status=HTTPStatus.BAD_REQUEST)
             return
         try:
-            payload = self.state.get_game_xgd(market_id, recent_n=recent_n)
+            payload = self.state.get_game_xgd(market_id, recent_n=recent_n, venue_recent_n=venue_recent_n)
             self._json(payload)
         except KeyError:
             self._json({"error": "Market not found"}, status=HTTPStatus.NOT_FOUND)

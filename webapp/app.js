@@ -11,7 +11,6 @@ const closeDetails = document.getElementById("closeDetails");
 const recalcBtn = document.getElementById("recalcBtn");
 const detailsTitle = document.getElementById("detailsTitle");
 const detailsMeta = document.getElementById("detailsMeta");
-const recentMatchesInput = document.getElementById("recentMatchesInput");
 const linesContainer = document.getElementById("linesContainer");
 const prevDayBtn = document.getElementById("prevDayBtn");
 const nextDayBtn = document.getElementById("nextDayBtn");
@@ -25,7 +24,9 @@ let currentDayIndex = 0;
 let selectedMarketId = null;
 let selectedLeagues = new Set();
 let sortMode = "kickoff";
-let recentMatchesCount = 5;
+let gamesShownCount = 5;
+let recentTeamView = "home";
+let lastXgdPayload = null;
 const AUTO_REFRESH_MS = 2 * 60 * 1000;
 
 function escapeHtml(value) {
@@ -55,6 +56,18 @@ function clampDayIndex(index) {
   return Math.max(0, Math.min(index, allDays.length - 1));
 }
 
+function toDayDate(dayIso) {
+  const d = new Date(`${dayIso}T00:00:00Z`);
+  return Number.isNaN(d.getTime()) ? null : d;
+}
+
+function formatDayLabelFromIso(dayIso) {
+  const d = toDayDate(dayIso);
+  if (!d) return dayIso;
+  const weekday = d.toLocaleDateString("en-GB", { weekday: "short", timeZone: "UTC" });
+  return `${weekday} ${dayIso}`;
+}
+
 function clampRecentMatchesCount(value) {
   const parsed = Number.parseInt(String(value || ""), 10);
   if (Number.isNaN(parsed)) return 5;
@@ -68,11 +81,14 @@ function formatMetricValue(value, decimals = 2) {
   return num.toFixed(decimals);
 }
 
-function buildRecentMatchesTableHtml(title, rows) {
+function buildRecentMatchesTableHtml(title, rows, relevantTeamName = "") {
+  const headingPrefix = relevantTeamName
+    ? `<strong>${escapeHtml(relevantTeamName)}</strong> · `
+    : "";
   if (!rows.length) {
     return `
       <section class="recent-team-block">
-        <h4>${escapeHtml(title)}</h4>
+        <h4>${headingPrefix}${escapeHtml(title)}</h4>
         <p class="recent-empty">No recent matches available.</p>
       </section>
     `;
@@ -80,44 +96,112 @@ function buildRecentMatchesTableHtml(title, rows) {
 
   return `
     <section class="recent-team-block">
-      <h4>${escapeHtml(title)}</h4>
-      <table class="lines-table recent-lines-table">
-        <thead>
-          <tr>
-            <th>Date (UTC)</th>
-            <th>Competition</th>
-            <th>Venue</th>
-            <th>Opponent</th>
-            <th>GF</th>
-            <th>GA</th>
-            <th>xG</th>
-            <th>xGA</th>
-            <th>xGoT</th>
-            <th>xGoTA</th>
-          </tr>
-        </thead>
-        <tbody>
-          ${rows
-            .map(
-              (r) => `
+      <h4>${headingPrefix}${escapeHtml(title)}</h4>
+      <div class="recent-table-wrap">
+        <table class="lines-table recent-lines-table">
+          <thead>
             <tr>
-              <td>${escapeHtml(r.date_time || "-")}</td>
-              <td>${escapeHtml(r.competition_name || "-")}</td>
-              <td>${escapeHtml(r.venue || "-")}</td>
-              <td>${escapeHtml(r.opponent || "-")}</td>
-              <td>${formatMetricValue(r.GF, 0)}</td>
-              <td>${formatMetricValue(r.GA, 0)}</td>
-              <td>${formatMetricValue(r.xG, 2)}</td>
-              <td>${formatMetricValue(r.xGA, 2)}</td>
-              <td>${formatMetricValue(r.xGoT, 2)}</td>
-              <td>${formatMetricValue(r.xGoTA, 2)}</td>
+              <th>Date</th>
+              <th>Competition</th>
+              <th>Home</th>
+              <th>Away</th>
+              <th>G<span class="metric-suffix">H</span></th>
+              <th>G<span class="metric-suffix">A</span></th>
+              <th>xG<span class="metric-suffix">H</span></th>
+              <th>xG<span class="metric-suffix">A</span></th>
+              <th>xGD</th>
+              <th>xGoT<span class="metric-suffix">H</span></th>
+              <th>xGoT<span class="metric-suffix">A</span></th>
             </tr>
-          `
-            )
-            .join("")}
-        </tbody>
-      </table>
+          </thead>
+          <tbody>
+            ${rows
+              .map(
+                (r) => {
+                  const isHome = String(r.venue || "").toLowerCase() === "home";
+                  const relevantTeam = String(relevantTeamName || r.team || "").trim();
+                  const opponentTeam = String(r.opponent || "").trim();
+                  const homeTeam = isHome ? relevantTeam : opponentTeam;
+                  const awayTeam = isHome ? opponentTeam : relevantTeam;
+                  const homeTeamCell = isHome ? `<strong>${escapeHtml(homeTeam || "-")}</strong>` : escapeHtml(homeTeam || "-");
+                  const awayTeamCell = isHome ? escapeHtml(awayTeam || "-") : `<strong>${escapeHtml(awayTeam || "-")}</strong>`;
+                  const gHome = isHome ? r.GF : r.GA;
+                  const gAway = isHome ? r.GA : r.GF;
+                  const xgHome = isHome ? r.xG : r.xGA;
+                  const xgAway = isHome ? r.xGA : r.xG;
+                  const xgotHome = isHome ? r.xGoT : r.xGoTA;
+                  const xgotAway = isHome ? r.xGoTA : r.xGoT;
+                  const computedXgd = Number(xgHome) - Number(xgAway);
+                  const xgd = Number.isFinite(computedXgd) ? computedXgd : r.xgd;
+                  return `
+              <tr>
+                <td>${escapeHtml(r.date_time || "-")}</td>
+                <td>${escapeHtml(r.competition_name || "-")}</td>
+                <td>${homeTeamCell}</td>
+                <td>${awayTeamCell}</td>
+                <td>${formatMetricValue(gHome, 0)}</td>
+                <td>${formatMetricValue(gAway, 0)}</td>
+                <td>${formatMetricValue(xgHome, 2)}</td>
+                <td>${formatMetricValue(xgAway, 2)}</td>
+                <td>${formatMetricValue(xgd, 2)}</td>
+                <td>${formatMetricValue(xgotHome, 2)}</td>
+                <td>${formatMetricValue(xgotAway, 2)}</td>
+              </tr>
+            `;
+                }
+              )
+              .join("")}
+          </tbody>
+        </table>
+      </div>
     </section>
+  `;
+}
+
+function buildRecentSwitchHtml(homeLabel, awayLabel) {
+  const homeActive = recentTeamView !== "away";
+  const awayActive = recentTeamView === "away";
+  return `
+    <div class="recent-switch" role="tablist" aria-label="Recent matches team view">
+      <button
+        type="button"
+        class="recent-switch-btn${homeActive ? " active" : ""}"
+        data-team-view="home"
+        role="tab"
+        aria-selected="${homeActive ? "true" : "false"}"
+      >
+        Home: ${escapeHtml(homeLabel)}
+      </button>
+      <button
+        type="button"
+        class="recent-switch-btn${awayActive ? " active" : ""}"
+        data-team-view="away"
+        role="tab"
+        aria-selected="${awayActive ? "true" : "false"}"
+      >
+        Away: ${escapeHtml(awayLabel)}
+      </button>
+    </div>
+  `;
+}
+
+function buildVenueSplitSectionHtml(teamLabel, venueRecentN, homeRows, awayRows) {
+  const mergedRows = [...homeRows, ...awayRows].sort((a, b) =>
+    String(b.date_time || "").localeCompare(String(a.date_time || ""))
+  );
+  return `
+    <h3 class="section-title">${escapeHtml(teamLabel)}: Home & Away Matches</h3>
+    ${buildRecentMatchesTableHtml("All matches", mergedRows, teamLabel)}
+  `;
+}
+
+function buildGamesShownControlHtml(value) {
+  const safeValue = clampRecentMatchesCount(value);
+  return `
+    <div class="details-options">
+      <label for="gamesShownInputInline">Last X games</label>
+      <input id="gamesShownInputInline" type="number" min="1" max="20" step="1" value="${safeValue}" />
+    </div>
   `;
 }
 
@@ -188,17 +272,70 @@ function updateLeagueFilterOptions() {
 }
 
 function applyLeagueFilter() {
-  if (!selectedLeagues.size) {
-    allDays = rawDays.map((day) => ({ ...day, games: Array.isArray(day.games) ? [...day.games] : [] }));
-  } else {
-    allDays = rawDays
-      .map((day) => ({
-        ...day,
-        games: (day.games || []).filter((game) => selectedLeagues.has(String(game.competition || ""))),
-      }))
-      .filter((day) => day.games.length > 0);
+  const previousDayIso =
+    allDays[currentDayIndex] && allDays[currentDayIndex].date
+      ? String(allDays[currentDayIndex].date)
+      : null;
+  const filteredDays = rawDays.map((day) => ({
+    ...day,
+    games: !selectedLeagues.size
+      ? Array.isArray(day.games)
+        ? [...day.games]
+        : []
+      : (day.games || []).filter((game) => selectedLeagues.has(String(game.competition || ""))),
+  }));
+
+  if (!filteredDays.length) {
+    allDays = [];
+    currentDayIndex = 0;
+    return;
   }
-  currentDayIndex = clampDayIndex(currentDayIndex);
+
+  const dayMap = new Map();
+  for (const day of filteredDays) {
+    if (!day || !day.date) continue;
+    dayMap.set(String(day.date), day);
+  }
+
+  const dateKeys = Array.from(dayMap.keys()).sort((a, b) => a.localeCompare(b));
+  const first = toDayDate(dateKeys[0]);
+  const last = toDayDate(dateKeys[dateKeys.length - 1]);
+  if (!first || !last) {
+    allDays = filteredDays;
+    if (previousDayIso) {
+      const nextIndex = allDays.findIndex((d) => String(d.date || "") === previousDayIso);
+      currentDayIndex = nextIndex >= 0 ? nextIndex : clampDayIndex(currentDayIndex);
+    } else {
+      currentDayIndex = clampDayIndex(currentDayIndex);
+    }
+    return;
+  }
+
+  const rangedDays = [];
+  for (let cursor = new Date(first); cursor <= last; cursor.setUTCDate(cursor.getUTCDate() + 1)) {
+    const dayIso = cursor.toISOString().slice(0, 10);
+    if (dayMap.has(dayIso)) {
+      const existing = dayMap.get(dayIso);
+      rangedDays.push({
+        ...existing,
+        games: Array.isArray(existing.games) ? existing.games : [],
+      });
+      continue;
+    }
+    rangedDays.push({
+      date: dayIso,
+      date_label: formatDayLabelFromIso(dayIso),
+      games: [],
+    });
+  }
+
+  allDays = rangedDays;
+  if (previousDayIso) {
+    const nextIndex = allDays.findIndex((d) => String(d.date || "") === previousDayIso);
+    currentDayIndex = nextIndex >= 0 ? nextIndex : clampDayIndex(currentDayIndex);
+  } else {
+    currentDayIndex = clampDayIndex(currentDayIndex);
+  }
 }
 
 function kickoffSortKey(game) {
@@ -293,24 +430,30 @@ function renderCurrentDay() {
   `;
 
   const tbody = table.querySelector("tbody");
-  for (const game of sortedDayGames) {
-    gamesById.set(game.market_id, game);
+  if (!sortedDayGames.length) {
     const row = document.createElement("tr");
-    row.dataset.marketId = game.market_id;
-    if (selectedMarketId === game.market_id) row.classList.add("selected");
-    row.innerHTML = `
-      <td>${escapeHtml(game.kickoff_utc)}</td>
-      <td>${escapeHtml(game.competition)}</td>
-      <td>${escapeHtml(game.event_name)}</td>
-      <td class="home-price-col">${escapeHtml(game.home_price || "-")}</td>
-      <td class="line-col">${escapeHtml(game.mainline || "-")}</td>
-      <td class="away-price-col">${escapeHtml(game.away_price || "-")}</td>
-      <td class="goal-under-price-col">${escapeHtml(game.goal_under_price || "-")}</td>
-      <td class="goal-line-col">${escapeHtml(game.goal_mainline || "-")}</td>
-      <td class="goal-over-price-col">${escapeHtml(game.goal_over_price || "-")}</td>
-    `;
-    row.addEventListener("click", () => loadGameXgd(game.market_id));
+    row.innerHTML = `<td class="no-games-row" colspan="9">No games</td>`;
     tbody.appendChild(row);
+  } else {
+    for (const game of sortedDayGames) {
+      gamesById.set(game.market_id, game);
+      const row = document.createElement("tr");
+      row.dataset.marketId = game.market_id;
+      if (selectedMarketId === game.market_id) row.classList.add("selected");
+      row.innerHTML = `
+        <td>${escapeHtml(game.kickoff_utc)}</td>
+        <td>${escapeHtml(game.competition)}</td>
+        <td>${escapeHtml(game.event_name)}</td>
+        <td class="home-price-col">${escapeHtml(game.home_price || "-")}</td>
+        <td class="line-col">${escapeHtml(game.mainline || "-")}</td>
+        <td class="away-price-col">${escapeHtml(game.away_price || "-")}</td>
+        <td class="goal-under-price-col">${escapeHtml(game.goal_under_price || "-")}</td>
+        <td class="goal-line-col">${escapeHtml(game.goal_mainline || "-")}</td>
+        <td class="goal-over-price-col">${escapeHtml(game.goal_over_price || "-")}</td>
+      `;
+      row.addEventListener("click", () => loadGameXgd(game.market_id));
+      tbody.appendChild(row);
+    }
   }
 
   block.appendChild(header);
@@ -319,6 +462,7 @@ function renderCurrentDay() {
 }
 
 function renderXgd(payload) {
+  lastXgdPayload = payload;
   const warning = payload.warning ? `<div class="warning">${escapeHtml(payload.warning)}</div>` : "";
   const s = payload.summary || {};
   const metricHtml = payload.summary
@@ -333,6 +477,7 @@ function renderXgd(payload) {
     : "";
 
   const periodRows = Array.isArray(payload.period_rows) ? payload.period_rows : [];
+  const periodRowsDisplay = [...periodRows].reverse();
   const periodTable = periodRows.length
     ? `
     <h3 class="section-title">xGD Output</h3>
@@ -342,30 +487,24 @@ function renderXgd(payload) {
           <th>Period</th>
           <th>Home xG</th>
           <th>Away xG</th>
-          <th>Total xG</th>
           <th>xGD</th>
+          <th>Total xG</th>
           <th>Min</th>
           <th>Max</th>
-          <th>Home Games</th>
-          <th>Away Games</th>
-          <th>Warning</th>
         </tr>
       </thead>
       <tbody>
-        ${periodRows
+        ${periodRowsDisplay
           .map(
             (r) => `
           <tr>
             <td>${escapeHtml(r.period)}</td>
             <td>${Number(r.home_xg || 0).toFixed(2)}</td>
             <td>${Number(r.away_xg || 0).toFixed(2)}</td>
-            <td>${Number(r.total_xg || 0).toFixed(2)}</td>
             <td>${Number(r.xgd || 0).toFixed(2)}</td>
+            <td>${Number(r.total_xg || 0).toFixed(2)}</td>
             <td>${r.total_min_xg == null ? "-" : Number(r.total_min_xg).toFixed(2)}</td>
             <td>${r.total_max_xg == null ? "-" : Number(r.total_max_xg).toFixed(2)}</td>
-            <td>${r.home_games_used == null ? "-" : escapeHtml(r.home_games_used)}</td>
-            <td>${r.away_games_used == null ? "-" : escapeHtml(r.away_games_used)}</td>
-            <td>${escapeHtml(r.model_warning || "")}</td>
           </tr>
         `
           )
@@ -418,24 +557,51 @@ function renderXgd(payload) {
   `
     : "";
 
-  const recentN = clampRecentMatchesCount(payload.recent_n ?? recentMatchesCount);
-  recentMatchesCount = recentN;
-  if (recentMatchesInput) recentMatchesInput.value = String(recentN);
+  const recentN = clampRecentMatchesCount(payload.recent_n ?? gamesShownCount);
+  const venueRecentN = clampRecentMatchesCount(payload.venue_recent_n ?? recentN);
+  gamesShownCount = recentN;
 
   const homeRecentRows = Array.isArray(payload.home_recent_rows) ? payload.home_recent_rows : [];
   const awayRecentRows = Array.isArray(payload.away_recent_rows) ? payload.away_recent_rows : [];
+  const homeTeamVenueRows = payload.home_team_venue_rows && typeof payload.home_team_venue_rows === "object" ? payload.home_team_venue_rows : {};
+  const awayTeamVenueRows = payload.away_team_venue_rows && typeof payload.away_team_venue_rows === "object" ? payload.away_team_venue_rows : {};
   const mappingHead = mappingRows[0] || {};
   const homeLabel = mappingHead.home_sofa || mappingHead.home_raw || "Home team";
   const awayLabel = mappingHead.away_sofa || mappingHead.away_raw || "Away team";
+  const activeIsAway = recentTeamView === "away";
+  const activeLabel = activeIsAway ? awayLabel : homeLabel;
+  const activeRows = activeIsAway ? awayRecentRows : homeRecentRows;
+  const activeVenueRows = activeIsAway ? awayTeamVenueRows : homeTeamVenueRows;
+  const activeHomeVenueRows = Array.isArray(activeVenueRows.home) ? activeVenueRows.home : [];
+  const activeAwayVenueRows = Array.isArray(activeVenueRows.away) ? activeVenueRows.away : [];
   const recentMatchesSection = `
-    <h3 class="section-title">Previous ${recentN} Matches</h3>
-    <div class="recent-grid">
-      ${buildRecentMatchesTableHtml(homeLabel, homeRecentRows)}
-      ${buildRecentMatchesTableHtml(awayLabel, awayRecentRows)}
-    </div>
+    <h3 class="section-title">Model Source Matches</h3>
+    ${buildGamesShownControlHtml(gamesShownCount)}
+    ${buildRecentSwitchHtml(homeLabel, awayLabel)}
+    ${buildRecentMatchesTableHtml("Fixture-side matches", activeRows, activeLabel)}
+    ${buildVenueSplitSectionHtml(activeLabel, venueRecentN, activeHomeVenueRows, activeAwayVenueRows)}
   `;
 
   linesContainer.innerHTML = `${warning}${metricHtml}${periodTable}${recentMatchesSection}${mappingTable}`;
+
+  const switchButtons = linesContainer.querySelectorAll(".recent-switch-btn");
+  for (const button of switchButtons) {
+    button.addEventListener("click", () => {
+      const targetView = button.dataset.teamView === "away" ? "away" : "home";
+      if (targetView === recentTeamView) return;
+      recentTeamView = targetView;
+      if (lastXgdPayload) renderXgd(lastXgdPayload);
+    });
+  }
+
+  const gamesShownInputInline = linesContainer.querySelector("#gamesShownInputInline");
+  if (gamesShownInputInline) {
+    gamesShownInputInline.addEventListener("change", () => {
+      gamesShownCount = clampRecentMatchesCount(gamesShownInputInline.value);
+      gamesShownInputInline.value = String(gamesShownCount);
+      if (selectedMarketId) loadGameXgd(selectedMarketId);
+    });
+  }
 }
 
 async function loadGameXgd(marketId) {
@@ -447,14 +613,18 @@ async function loadGameXgd(marketId) {
 
   detailsPanel.classList.remove("hidden");
   detailsTitle.textContent = game.event_name;
-  detailsMeta.textContent = `${game.competition} | ${game.kickoff_raw} | Home: ${game.home_price || "-"} | Handicap: ${game.mainline || "-"} | Away: ${game.away_price || "-"} | Under: ${game.goal_under_price || "-"} | Goals: ${game.goal_mainline || "-"} | Over: ${game.goal_over_price || "-"}`;
+  recentTeamView = "home";
+  lastXgdPayload = null;
+  detailsMeta.textContent = `${game.competition} | ${game.kickoff_raw}`;
   linesContainer.innerHTML = "<p>Calculating xGD...</p>";
-  recentMatchesCount = clampRecentMatchesCount(recentMatchesInput ? recentMatchesInput.value : recentMatchesCount);
-  if (recentMatchesInput) recentMatchesInput.value = String(recentMatchesCount);
+  const gamesShownInputInline = linesContainer.querySelector("#gamesShownInputInline");
+  gamesShownCount = clampRecentMatchesCount(gamesShownInputInline ? gamesShownInputInline.value : gamesShownCount);
 
   try {
     const res = await fetch(
-      `/api/game-xgd?market_id=${encodeURIComponent(marketId)}&recent_n=${encodeURIComponent(String(recentMatchesCount))}`
+      `/api/game-xgd?market_id=${encodeURIComponent(marketId)}&recent_n=${encodeURIComponent(
+        String(gamesShownCount)
+      )}&venue_recent_n=${encodeURIComponent(String(gamesShownCount))}`
     );
     const payload = await parseApiResponse(res);
     if (!res.ok) throw new Error(payload.error || "Failed to load xGD");
@@ -486,7 +656,6 @@ leagueFilterMenu.addEventListener("change", (event) => {
 
   updateLeagueFilterMenu(availableLeagues);
   updateLeagueFilterButtonLabel();
-  currentDayIndex = 0;
   applyLeagueFilter();
   renderCurrentDay();
 });
@@ -517,13 +686,6 @@ closeDetails.addEventListener("click", () => {
 recalcBtn.addEventListener("click", () => {
   if (selectedMarketId) loadGameXgd(selectedMarketId);
 });
-if (recentMatchesInput) {
-  recentMatchesInput.addEventListener("change", () => {
-    recentMatchesCount = clampRecentMatchesCount(recentMatchesInput.value);
-    recentMatchesInput.value = String(recentMatchesCount);
-    if (selectedMarketId) loadGameXgd(selectedMarketId);
-  });
-}
 
 updateSortButtonLabel();
 updateLeagueFilterButtonLabel();
