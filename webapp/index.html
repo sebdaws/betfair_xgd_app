@@ -18,14 +18,19 @@
   <main>
     <section class="page-tabs">
       <button id="gamesTabBtn" class="tab-btn active" type="button">Games</button>
-      <button id="manualMappingTabBtn" class="tab-btn" type="button">Manual Team Mapping</button>
+      <button id="manualMappingTabBtn" class="tab-btn" type="button">Mapping</button>
     </section>
 
     <section id="gamesTabPane" class="tab-pane">
-      <section class="day-nav">
-        <button id="prevDayBtn" type="button">Previous Day</button>
-        <h2 id="dayLabel">Day</h2>
-        <button id="nextDayBtn" type="button">Next Day</button>
+      <section class="day-toolbar">
+        <section class="day-actions">
+          <button id="todayBtn" type="button">Today</button>
+        </section>
+        <section class="day-nav">
+          <button id="prevDayBtn" type="button">Previous Day</button>
+          <h2 id="dayLabel">Day</h2>
+          <button id="nextDayBtn" type="button">Next Day</button>
+        </section>
       </section>
       <section class="table-controls">
         <label for="leagueFilterBtn" class="control-label">Leagues</label>
@@ -45,19 +50,38 @@
 
     <section id="manualMappingTabPane" class="tab-pane hidden">
       <section class="mapping-header">
-        <h2>Manual Team Mapping</h2>
+        <h2>Mapping</h2>
         <button id="mappingRefreshBtn" type="button">Refresh Mapping Data</button>
       </section>
       <p id="mappingStatus" class="mapping-status">Loading mapping data...</p>
 
-      <section class="mapping-panel">
-        <h3>Unmatched Teams</h3>
-        <div id="unmatchedTeamsContainer"></div>
+      <section class="page-tabs mapping-sub-tabs">
+        <button id="teamMappingsSubTabBtn" class="tab-btn active" type="button">Teams</button>
+        <button id="competitionMappingsSubTabBtn" class="tab-btn" type="button">Competitions</button>
       </section>
 
-      <section class="mapping-panel">
-        <h3>Saved Mappings</h3>
-        <div id="savedMappingsContainer"></div>
+      <section id="teamMappingsPane" class="mapping-sub-pane">
+        <section class="mapping-panel">
+          <h3>Unmatched Teams</h3>
+          <div id="unmatchedTeamsContainer"></div>
+        </section>
+
+        <section class="mapping-panel">
+          <h3>Saved Team Mappings</h3>
+          <div id="savedMappingsContainer"></div>
+        </section>
+      </section>
+
+      <section id="competitionMappingsPane" class="mapping-sub-pane hidden">
+        <section class="mapping-panel">
+          <h3>Unmatched Competitions</h3>
+          <div id="unmatchedCompetitionsContainer"></div>
+        </section>
+
+        <section class="mapping-panel">
+          <h3>Saved Competition Mappings</h3>
+          <div id="savedCompetitionMappingsContainer"></div>
+        </section>
       </section>
     </section>
   </main>
