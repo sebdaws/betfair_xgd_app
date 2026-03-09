@@ -9,6 +9,14 @@ const tierFilterBtn = document.getElementById("tierFilterBtn");
 const tierFilterMenu = document.getElementById("tierFilterMenu");
 const sortModeBtn = document.getElementById("sortModeBtn");
 const tableControls = document.querySelector(".table-controls");
+const gamesTabBtn = document.getElementById("gamesTabBtn");
+const manualMappingTabBtn = document.getElementById("manualMappingTabBtn");
+const gamesTabPane = document.getElementById("gamesTabPane");
+const manualMappingTabPane = document.getElementById("manualMappingTabPane");
+const mappingRefreshBtn = document.getElementById("mappingRefreshBtn");
+const mappingStatus = document.getElementById("mappingStatus");
+const unmatchedTeamsContainer = document.getElementById("unmatchedTeamsContainer");
+const savedMappingsContainer = document.getElementById("savedMappingsContainer");
 const detailsPanel = document.getElementById("detailsPanel");
 const closeDetails = document.getElementById("closeDetails");
 const recalcBtn = document.getElementById("recalcBtn");
@@ -32,6 +40,8 @@ let sortMode = "kickoff";
 let gamesShownCount = 5;
 let recentTeamView = "home";
 let lastXgdPayload = null;
+let activeTab = "games";
+let lastManualMappingPayload = null;
 const AUTO_REFRESH_MS = 2 * 60 * 1000;
 
 function escapeHtml(value) {
@@ -54,6 +64,168 @@ async function parseApiResponse(res) {
   }
   const text = await res.text();
   return { error: String(text || "Unexpected response") };
+}
+
+function setActiveTab(tabName) {
+  activeTab = tabName === "mapping" ? "mapping" : "games";
+  const gamesActive = activeTab === "games";
+  gamesTabBtn.classList.toggle("active", gamesActive);
+  manualMappingTabBtn.classList.toggle("active", !gamesActive);
+  gamesTabPane.classList.toggle("hidden", !gamesActive);
+  manualMappingTabPane.classList.toggle("hidden", gamesActive);
+  if (!gamesActive) {
+    detailsPanel.classList.add("hidden");
+  }
+}
+
+function renderManualMappingSections(payload) {
+  lastManualMappingPayload = payload;
+  const mappings = Array.isArray(payload?.mappings) ? payload.mappings : [];
+  const unmatched = Array.isArray(payload?.unmatched) ? payload.unmatched : [];
+  const sofaTeams = Array.isArray(payload?.sofa_teams) ? payload.sofa_teams : [];
+
+  mappingStatus.textContent = `${unmatched.length} unmatched teams | ${mappings.length} saved mappings`;
+
+  unmatchedTeamsContainer.innerHTML = "";
+  if (!unmatched.length) {
+    unmatchedTeamsContainer.innerHTML = `<p class="mapping-empty">No unmatched teams in current games.</p>`;
+  } else {
+    const table = document.createElement("table");
+    table.className = "mapping-table";
+    table.innerHTML = `
+      <thead>
+        <tr>
+          <th>Game</th>
+          <th>League</th>
+          <th>Kickoff</th>
+          <th>Side</th>
+          <th>Betfair Team</th>
+          <th>SofaScore Team</th>
+          <th>Action</th>
+        </tr>
+      </thead>
+      <tbody></tbody>
+    `;
+    const tbody = table.querySelector("tbody");
+
+    const optionsHtml =
+      `<option value="">Select team...</option>` +
+      sofaTeams.map((team) => `<option value="${escapeHtml(team)}">${escapeHtml(team)}</option>`).join("");
+
+    for (const row of unmatched) {
+      const tr = document.createElement("tr");
+      const rawName = String(row.raw_name || "");
+      const existing = mappings.find((m) => String(m.raw_name || "") === rawName);
+      tr.innerHTML = `
+        <td>${escapeHtml(String(row.event_name || "-"))}</td>
+        <td>${escapeHtml(String(row.competition || "-"))}</td>
+        <td>${escapeHtml(String(row.kickoff_raw || "-"))}</td>
+        <td>${escapeHtml(String(row.side || "-"))}</td>
+        <td>${escapeHtml(rawName)}</td>
+        <td>
+          <select class="mapping-select">
+            ${optionsHtml}
+          </select>
+        </td>
+        <td><button type="button" class="mapping-save-btn">Save</button></td>
+      `;
+      const select = tr.querySelector(".mapping-select");
+      if (select && existing?.sofa_name) {
+        select.value = String(existing.sofa_name);
+      }
+      const saveBtn = tr.querySelector(".mapping-save-btn");
+      if (saveBtn && select) {
+        saveBtn.addEventListener("click", async () => {
+          const sofaName = String(select.value || "").trim();
+          if (!sofaName) {
+            mappingStatus.textContent = "Select a SofaScore team before saving.";
+            return;
+          }
+          await upsertManualMapping(rawName, sofaName);
+        });
+      }
+      tbody.appendChild(tr);
+    }
+    unmatchedTeamsContainer.appendChild(table);
+  }
+
+  savedMappingsContainer.innerHTML = "";
+  if (!mappings.length) {
+    savedMappingsContainer.innerHTML = `<p class="mapping-empty">No manual mappings saved yet.</p>`;
+  } else {
+    const table = document.createElement("table");
+    table.className = "mapping-table";
+    table.innerHTML = `
+      <thead>
+        <tr>
+          <th>Betfair Team</th>
+          <th>SofaScore Team</th>
+          <th>Action</th>
+        </tr>
+      </thead>
+      <tbody></tbody>
+    `;
+    const tbody = table.querySelector("tbody");
+    for (const row of mappings) {
+      const tr = document.createElement("tr");
+      const rawName = String(row.raw_name || "");
+      tr.innerHTML = `
+        <td>${escapeHtml(rawName)}</td>
+        <td>${escapeHtml(String(row.sofa_name || ""))}</td>
+        <td><button type="button" class="mapping-delete-btn">Delete</button></td>
+      `;
+      const deleteBtn = tr.querySelector(".mapping-delete-btn");
+      if (deleteBtn) {
+        deleteBtn.addEventListener("click", async () => {
+          await deleteManualMapping(rawName);
+        });
+      }
+      tbody.appendChild(tr);
+    }
+    savedMappingsContainer.appendChild(table);
+  }
+}
+
+async function loadManualMappings() {
+  mappingStatus.textContent = "Loading mapping data...";
+  try {
+    const res = await fetch("/api/manual-mappings");
+    const payload = await parseApiResponse(res);
+    if (!res.ok) throw new Error(payload.error || "Failed to load manual mappings");
+    renderManualMappingSections(payload);
+  } catch (err) {
+    mappingStatus.textContent = String(err.message || err);
+  }
+}
+
+async function upsertManualMapping(rawName, sofaName) {
+  try {
+    const res = await fetch("/api/manual-mappings", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ raw_name: rawName, sofa_name: sofaName }),
+    });
+    const payload = await parseApiResponse(res);
+    if (!res.ok) throw new Error(payload.error || "Failed to save mapping");
+    await Promise.all([loadGames(), loadManualMappings()]);
+  } catch (err) {
+    mappingStatus.textContent = String(err.message || err);
+  }
+}
+
+async function deleteManualMapping(rawName) {
+  try {
+    const res = await fetch("/api/manual-mappings/delete", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ raw_name: rawName }),
+    });
+    const payload = await parseApiResponse(res);
+    if (!res.ok) throw new Error(payload.error || "Failed to delete mapping");
+    await Promise.all([loadGames(), loadManualMappings()]);
+  } catch (err) {
+    mappingStatus.textContent = String(err.message || err);
+  }
 }
 
 function clampDayIndex(index) {
@@ -84,6 +256,44 @@ function formatMetricValue(value, decimals = 2) {
   const num = Number(value);
   if (!Number.isFinite(num)) return escapeHtml(value);
   return num.toFixed(decimals);
+}
+
+function buildPeriodMetricStackCell(seasonValue, last5Value, last3Value) {
+  const isMissing = (value) => {
+    const text = String(value ?? "").trim();
+    return !text || text === "-";
+  };
+
+  const rows = [
+    { label: "S", value: seasonValue },
+    { label: "5", value: last5Value },
+    { label: "3", value: last3Value },
+  ].filter((row) => !isMissing(row.value));
+
+  if (!rows.length) {
+    return `
+      <div class="metric-stack">
+        <div class="metric-stack-row">
+          <span class="metric-stack-value">-</span>
+        </div>
+      </div>
+    `;
+  }
+
+  return `
+    <div class="metric-stack">
+      ${rows
+        .map(
+          (row) => `
+            <div class="metric-stack-row">
+              <span class="metric-stack-label">${escapeHtml(row.label)}</span>
+              <span class="metric-stack-value">${escapeHtml(row.value || "-")}</span>
+            </div>
+          `
+        )
+        .join("")}
+    </div>
+  `;
 }
 
 function buildRecentMatchesTableHtml(title, rows, relevantTeamName = "") {
@@ -447,6 +657,9 @@ async function loadGames() {
     applyGameFilters();
     renderCurrentDay();
     statusText.textContent = `Loaded ${payload.total_games || 0} games`;
+    if (activeTab === "mapping") {
+      loadManualMappings();
+    }
 
     if (selectedMarketId && !gamesById.has(selectedMarketId)) {
       selectedMarketId = null;
@@ -500,9 +713,12 @@ function renderCurrentDay() {
         <th class="home-price-col">Home</th>
         <th class="line-col">Handicap</th>
         <th class="away-price-col">Away</th>
+        <th>xGD</th>
         <th class="goal-under-price-col">Under</th>
         <th class="goal-line-col">Goals</th>
         <th class="goal-over-price-col">Over</th>
+        <th>Min</th>
+        <th>Max</th>
       </tr>
     </thead>
     <tbody></tbody>
@@ -511,7 +727,7 @@ function renderCurrentDay() {
   const tbody = table.querySelector("tbody");
   if (!sortedDayGames.length) {
     const row = document.createElement("tr");
-    row.innerHTML = `<td class="no-games-row" colspan="9">No games</td>`;
+    row.innerHTML = `<td class="no-games-row" colspan="12">No games</td>`;
     tbody.appendChild(row);
   } else {
     for (const game of sortedDayGames) {
@@ -526,9 +742,12 @@ function renderCurrentDay() {
         <td class="home-price-col">${escapeHtml(game.home_price || "-")}</td>
         <td class="line-col">${escapeHtml(game.mainline || "-")}</td>
         <td class="away-price-col">${escapeHtml(game.away_price || "-")}</td>
+        <td class="metric-stack-cell">${buildPeriodMetricStackCell(game.season_xgd, game.last5_xgd, game.last3_xgd)}</td>
         <td class="goal-under-price-col">${escapeHtml(game.goal_under_price || "-")}</td>
         <td class="goal-line-col">${escapeHtml(game.goal_mainline || "-")}</td>
         <td class="goal-over-price-col">${escapeHtml(game.goal_over_price || "-")}</td>
+        <td class="metric-stack-cell">${buildPeriodMetricStackCell(game.season_min_xg, game.last5_min_xg, game.last3_min_xg)}</td>
+        <td class="metric-stack-cell">${buildPeriodMetricStackCell(game.season_max_xg, game.last5_max_xg, game.last3_max_xg)}</td>
       `;
       row.addEventListener("click", () => loadGameXgd(game.market_id));
       tbody.appendChild(row);
@@ -714,6 +933,16 @@ async function loadGameXgd(marketId) {
 }
 
 refreshBtn.addEventListener("click", () => loadGames());
+gamesTabBtn.addEventListener("click", () => {
+  setActiveTab("games");
+});
+manualMappingTabBtn.addEventListener("click", () => {
+  setActiveTab("mapping");
+  loadManualMappings();
+});
+mappingRefreshBtn.addEventListener("click", () => {
+  loadManualMappings();
+});
 leagueFilterBtn.addEventListener("click", (event) => {
   event.stopPropagation();
   const willOpen = leagueFilterMenu.classList.contains("hidden");
@@ -801,6 +1030,7 @@ recalcBtn.addEventListener("click", () => {
 updateSortButtonLabel();
 updateLeagueFilterButtonLabel();
 updateTierFilterButtonLabel();
+setActiveTab("games");
 loadGames();
 setInterval(() => {
   loadGames();

@@ -82,6 +82,31 @@ main {
   margin: 0 auto;
 }
 
+.page-tabs {
+  display: flex;
+  gap: 8px;
+  margin-bottom: 12px;
+}
+
+.tab-btn {
+  border: 1px solid var(--line);
+  background: #fff;
+  color: var(--ink);
+  padding: 8px 12px;
+  border-radius: 8px;
+  font-weight: 600;
+}
+
+.tab-btn.active {
+  border-color: var(--accent);
+  background: #ecfdf5;
+  color: #065f46;
+}
+
+.tab-pane.hidden {
+  display: none;
+}
+
 .day-nav {
   display: flex;
   align-items: center;
@@ -206,9 +231,11 @@ main {
 .games-table td:nth-child(4),
 .games-table td:nth-child(5),
 .games-table td:nth-child(6),
-.games-table td:nth-child(7),
 .games-table td:nth-child(8),
-.games-table td:nth-child(9) { white-space: nowrap; }
+.games-table td:nth-child(9),
+.games-table td:nth-child(10),
+.games-table td:nth-child(11),
+.games-table td:nth-child(12) { white-space: nowrap; }
 .games-table td.no-games-row {
   text-align: center;
   color: #64748b;
@@ -254,6 +281,105 @@ main {
 .games-table td.goal-line-col {
   font-size: 1rem;
   font-weight: 700;
+}
+
+.mapping-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+}
+
+.mapping-header h2 {
+  margin: 0;
+  font-size: 1.05rem;
+}
+
+.mapping-status {
+  margin: 10px 0;
+  color: #475569;
+  font-size: 0.9rem;
+}
+
+.mapping-panel {
+  background: var(--panel);
+  border: 1px solid var(--line);
+  border-radius: 12px;
+  padding: 12px;
+  margin-bottom: 12px;
+}
+
+.mapping-panel h3 {
+  margin: 0 0 10px 0;
+  font-size: 0.95rem;
+}
+
+.mapping-table {
+  width: 100%;
+  border-collapse: collapse;
+}
+
+.mapping-table th,
+.mapping-table td {
+  border-bottom: 1px solid #edf2f7;
+  padding: 8px;
+  text-align: left;
+  vertical-align: top;
+  font-size: 0.88rem;
+}
+
+.mapping-table tr:last-child td {
+  border-bottom: none;
+}
+
+.mapping-table select {
+  min-width: 220px;
+  max-width: 320px;
+}
+
+.mapping-empty {
+  margin: 0;
+  color: #64748b;
+  font-style: italic;
+}
+
+.games-table td.metric-stack-cell {
+  white-space: normal;
+  padding-top: 6px;
+  padding-bottom: 6px;
+}
+
+.metric-stack {
+  display: inline-flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 2px;
+  line-height: 1.05;
+  font-variant-numeric: tabular-nums;
+  font-feature-settings: "tnum" 1;
+}
+
+.metric-stack-row {
+  display: grid;
+  grid-template-columns: 18px 44px;
+  align-items: baseline;
+  gap: 5px;
+}
+
+.metric-stack-label {
+  font-size: 0.65rem;
+  font-weight: 700;
+  color: #64748b;
+  min-width: 18px;
+  text-align: right;
+}
+
+.metric-stack-value {
+  font-size: 0.78rem;
+  font-weight: 600;
+  color: #0f172a;
+  min-width: 44px;
+  text-align: right;
 }
 
 .details-panel {

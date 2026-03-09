@@ -87,7 +87,6 @@
 4905|Romanian Liga I
 862579|Romanian Liga II
 12209355|Rwandan National Football League
-12009363|Salvadoran Primera Division
 107|Scottish Championship
 109|Scottish League One
 111|Scottish League Two

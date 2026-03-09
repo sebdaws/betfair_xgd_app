@@ -34,7 +34,20 @@ if (not DEFAULT_SOFASCORE_DB.exists()) and _fallback_db.exists():
 
 DEFAULT_SELECTED_LEAGUES = APP_DIR / "selected_leagues.txt"
 DEFAULT_ALL_LEAGUES = APP_DIR / "all_leagues.txt"
+DEFAULT_MANUAL_TEAM_MAPPINGS = APP_DIR / "manual_team_mappings.json"
 DEFAULT_LEAGUE_TIER = "Unassigned"
+
+PERIOD_METRIC_COLUMNS = (
+    "season_xgd",
+    "last5_xgd",
+    "last3_xgd",
+    "season_min_xg",
+    "last5_min_xg",
+    "last3_min_xg",
+    "season_max_xg",
+    "last5_max_xg",
+    "last3_max_xg",
+)
 
 FINISHED_STATUSES = {
     "ended",
@@ -921,6 +934,7 @@ class TeamMatcher:
     def __init__(self, team_names: list[str]) -> None:
         unique = sorted({str(name).strip() for name in team_names if str(name).strip()})
         self.teams = unique
+        self.team_set = set(unique)
         self.norm_by_team = {team: normalize_team_name(team) for team in unique}
         self.tokens_by_team = {team: token_set(norm) for team, norm in self.norm_by_team.items()}
         self.by_norm: dict[str, list[str]] = {}
@@ -970,6 +984,25 @@ class TeamMatcher:
         return best_name, float(best_score), "fuzzy"
 
 
+def apply_manual_or_match(
+    raw_name: str | None,
+    team_matcher: TeamMatcher,
+    manual_mapping_lookup: dict[str, str] | None = None,
+    disallow: set[str] | None = None,
+) -> tuple[str | None, float | None, str]:
+    if raw_name is None or not str(raw_name).strip():
+        return None, None, "missing"
+
+    disallow = disallow or set()
+    if manual_mapping_lookup:
+        raw_norm = normalize_team_name(raw_name)
+        manual_target = manual_mapping_lookup.get(raw_norm)
+        if manual_target and manual_target in team_matcher.team_set and manual_target not in disallow:
+            return manual_target, 1.0, "manual"
+
+    return team_matcher.match(raw_name, disallow=disallow)
+
+
 def pick_best_fixture(
     fixtures: pd.DataFrame,
     home_team: str,
@@ -988,18 +1021,12 @@ def pick_best_fixture(
     return best
 
 
-def build_predictions(
+def map_betfair_games(
     betfair_games_df: pd.DataFrame,
-    form_df: pd.DataFrame,
     fixtures_df: pd.DataFrame,
     team_matcher: TeamMatcher,
-    calc_wyscout_form_tables: Any,
-    periods: tuple[Any, ...],
-    min_games: int,
-) -> pd.DataFrame:
-    if betfair_games_df.empty:
-        return pd.DataFrame()
-
+    manual_mapping_lookup: dict[str, str] | None = None,
+) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
     mapped_games: list[dict[str, Any]] = []
     model_games: list[dict[str, Any]] = []
 
@@ -1015,8 +1042,17 @@ def build_predictions(
             away_method="missing",
         )
 
-        home_team, home_score, home_method = team_matcher.match(row.get("home_raw"))
-        away_team, away_score, away_method = team_matcher.match(row.get("away_raw"), disallow={home_team} if home_team else None)
+        home_team, home_score, home_method = apply_manual_or_match(
+            row.get("home_raw"),
+            team_matcher=team_matcher,
+            manual_mapping_lookup=manual_mapping_lookup,
+        )
+        away_team, away_score, away_method = apply_manual_or_match(
+            row.get("away_raw"),
+            team_matcher=team_matcher,
+            manual_mapping_lookup=manual_mapping_lookup,
+            disallow={home_team} if home_team else None,
+        )
 
         mapping.home_sofa = home_team
         mapping.away_sofa = away_team
@@ -1058,6 +1094,29 @@ def build_predictions(
                 "area_name": fixture.get("area_name") if fixture else None,
             }
         )
+
+    return mapped_games, model_games
+
+
+def build_predictions(
+    betfair_games_df: pd.DataFrame,
+    form_df: pd.DataFrame,
+    fixtures_df: pd.DataFrame,
+    team_matcher: TeamMatcher,
+    calc_wyscout_form_tables: Any,
+    periods: tuple[Any, ...],
+    min_games: int,
+    manual_mapping_lookup: dict[str, str] | None = None,
+) -> pd.DataFrame:
+    if betfair_games_df.empty:
+        return pd.DataFrame()
+
+    mapped_games, model_games = map_betfair_games(
+        betfair_games_df=betfair_games_df,
+        fixtures_df=fixtures_df,
+        team_matcher=team_matcher,
+        manual_mapping_lookup=manual_mapping_lookup,
+    )
 
     if not model_games:
         return pd.DataFrame(mapped_games)
@@ -1147,6 +1206,115 @@ def clamp_int(value: Any, default: int, min_value: int, max_value: int) -> int:
     except Exception:
         out = int(default)
     return max(min_value, min(max_value, out))
+
+
+def format_float_value(value: Any, decimals: int = 2) -> str:
+    try:
+        if value is None or pd.isna(value):
+            return "-"
+        return f"{float(value):.{int(decimals)}f}"
+    except Exception:
+        return "-"
+
+
+def normalize_period_key(value: Any) -> str | None:
+    if value is None:
+        return None
+    text = str(value).strip().lower()
+    if not text:
+        return None
+    if text == "season":
+        return "season"
+    try:
+        as_int = int(float(text))
+    except Exception:
+        return None
+    if as_int == 5:
+        return "last5"
+    if as_int == 3:
+        return "last3"
+    return None
+
+
+def extract_period_metrics(prediction_df: pd.DataFrame) -> pd.DataFrame:
+    out_cols = [
+        "market_id",
+        "season_xgd",
+        "last5_xgd",
+        "last3_xgd",
+        "season_min_xg",
+        "last5_min_xg",
+        "last3_min_xg",
+        "season_max_xg",
+        "last5_max_xg",
+        "last3_max_xg",
+    ]
+    if prediction_df.empty or "market_id" not in prediction_df.columns:
+        return pd.DataFrame(columns=out_cols)
+
+    base = prediction_df.copy()
+    base = base.dropna(subset=["market_id"]).drop_duplicates(subset=["market_id"], keep="first")
+    out = base[["market_id"]].copy()
+
+    metric_specs = [
+        ("xgd", "xgd"),
+        ("total_min_xg", "min_xg"),
+        ("total_max_xg", "max_xg"),
+    ]
+
+    if "period" not in prediction_df.columns:
+        for source_col, target_suffix in metric_specs:
+            season_col = f"season_{target_suffix}"
+            last5_col = f"last5_{target_suffix}"
+            last3_col = f"last3_{target_suffix}"
+            if source_col in base.columns:
+                out[season_col] = base[source_col]
+            else:
+                out[season_col] = None
+            out[last5_col] = None
+            out[last3_col] = None
+        return out[out_cols]
+
+    with_period = prediction_df.copy()
+    with_period["_period_key"] = with_period["period"].map(normalize_period_key)
+    with_period = with_period[with_period["_period_key"].notna()].copy()
+
+    for source_col, target_suffix in metric_specs:
+        season_col = f"season_{target_suffix}"
+        last5_col = f"last5_{target_suffix}"
+        last3_col = f"last3_{target_suffix}"
+        if source_col not in with_period.columns:
+            out[season_col] = None
+            out[last5_col] = None
+            out[last3_col] = None
+            continue
+
+        pivot = with_period.pivot_table(
+            index="market_id",
+            columns="_period_key",
+            values=source_col,
+            aggfunc="first",
+        )
+        out = out.merge(
+            pivot.rename(
+                columns={
+                    "season": season_col,
+                    "last5": last5_col,
+                    "last3": last3_col,
+                }
+            ),
+            left_on="market_id",
+            right_index=True,
+            how="left",
+        )
+        if season_col not in out.columns:
+            out[season_col] = None
+        if last5_col not in out.columns:
+            out[last5_col] = None
+        if last3_col not in out.columns:
+            out[last3_col] = None
+
+    return out[out_cols]
 
 
 def build_recent_form_rows(source_df: Any, recent_n: int) -> list[dict[str, Any]]:
@@ -1265,9 +1433,224 @@ class AppState:
 
         self.form_df, self.fixtures_df, teams = load_sofascore_inputs(args.db_path)
         self.team_matcher = TeamMatcher(teams)
+        self.manual_mappings_path = DEFAULT_MANUAL_TEAM_MAPPINGS
+        self.manual_team_mappings = self._load_manual_team_mappings()
+        self.manual_mapping_lookup = self._build_manual_mapping_lookup(self.manual_team_mappings)
 
         self.games_df = pd.DataFrame()
         self.last_refresh: dt.datetime | None = None
+
+    def _load_manual_team_mappings(self) -> dict[str, str]:
+        path = self.manual_mappings_path
+        if not path.exists():
+            return {}
+        try:
+            raw_data = json.loads(path.read_text(encoding="utf-8"))
+        except Exception:
+            return {}
+
+        if isinstance(raw_data, dict):
+            items = raw_data.items()
+        elif isinstance(raw_data, list):
+            pairs: list[tuple[str, str]] = []
+            for row in raw_data:
+                if not isinstance(row, dict):
+                    continue
+                raw_name = str(row.get("raw_name", "")).strip()
+                sofa_name = str(row.get("sofa_name", "")).strip()
+                if raw_name and sofa_name:
+                    pairs.append((raw_name, sofa_name))
+            items = pairs
+        else:
+            return {}
+
+        out: dict[str, str] = {}
+        for raw_name, sofa_name in items:
+            raw_team = str(raw_name).strip()
+            sofa_team = str(sofa_name).strip()
+            if not raw_team or not sofa_team:
+                continue
+            if sofa_team not in self.team_matcher.team_set:
+                continue
+            out[raw_team] = sofa_team
+        return out
+
+    @staticmethod
+    def _build_manual_mapping_lookup(mappings: dict[str, str]) -> dict[str, str]:
+        out: dict[str, str] = {}
+        for raw_name, sofa_name in mappings.items():
+            norm = normalize_team_name(raw_name)
+            if norm:
+                out[norm] = sofa_name
+        return out
+
+    def _save_manual_team_mappings(self) -> None:
+        path = self.manual_mappings_path
+        ordered = {key: self.manual_team_mappings[key] for key in sorted(self.manual_team_mappings, key=str.lower)}
+        body = json.dumps(ordered, indent=2, ensure_ascii=True)
+        tmp_path = path.with_suffix(path.suffix + ".tmp")
+        tmp_path.write_text(body + "\n", encoding="utf-8")
+        tmp_path.replace(path)
+
+    def get_manual_mapping_lookup_snapshot(self) -> dict[str, str]:
+        with self.lock:
+            return dict(self.manual_mapping_lookup)
+
+    def _recompute_cached_model_metrics(self) -> None:
+        with self.lock:
+            games_df = self.games_df.copy()
+            manual_mapping_lookup = dict(self.manual_mapping_lookup)
+        if games_df.empty:
+            return
+        try:
+            prediction_df = build_predictions(
+                betfair_games_df=games_df,
+                form_df=self.form_df,
+                fixtures_df=self.fixtures_df,
+                team_matcher=self.team_matcher,
+                calc_wyscout_form_tables=self.xgd_module.calc_wyscout_form_tables,
+                periods=self.periods,
+                min_games=self.min_games,
+                manual_mapping_lookup=manual_mapping_lookup,
+            )
+        except Exception:
+            prediction_df = pd.DataFrame()
+
+        metrics_df = extract_period_metrics(prediction_df)
+        for col in PERIOD_METRIC_COLUMNS:
+            if col in games_df.columns:
+                games_df = games_df.drop(columns=[col])
+        if not metrics_df.empty:
+            games_df = games_df.merge(metrics_df, on="market_id", how="left")
+        for col in PERIOD_METRIC_COLUMNS:
+            if col not in games_df.columns:
+                games_df[col] = None
+
+        with self.lock:
+            self.games_df = games_df
+
+    def list_manual_team_mappings(self) -> dict[str, Any]:
+        self.refresh_games(force=False)
+        with self.lock:
+            mappings = dict(self.manual_team_mappings)
+            games_df = self.games_df.copy()
+            manual_mapping_lookup = dict(self.manual_mapping_lookup)
+            sofa_teams = list(self.team_matcher.teams)
+
+        mapped_raw_names: set[str] = set()
+        unmatched_rows: list[dict[str, Any]] = []
+        seen_unmatched: set[tuple[str, str, str]] = set()
+        if not games_df.empty:
+            try:
+                mapped_rows, _ = map_betfair_games(
+                    betfair_games_df=games_df,
+                    fixtures_df=self.fixtures_df,
+                    team_matcher=self.team_matcher,
+                    manual_mapping_lookup=manual_mapping_lookup,
+                )
+            except Exception:
+                mapped_rows = []
+
+            if mapped_rows:
+                prediction_df = pd.DataFrame(mapped_rows)
+                cols = [
+                    "market_id",
+                    "event_name",
+                    "competition",
+                    "kickoff_raw",
+                    "home_raw",
+                    "away_raw",
+                    "home_sofa",
+                    "away_sofa",
+                    "home_match_method",
+                    "away_match_method",
+                ]
+                cols = [col for col in cols if col in prediction_df.columns]
+                row_df = prediction_df[cols].drop_duplicates(subset=["market_id"], keep="first")
+                for row in row_df.to_dict(orient="records"):
+                    for side in ("home", "away"):
+                        raw_name = str(row.get(f"{side}_raw", "")).strip()
+                        sofa_name = str(row.get(f"{side}_sofa", "")).strip()
+                        method = str(row.get(f"{side}_match_method", "")).strip().lower()
+                        if not raw_name:
+                            continue
+                        if sofa_name and method not in {"missing", "unmatched"}:
+                            mapped_raw_names.add(raw_name)
+                            continue
+                        if raw_name in mappings:
+                            continue
+                        unique_key = (
+                            str(row.get("market_id", "")).strip(),
+                            side,
+                            raw_name,
+                        )
+                        if unique_key in seen_unmatched:
+                            continue
+                        seen_unmatched.add(unique_key)
+                        unmatched_rows.append(
+                            {
+                                "raw_name": raw_name,
+                                "side": "Home" if side == "home" else "Away",
+                                "event_name": str(row.get("event_name", "")).strip(),
+                                "competition": str(row.get("competition", "")).strip(),
+                                "kickoff_raw": str(row.get("kickoff_raw", "")).strip(),
+                            }
+                        )
+
+        mapping_rows = [
+            {"raw_name": raw_name, "sofa_name": sofa_name}
+            for raw_name, sofa_name in sorted(mappings.items(), key=lambda kv: kv[0].lower())
+        ]
+        unmatched_rows = [
+            row
+            for row in unmatched_rows
+            if str(row.get("raw_name", "")).strip() not in mapped_raw_names
+        ]
+        unmatched_rows = sorted(
+            unmatched_rows,
+            key=lambda row: (
+                str(row.get("kickoff_raw", "")).strip(),
+                str(row.get("event_name", "")).strip().lower(),
+                str(row.get("side", "")).strip(),
+                str(row.get("raw_name", "")).strip().lower(),
+            ),
+        )
+        return {
+            "mappings": mapping_rows,
+            "unmatched": unmatched_rows,
+            "sofa_teams": sofa_teams,
+        }
+
+    def upsert_manual_team_mapping(self, raw_name: str, sofa_name: str) -> None:
+        raw_team = str(raw_name).strip()
+        sofa_team = str(sofa_name).strip()
+        if not raw_team:
+            raise ValueError("raw_name is required")
+        if not sofa_team:
+            raise ValueError("sofa_name is required")
+        if sofa_team not in self.team_matcher.team_set:
+            raise ValueError(f"Unknown SofaScore team: {sofa_team}")
+
+        with self.lock:
+            self.manual_team_mappings[raw_team] = sofa_team
+            self.manual_mapping_lookup = self._build_manual_mapping_lookup(self.manual_team_mappings)
+            self._save_manual_team_mappings()
+        self._recompute_cached_model_metrics()
+
+    def delete_manual_team_mapping(self, raw_name: str) -> bool:
+        raw_team = str(raw_name).strip()
+        if not raw_team:
+            raise ValueError("raw_name is required")
+        deleted = False
+        with self.lock:
+            if raw_team in self.manual_team_mappings:
+                self.manual_team_mappings.pop(raw_team, None)
+                deleted = True
+            self.manual_mapping_lookup = self._build_manual_mapping_lookup(self.manual_team_mappings)
+            self._save_manual_team_mappings()
+        if deleted:
+            self._recompute_cached_model_metrics()
+        return deleted
 
     @staticmethod
     def _load_module_settings(module_path: Path) -> dict[str, str | None]:
@@ -1575,6 +1958,29 @@ class AppState:
 
         games_df = pd.DataFrame(rows)
         if not games_df.empty:
+            manual_mapping_lookup = self.get_manual_mapping_lookup_snapshot()
+            try:
+                prediction_df = build_predictions(
+                    betfair_games_df=games_df,
+                    form_df=self.form_df,
+                    fixtures_df=self.fixtures_df,
+                    team_matcher=self.team_matcher,
+                    calc_wyscout_form_tables=self.xgd_module.calc_wyscout_form_tables,
+                    periods=self.periods,
+                    min_games=self.min_games,
+                    manual_mapping_lookup=manual_mapping_lookup,
+                )
+            except Exception:
+                prediction_df = pd.DataFrame()
+
+            period_metrics_df = extract_period_metrics(prediction_df)
+            if not period_metrics_df.empty:
+                games_df = games_df.merge(period_metrics_df, on="market_id", how="left")
+
+            for col in PERIOD_METRIC_COLUMNS:
+                if col not in games_df.columns:
+                    games_df[col] = None
+
             games_df = games_df.sort_values(["kickoff_time", "competition", "event_name"]).reset_index(drop=True)
 
         with self.lock:
@@ -1623,6 +2029,15 @@ class AppState:
                         "goal_mainline": str(row.get("goal_mainline", "-") or "-"),
                         "goal_under_price": str(row.get("goal_under_price", "-") or "-"),
                         "goal_over_price": str(row.get("goal_over_price", "-") or "-"),
+                        "season_xgd": format_float_value(row.get("season_xgd"), decimals=2),
+                        "last5_xgd": format_float_value(row.get("last5_xgd"), decimals=2),
+                        "last3_xgd": format_float_value(row.get("last3_xgd"), decimals=2),
+                        "season_min_xg": format_float_value(row.get("season_min_xg"), decimals=2),
+                        "last5_min_xg": format_float_value(row.get("last5_min_xg"), decimals=2),
+                        "last3_min_xg": format_float_value(row.get("last3_min_xg"), decimals=2),
+                        "season_max_xg": format_float_value(row.get("season_max_xg"), decimals=2),
+                        "last5_max_xg": format_float_value(row.get("last5_max_xg"), decimals=2),
+                        "last3_max_xg": format_float_value(row.get("last3_max_xg"), decimals=2),
                     }
                 )
             days_out.append({"date": day, "date_label": format_day_label(day), "games": games})
@@ -1649,6 +2064,7 @@ class AppState:
             raise KeyError("Market not found")
 
         game_row = game_df.iloc[0].to_dict()
+        manual_mapping_lookup = self.get_manual_mapping_lookup_snapshot()
         prediction_df = build_predictions(
             betfair_games_df=game_df,
             form_df=self.form_df,
@@ -1657,6 +2073,7 @@ class AppState:
             calc_wyscout_form_tables=self.xgd_module.calc_wyscout_form_tables,
             periods=self.periods,
             min_games=self.min_games,
+            manual_mapping_lookup=manual_mapping_lookup,
         )
 
         if prediction_df.empty:
@@ -1836,6 +2253,19 @@ class AppHandler(BaseHTTPRequestHandler):
             venue_recent_n_raw = (query.get("venue_recent_n") or ["5"])[0]
             venue_recent_n = clamp_int(venue_recent_n_raw, default=5, min_value=1, max_value=20)
             return self._serve_game_xgd(market_id, recent_n, venue_recent_n)
+        if path == "/api/manual-mappings":
+            return self._serve_manual_mappings()
+
+        self._json({"error": "Not found"}, status=HTTPStatus.NOT_FOUND)
+
+    def do_POST(self) -> None:  # noqa: N802
+        parsed = urlparse(self.path)
+        path = parsed.path
+
+        if path == "/api/manual-mappings":
+            return self._upsert_manual_mapping()
+        if path == "/api/manual-mappings/delete":
+            return self._delete_manual_mapping()
 
         self._json({"error": "Not found"}, status=HTTPStatus.NOT_FOUND)
 
@@ -1857,6 +2287,53 @@ class AppHandler(BaseHTTPRequestHandler):
             self._json({"error": "Market not found"}, status=HTTPStatus.NOT_FOUND)
         except Exception as exc:
             self._json({"error": str(exc)}, status=HTTPStatus.INTERNAL_SERVER_ERROR)
+
+    def _serve_manual_mappings(self) -> None:
+        try:
+            payload = self.state.list_manual_team_mappings()
+            self._json(payload)
+        except Exception as exc:
+            self._json({"error": str(exc)}, status=HTTPStatus.INTERNAL_SERVER_ERROR)
+
+    def _upsert_manual_mapping(self) -> None:
+        payload = self._read_json_body()
+        raw_name = str(payload.get("raw_name", "")).strip()
+        sofa_name = str(payload.get("sofa_name", "")).strip()
+        try:
+            self.state.upsert_manual_team_mapping(raw_name=raw_name, sofa_name=sofa_name)
+            self._json({"ok": True})
+        except ValueError as exc:
+            self._json({"error": str(exc)}, status=HTTPStatus.BAD_REQUEST)
+        except Exception as exc:
+            self._json({"error": str(exc)}, status=HTTPStatus.INTERNAL_SERVER_ERROR)
+
+    def _delete_manual_mapping(self) -> None:
+        payload = self._read_json_body()
+        raw_name = str(payload.get("raw_name", "")).strip()
+        try:
+            deleted = self.state.delete_manual_team_mapping(raw_name=raw_name)
+            self._json({"ok": True, "deleted": bool(deleted)})
+        except ValueError as exc:
+            self._json({"error": str(exc)}, status=HTTPStatus.BAD_REQUEST)
+        except Exception as exc:
+            self._json({"error": str(exc)}, status=HTTPStatus.INTERNAL_SERVER_ERROR)
+
+    def _read_json_body(self) -> dict[str, Any]:
+        length_raw = self.headers.get("Content-Length", "0")
+        try:
+            length = max(0, int(length_raw))
+        except Exception:
+            length = 0
+        if length <= 0:
+            return {}
+        body = self.rfile.read(length)
+        if not body:
+            return {}
+        try:
+            parsed = json.loads(body.decode("utf-8"))
+        except Exception:
+            return {}
+        return parsed if isinstance(parsed, dict) else {}
 
     def _serve_static(self, relative_path: str, content_type: str) -> None:
         path = WEBAPP_DIR / relative_path
