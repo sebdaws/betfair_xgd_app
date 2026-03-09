@@ -109,7 +109,7 @@ main {
   min-width: 220px;
 }
 
-.league-filter #leagueFilterBtn {
+.league-filter > button {
   width: 100%;
   text-align: left;
 }

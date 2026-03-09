@@ -4,6 +4,9 @@ const refreshBtn = document.getElementById("refreshBtn");
 const leagueFilter = document.getElementById("leagueFilter");
 const leagueFilterBtn = document.getElementById("leagueFilterBtn");
 const leagueFilterMenu = document.getElementById("leagueFilterMenu");
+const tierFilter = document.getElementById("tierFilter");
+const tierFilterBtn = document.getElementById("tierFilterBtn");
+const tierFilterMenu = document.getElementById("tierFilterMenu");
 const sortModeBtn = document.getElementById("sortModeBtn");
 const tableControls = document.querySelector(".table-controls");
 const detailsPanel = document.getElementById("detailsPanel");
@@ -19,10 +22,12 @@ const dayLabel = document.getElementById("dayLabel");
 let gamesById = new Map();
 let rawDays = [];
 let availableLeagues = [];
+let availableTiers = [];
 let allDays = [];
 let currentDayIndex = 0;
 let selectedMarketId = null;
 let selectedLeagues = new Set();
+let selectedTiers = new Set();
 let sortMode = "kickoff";
 let gamesShownCount = 5;
 let recentTeamView = "home";
@@ -214,6 +219,11 @@ function setLeagueFilterOpen(isOpen) {
   leagueFilterBtn.setAttribute("aria-expanded", isOpen ? "true" : "false");
 }
 
+function setTierFilterOpen(isOpen) {
+  tierFilterMenu.classList.toggle("hidden", !isOpen);
+  tierFilterBtn.setAttribute("aria-expanded", isOpen ? "true" : "false");
+}
+
 function updateLeagueFilterButtonLabel() {
   if (!selectedLeagues.size) {
     leagueFilterBtn.textContent = "All Leagues";
@@ -224,6 +234,18 @@ function updateLeagueFilterButtonLabel() {
     return;
   }
   leagueFilterBtn.textContent = `${selectedLeagues.size} leagues`;
+}
+
+function updateTierFilterButtonLabel() {
+  if (!selectedTiers.size) {
+    tierFilterBtn.textContent = "All Tiers";
+    return;
+  }
+  if (selectedTiers.size === 1) {
+    tierFilterBtn.textContent = Array.from(selectedTiers)[0];
+    return;
+  }
+  tierFilterBtn.textContent = `${selectedTiers.size} tiers`;
 }
 
 function updateLeagueFilterMenu(leagues) {
@@ -256,6 +278,36 @@ function updateLeagueFilterMenu(leagues) {
   }
 }
 
+function updateTierFilterMenu(tiers) {
+  tierFilterMenu.innerHTML = "";
+
+  const allRow = document.createElement("label");
+  allRow.className = "league-option";
+  const allInput = document.createElement("input");
+  allInput.type = "checkbox";
+  allInput.value = "__ALL__";
+  allInput.checked = selectedTiers.size === 0;
+  const allText = document.createElement("span");
+  allText.textContent = "All Tiers";
+  allRow.appendChild(allInput);
+  allRow.appendChild(allText);
+  tierFilterMenu.appendChild(allRow);
+
+  for (const tier of tiers) {
+    const row = document.createElement("label");
+    row.className = "league-option";
+    const input = document.createElement("input");
+    input.type = "checkbox";
+    input.value = tier;
+    input.checked = selectedTiers.has(tier);
+    const text = document.createElement("span");
+    text.textContent = tier;
+    row.appendChild(input);
+    row.appendChild(text);
+    tierFilterMenu.appendChild(row);
+  }
+}
+
 function updateLeagueFilterOptions() {
   const previous = new Set(selectedLeagues);
   const leagues = new Set();
@@ -271,18 +323,44 @@ function updateLeagueFilterOptions() {
   updateLeagueFilterButtonLabel();
 }
 
-function applyLeagueFilter() {
+function updateTierFilterOptions(serverTiers = []) {
+  const previous = new Set(selectedTiers);
+  const tiers = new Set();
+
+  if (Array.isArray(serverTiers)) {
+    for (const tier of serverTiers) {
+      const normalized = String(tier || "").trim();
+      if (normalized) tiers.add(normalized);
+    }
+  }
+
+  for (const day of rawDays) {
+    for (const game of day.games || []) {
+      const tier = String(game.tier || "").trim();
+      if (tier) tiers.add(tier);
+    }
+  }
+
+  availableTiers = Array.from(tiers).sort((a, b) => a.localeCompare(b));
+  selectedTiers = new Set(Array.from(previous).filter((tier) => tiers.has(tier)));
+  updateTierFilterMenu(availableTiers);
+  updateTierFilterButtonLabel();
+}
+
+function applyGameFilters() {
   const previousDayIso =
     allDays[currentDayIndex] && allDays[currentDayIndex].date
       ? String(allDays[currentDayIndex].date)
       : null;
   const filteredDays = rawDays.map((day) => ({
     ...day,
-    games: !selectedLeagues.size
-      ? Array.isArray(day.games)
-        ? [...day.games]
-        : []
-      : (day.games || []).filter((game) => selectedLeagues.has(String(game.competition || ""))),
+    games: (day.games || []).filter((game) => {
+      const leagueName = String(game.competition || "");
+      const tierName = String(game.tier || "").trim();
+      const leaguePass = !selectedLeagues.size || selectedLeagues.has(leagueName);
+      const tierPass = !selectedTiers.size || selectedTiers.has(tierName);
+      return leaguePass && tierPass;
+    }),
   }));
 
   if (!filteredDays.length) {
@@ -365,7 +443,8 @@ async function loadGames() {
     if (!res.ok) throw new Error(payload.error || "Failed to load games");
     rawDays = payload.days || [];
     updateLeagueFilterOptions();
-    applyLeagueFilter();
+    updateTierFilterOptions(payload.tiers || []);
+    applyGameFilters();
     renderCurrentDay();
     statusText.textContent = `Loaded ${payload.total_games || 0} games`;
 
@@ -386,7 +465,7 @@ function renderCurrentDay() {
     dayLabel.textContent = "No games";
     prevDayBtn.disabled = true;
     nextDayBtn.disabled = true;
-    calendarView.innerHTML = "<p>No games found for selected leagues.</p>";
+    calendarView.innerHTML = "<p>No games found for selected filters.</p>";
     return;
   }
 
@@ -485,9 +564,9 @@ function renderXgd(payload) {
       <thead>
         <tr>
           <th>Period</th>
+          <th>xGD</th>
           <th>Home xG</th>
           <th>Away xG</th>
-          <th>xGD</th>
           <th>Total xG</th>
           <th>Min</th>
           <th>Max</th>
@@ -499,9 +578,9 @@ function renderXgd(payload) {
             (r) => `
           <tr>
             <td>${escapeHtml(r.period)}</td>
+            <td>${Number(r.xgd || 0).toFixed(2)}</td>
             <td>${Number(r.home_xg || 0).toFixed(2)}</td>
             <td>${Number(r.away_xg || 0).toFixed(2)}</td>
-            <td>${Number(r.xgd || 0).toFixed(2)}</td>
             <td>${Number(r.total_xg || 0).toFixed(2)}</td>
             <td>${r.total_min_xg == null ? "-" : Number(r.total_min_xg).toFixed(2)}</td>
             <td>${r.total_max_xg == null ? "-" : Number(r.total_max_xg).toFixed(2)}</td>
@@ -639,6 +718,7 @@ leagueFilterBtn.addEventListener("click", (event) => {
   event.stopPropagation();
   const willOpen = leagueFilterMenu.classList.contains("hidden");
   setLeagueFilterOpen(willOpen);
+  if (willOpen) setTierFilterOpen(false);
 });
 leagueFilterMenu.addEventListener("change", (event) => {
   const target = event.target;
@@ -656,16 +736,47 @@ leagueFilterMenu.addEventListener("change", (event) => {
 
   updateLeagueFilterMenu(availableLeagues);
   updateLeagueFilterButtonLabel();
-  applyLeagueFilter();
+  applyGameFilters();
+  renderCurrentDay();
+});
+tierFilterBtn.addEventListener("click", (event) => {
+  event.stopPropagation();
+  const willOpen = tierFilterMenu.classList.contains("hidden");
+  setTierFilterOpen(willOpen);
+  if (willOpen) setLeagueFilterOpen(false);
+});
+tierFilterMenu.addEventListener("change", (event) => {
+  const target = event.target;
+  if (!(target instanceof HTMLInputElement) || target.type !== "checkbox") return;
+  const value = String(target.value || "");
+  if (!value) return;
+
+  if (value === "__ALL__") {
+    selectedTiers.clear();
+  } else if (target.checked) {
+    selectedTiers.add(value);
+  } else {
+    selectedTiers.delete(value);
+  }
+
+  updateTierFilterMenu(availableTiers);
+  updateTierFilterButtonLabel();
+  applyGameFilters();
   renderCurrentDay();
 });
 document.addEventListener("click", (event) => {
   if (!leagueFilter.contains(event.target)) {
     setLeagueFilterOpen(false);
   }
+  if (!tierFilter.contains(event.target)) {
+    setTierFilterOpen(false);
+  }
 });
 document.addEventListener("keydown", (event) => {
-  if (event.key === "Escape") setLeagueFilterOpen(false);
+  if (event.key === "Escape") {
+    setLeagueFilterOpen(false);
+    setTierFilterOpen(false);
+  }
 });
 sortModeBtn.addEventListener("click", () => {
   sortMode = sortMode === "kickoff" ? "league" : "kickoff";
@@ -689,6 +800,7 @@ recalcBtn.addEventListener("click", () => {
 
 updateSortButtonLabel();
 updateLeagueFilterButtonLabel();
+updateTierFilterButtonLabel();
 loadGames();
 setInterval(() => {
   loadGames();

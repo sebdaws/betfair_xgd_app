@@ -34,6 +34,7 @@ if (not DEFAULT_SOFASCORE_DB.exists()) and _fallback_db.exists():
 
 DEFAULT_SELECTED_LEAGUES = APP_DIR / "selected_leagues.txt"
 DEFAULT_ALL_LEAGUES = APP_DIR / "all_leagues.txt"
+DEFAULT_LEAGUE_TIER = "Unassigned"
 
 FINISHED_STATUSES = {
     "ended",
@@ -70,29 +71,6 @@ STOP_WORDS = {
     "de",
     "the",
 }
-
-TOP5_LEAGUE_TARGETS = [
-    {
-        "label": "Premier League",
-        "aliases": ["english premier league", "premier league"],
-    },
-    {
-        "label": "La Liga",
-        "aliases": ["spanish la liga", "la liga"],
-    },
-    {
-        "label": "Serie A",
-        "aliases": ["italian serie a", "serie a"],
-    },
-    {
-        "label": "Bundesliga",
-        "aliases": ["german bundesliga", "bundesliga"],
-    },
-    {
-        "label": "Ligue 1",
-        "aliases": ["french ligue 1", "ligue 1"],
-    },
-]
 
 ASIAN_GOAL_MARKET_TYPES = [
     "ALT_TOTAL_GOALS",
@@ -157,6 +135,46 @@ def load_module_from_path(path: Path, module_name: str) -> ModuleType:
 
 def parse_list_csv(value: str) -> list[str]:
     return [item.strip() for item in str(value).split(",") if item.strip()]
+
+
+def ensure_selected_leagues_file(path: Path) -> None:
+    if path.exists():
+        return
+    with path.open("w", encoding="utf-8") as f:
+        f.write("# Format: competition_id|competition_name|tier\n")
+        f.write("# Tier is optional, but recommended for UI filtering.\n")
+        f.write("# Example:\n")
+        f.write("# 10932509|English Premier League|Tier 1\n")
+
+
+def load_selected_league_entries(path: Path) -> tuple[list[dict[str, str]], list[str]]:
+    if not path.exists():
+        return [], []
+
+    selected: list[dict[str, str]] = []
+    invalid_lines: list[str] = []
+    with path.open("r", encoding="utf-8") as f:
+        for raw_line in f:
+            value = raw_line.strip()
+            if not value or value.startswith("#"):
+                continue
+            parts = [part.strip() for part in value.split("|")]
+            if len(parts) not in (2, 3):
+                invalid_lines.append(value)
+                continue
+            competition_id, competition_name = parts[0], parts[1]
+            tier = parts[2] if len(parts) == 3 else DEFAULT_LEAGUE_TIER
+            if not competition_id or not competition_name:
+                invalid_lines.append(value)
+                continue
+            selected.append(
+                {
+                    "competition_id": competition_id,
+                    "competition_name": competition_name,
+                    "tier": tier or DEFAULT_LEAGUE_TIER,
+                }
+            )
+    return selected, invalid_lines
 
 
 def parse_periods(raw: str) -> tuple[Any, ...]:
@@ -610,70 +628,6 @@ def normalize_team_name(value: str | None) -> str:
 
 def token_set(value: str) -> set[str]:
     return {part for part in value.split() if part}
-
-
-def normalize_competition_name(value: str | None) -> str:
-    if value is None:
-        return ""
-    text = unicodedata.normalize("NFKD", str(value))
-    text = "".join(ch for ch in text if not unicodedata.combining(ch))
-    text = re.sub(r"[^a-zA-Z0-9]+", " ", text.lower()).strip()
-    return " ".join(text.split())
-
-
-def select_top5_competition_ids(competitions: list[Any]) -> tuple[list[str], list[str]]:
-    comp_rows: list[dict[str, str]] = []
-    for comp in competitions:
-        comp_id = str(getattr(comp, "comp_id", "")).strip()
-        name = str(getattr(comp, "name", "")).strip()
-        if not comp_id or not name:
-            continue
-        comp_rows.append(
-            {
-                "competition_id": comp_id,
-                "competition_name": name,
-                "competition_name_norm": normalize_competition_name(name),
-            }
-        )
-
-    selected_ids: list[str] = []
-    missing_targets: list[str] = []
-    used_ids: set[str] = set()
-
-    for target in TOP5_LEAGUE_TARGETS:
-        aliases_norm = [normalize_competition_name(alias) for alias in target["aliases"]]
-        best: dict[str, str] | None = None
-        best_score = -1
-        best_name_len = 10_000
-
-        for row in comp_rows:
-            if row["competition_id"] in used_ids:
-                continue
-            comp_norm = row["competition_name_norm"]
-            score = -1
-            if comp_norm in aliases_norm:
-                score = 3
-            elif any(alias in comp_norm for alias in aliases_norm):
-                score = 2
-            elif any(set(alias.split()).issubset(set(comp_norm.split())) for alias in aliases_norm):
-                score = 1
-
-            if score < 0:
-                continue
-            name_len = len(row["competition_name"])
-            if score > best_score or (score == best_score and name_len < best_name_len):
-                best = row
-                best_score = score
-                best_name_len = name_len
-
-        if best is None:
-            missing_targets.append(target["label"])
-            continue
-
-        used_ids.add(best["competition_id"])
-        selected_ids.append(best["competition_id"])
-
-    return selected_ids, missing_targets
 
 
 def parse_season_date(value: Any, is_end: bool) -> pd.Timestamp | pd.NaT:
@@ -1175,6 +1129,18 @@ def to_native(value: Any) -> Any:
     return str(value)
 
 
+def simplify_model_warning(messages: list[str]) -> str | None:
+    cleaned = [str(msg).strip() for msg in messages if str(msg).strip()]
+    if not cleaned:
+        return None
+    lowered = [msg.lower() for msg in cleaned]
+    if any("no common active season found" in msg for msg in lowered):
+        return "Season warning: no common active season found. xGD may be less reliable."
+    if any("season boundaries unavailable" in msg for msg in lowered):
+        return "Season warning: season boundaries unavailable. xGD may be less reliable."
+    return "Model warning for this fixture. xGD may be less reliable."
+
+
 def clamp_int(value: Any, default: int, min_value: int, max_value: int) -> int:
     try:
         out = int(value)
@@ -1438,15 +1404,56 @@ class AppState:
                 competitions = client.list_competitions()
             else:
                 raise
-        competition_ids, missing = select_top5_competition_ids(competitions)
-        if missing:
-            raise RuntimeError("Missing top-5 leagues in Betfair API: " + ", ".join(missing))
-        if not competition_ids:
-            raise RuntimeError("Could not resolve top-5 competition IDs from Betfair API.")
+        self.betfair_module.write_all_leagues_file(str(DEFAULT_ALL_LEAGUES), competitions)
+        ensure_selected_leagues_file(DEFAULT_SELECTED_LEAGUES)
+        selected_entries, invalid_lines = load_selected_league_entries(DEFAULT_SELECTED_LEAGUES)
+        if invalid_lines:
+            print(
+                "Warning: invalid lines in selected leagues file "
+                "(expected competition_id|competition_name|tier): "
+                + ", ".join(invalid_lines),
+                file=sys.stderr,
+            )
+        if not selected_entries:
+            raise RuntimeError(
+                f"No leagues selected in {DEFAULT_SELECTED_LEAGUES}. "
+                "Add competition_id|competition_name|tier lines and refresh."
+            )
 
-        catalogues: list[dict[str, Any]] = []
-        for comp_id in competition_ids:
-            catalogues.extend(client.list_handicap_markets([comp_id]) or [])
+        competition_names_by_id: dict[str, str] = {}
+        for comp in competitions:
+            comp_id = str(getattr(comp, "comp_id", "")).strip()
+            comp_name = str(getattr(comp, "name", "")).strip()
+            if comp_id:
+                competition_names_by_id[comp_id] = comp_name
+
+        competition_ids: list[str] = []
+        tier_by_competition_id: dict[str, str] = {}
+        not_found: list[str] = []
+        seen_competition_ids: set[str] = set()
+        for selected in selected_entries:
+            competition_id = selected["competition_id"]
+            if competition_id not in competition_names_by_id:
+                not_found.append(f"{competition_id}|{selected['competition_name']}")
+                continue
+            if competition_id not in seen_competition_ids:
+                seen_competition_ids.add(competition_id)
+                competition_ids.append(competition_id)
+            tier_by_competition_id[competition_id] = selected.get("tier") or DEFAULT_LEAGUE_TIER
+
+        if not_found:
+            print(
+                f"Warning: {len(not_found)} selected league entries were not found in Betfair: "
+                + ", ".join(not_found),
+                file=sys.stderr,
+            )
+        if not competition_ids:
+            raise RuntimeError(
+                f"No valid selected leagues matched Betfair competitions. "
+                f"Check {DEFAULT_SELECTED_LEAGUES} and {DEFAULT_ALL_LEAGUES}."
+            )
+
+        catalogues = client.list_handicap_markets(competition_ids) or []
 
         seen: set[str] = set()
         deduped: list[dict[str, Any]] = []
@@ -1549,6 +1556,9 @@ class AppState:
                     "market_id": market_id,
                     "event_name": market["event_name"],
                     "competition": str(cat.get("competition", {}).get("name", "")).strip(),
+                    "tier": tier_by_competition_id.get(
+                        str(cat.get("competition", {}).get("id", "")).strip(), DEFAULT_LEAGUE_TIER
+                    ),
                     "market_name": str(cat.get("marketName", "")).strip(),
                     "kickoff_time": market["kickoff_time"],
                     "kickoff_raw": market["kickoff_raw"],
@@ -1578,7 +1588,17 @@ class AppState:
             last_refresh = self.last_refresh
 
         if games_df.empty:
-            return {"days": [], "total_games": 0, "last_refresh_utc": last_refresh.isoformat() if last_refresh else None}
+            return {
+                "days": [],
+                "tiers": [],
+                "total_games": 0,
+                "last_refresh_utc": last_refresh.isoformat() if last_refresh else None,
+            }
+
+        if "tier" not in games_df.columns:
+            games_df["tier"] = DEFAULT_LEAGUE_TIER
+        games_df["tier"] = games_df["tier"].fillna(DEFAULT_LEAGUE_TIER).astype(str)
+        available_tiers = sorted({tier.strip() for tier in games_df["tier"].tolist() if tier.strip()})
 
         games_df["day"] = games_df["kickoff_time"].dt.strftime("%Y-%m-%d")
         days_out: list[dict[str, Any]] = []
@@ -1593,6 +1613,7 @@ class AppState:
                         "market_id": str(row.get("market_id", "")),
                         "event_name": str(row.get("event_name", "")),
                         "competition": str(row.get("competition", "")),
+                        "tier": str(row.get("tier", DEFAULT_LEAGUE_TIER) or DEFAULT_LEAGUE_TIER),
                         "market_name": str(row.get("market_name", "")),
                         "kickoff_raw": str(row.get("kickoff_raw", "")),
                         "kickoff_utc": kickoff_utc,
@@ -1608,6 +1629,7 @@ class AppState:
 
         return {
             "days": days_out,
+            "tiers": available_tiers,
             "total_games": int(len(games_df)),
             "last_refresh_utc": last_refresh.isoformat() if last_refresh else None,
         }
@@ -1686,6 +1708,11 @@ class AppState:
         period_rows: list[dict[str, Any]] = []
         for row in prediction_df[period_cols].to_dict(orient="records"):
             period_rows.append({k: to_native(v) for k, v in row.items()})
+        model_warning_values: list[str] = []
+        if "model_warning" in prediction_df.columns:
+            warning_series = prediction_df["model_warning"].dropna().astype(str).map(str.strip)
+            model_warning_values = [msg for msg in warning_series.tolist() if msg]
+        warning_message = simplify_model_warning(model_warning_values)
 
         mapping_cols = [
             "home_raw",
@@ -1782,7 +1809,7 @@ class AppState:
             "venue_recent_n": venue_recent_n,
             "home_team_venue_rows": home_team_venue_rows,
             "away_team_venue_rows": away_team_venue_rows,
-            "warning": None,
+            "warning": warning_message,
         }
 
 
