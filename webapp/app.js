@@ -47,9 +47,14 @@ let sortMode = "kickoff";
 let gamesShownCount = 0;
 let gamesShownAuto = true;
 let rollingWindowCount = 3;
+let showTrendCharts = false;
 let recentTeamView = "home";
+let statsGamesShownCount = 0;
+let statsGamesShownAuto = true;
+let statsTeamView = "home";
 let lastXgdPayload = null;
 let activeXgdViewId = null;
+let detailsMainTab = "xgd";
 let activeTab = "games";
 let mappingSubTab = "teams";
 let lastManualMappingPayload = null;
@@ -886,6 +891,166 @@ function buildRecentAveragesTableHtml(rows, sampleSize, relevantTeamName = "") {
   `;
 }
 
+function averageMetric(rows, metricKey) {
+  const safeRows = Array.isArray(rows) ? rows : [];
+  let total = 0;
+  let count = 0;
+  for (const row of safeRows) {
+    const value = toMetricNumber(row?.[metricKey]);
+    if (value == null) continue;
+    total += value;
+    count += 1;
+  }
+  if (!count) return null;
+  return total / count;
+}
+
+function limitStatsRows(rows, sampleSize) {
+  const safeRows = Array.isArray(rows) ? rows : [];
+  const maxRows = safeRows.length;
+  if (sampleSize == null || !Number.isFinite(sampleSize)) return safeRows;
+  const safeSample = Math.max(1, Math.min(maxRows, clampRecentMatchesCount(sampleSize)));
+  return safeRows.slice(0, safeSample);
+}
+
+function buildCardsCornersAveragesTableHtml(homeRows, awayRows, homeLabel, awayLabel, sampleSize = null) {
+  const sampleLabel = sampleSize == null ? "All Previous Games" : `Last ${clampRecentMatchesCount(sampleSize)} Games`;
+  const entries = [
+    { label: homeLabel || "Home team", rows: limitStatsRows(homeRows || [], sampleSize) },
+    { label: awayLabel || "Away team", rows: limitStatsRows(awayRows || [], sampleSize) },
+  ];
+  return `
+    <section class="recent-team-block">
+      <h4>Average Corners/Cards (${escapeHtml(sampleLabel)})</h4>
+      <div class="recent-table-wrap">
+        <table class="lines-table recent-lines-table">
+          <thead>
+            <tr>
+              <th>Team</th>
+              <th>Corners For</th>
+              <th>Corners Against</th>
+              <th>Cards For</th>
+              <th>Cards Against</th>
+            </tr>
+          </thead>
+          <tbody>
+            ${entries
+              .map(
+                (entry) => `
+              <tr>
+                <td><strong>${escapeHtml(entry.label)}</strong></td>
+                <td>${formatMetricValue(averageMetric(entry.rows, "corners_for"), 2)}</td>
+                <td>${formatMetricValue(averageMetric(entry.rows, "corners_against"), 2)}</td>
+                <td>${formatMetricValue(averageMetric(entry.rows, "cards_for"), 2)}</td>
+                <td>${formatMetricValue(averageMetric(entry.rows, "cards_against"), 2)}</td>
+              </tr>
+            `
+              )
+              .join("")}
+          </tbody>
+        </table>
+      </div>
+    </section>
+  `;
+}
+
+function buildCardsCornersVenueTableHtml(homeVenueRows, awayVenueRows, homeLabel, awayLabel, sampleSize = null) {
+  const sampleLabel = sampleSize == null ? "All Previous Games" : `Last ${clampRecentMatchesCount(sampleSize)} Games`;
+  const entries = [
+    { label: homeLabel || "Home team", venue: "Home", rows: limitStatsRows(homeVenueRows, sampleSize) },
+    { label: awayLabel || "Away team", venue: "Away", rows: limitStatsRows(awayVenueRows, sampleSize) },
+  ];
+  return `
+    <section class="recent-team-block">
+      <h4>Average Corners/Cards At Fixture Venues (${escapeHtml(sampleLabel)})</h4>
+      <div class="recent-table-wrap">
+        <table class="lines-table recent-lines-table">
+          <thead>
+            <tr>
+              <th>Team</th>
+              <th>Venue</th>
+              <th>Corners For</th>
+              <th>Corners Against</th>
+              <th>Cards For</th>
+              <th>Cards Against</th>
+            </tr>
+          </thead>
+          <tbody>
+            ${entries
+              .map(
+                (entry) => `
+              <tr>
+                <td><strong>${escapeHtml(entry.label)}</strong></td>
+                <td>${escapeHtml(entry.venue)}</td>
+                <td>${formatMetricValue(averageMetric(entry.rows, "corners_for"), 2)}</td>
+                <td>${formatMetricValue(averageMetric(entry.rows, "corners_against"), 2)}</td>
+                <td>${formatMetricValue(averageMetric(entry.rows, "cards_for"), 2)}</td>
+                <td>${formatMetricValue(averageMetric(entry.rows, "cards_against"), 2)}</td>
+              </tr>
+            `
+              )
+              .join("")}
+          </tbody>
+        </table>
+      </div>
+    </section>
+  `;
+}
+
+function buildCardsCornersMatchesTableHtml(teamLabel, rows, sampleSize = null) {
+  const safeRows = Array.isArray(rows) ? [...rows] : [];
+  safeRows.sort((a, b) => String(b?.date_time || "").localeCompare(String(a?.date_time || "")));
+  const shownRows = limitStatsRows(safeRows, sampleSize);
+  const titleSuffix = sampleSize == null ? "" : ` (Last ${clampRecentMatchesCount(sampleSize)})`;
+  if (!shownRows.length) {
+    return `
+      <section class="recent-team-block">
+        <h4>${escapeHtml(teamLabel || "Team")} - Previous Games${escapeHtml(titleSuffix)}</h4>
+        <p class="recent-empty">No previous games available.</p>
+      </section>
+    `;
+  }
+  return `
+    <section class="recent-team-block">
+      <h4>${escapeHtml(teamLabel || "Team")} - Previous Games${escapeHtml(titleSuffix)}</h4>
+      <div class="recent-table-wrap">
+        <table class="lines-table recent-lines-table">
+          <thead>
+            <tr>
+              <th>Date</th>
+              <th>Competition</th>
+              <th>Venue</th>
+              <th>Opponent</th>
+              <th>Corners For</th>
+              <th>Corners Against</th>
+              <th>Cards For</th>
+              <th>Cards Against</th>
+            </tr>
+          </thead>
+          <tbody>
+            ${shownRows
+              .map(
+                (row) => `
+              <tr>
+                <td>${escapeHtml(row?.date_time || "-")}</td>
+                <td>${escapeHtml(row?.competition_name || "-")}</td>
+                <td>${escapeHtml(row?.venue || "-")}</td>
+                <td>${escapeHtml(row?.opponent || "-")}</td>
+                <td>${formatMetricValue(row?.corners_for, 2)}</td>
+                <td>${formatMetricValue(row?.corners_against, 2)}</td>
+                <td>${formatMetricValue(row?.cards_for, 2)}</td>
+                <td>${formatMetricValue(row?.cards_against, 2)}</td>
+              </tr>
+            `
+              )
+              .join("")}
+          </tbody>
+        </table>
+      </div>
+    </section>
+  `;
+}
+
 function buildRecentSwitchHtml(homeLabel, awayLabel) {
   const homeActive = recentTeamView !== "away";
   const awayActive = recentTeamView === "away";
@@ -913,13 +1078,40 @@ function buildRecentSwitchHtml(homeLabel, awayLabel) {
   `;
 }
 
-function buildVenueSplitSectionHtml(teamLabel, homeRows, awayRows, rollingWindowGames = 5) {
+function buildStatsSwitchHtml(homeLabel, awayLabel) {
+  const homeActive = statsTeamView !== "away";
+  const awayActive = statsTeamView === "away";
+  return `
+    <div class="recent-switch" role="tablist" aria-label="Stats previous games team view">
+      <button
+        type="button"
+        class="recent-switch-btn stats-switch-btn${homeActive ? " active" : ""}"
+        data-stats-team-view="home"
+        role="tab"
+        aria-selected="${homeActive ? "true" : "false"}"
+      >
+        Home: ${escapeHtml(homeLabel)}
+      </button>
+      <button
+        type="button"
+        class="recent-switch-btn stats-switch-btn${awayActive ? " active" : ""}"
+        data-stats-team-view="away"
+        role="tab"
+        aria-selected="${awayActive ? "true" : "false"}"
+      >
+        Away: ${escapeHtml(awayLabel)}
+      </button>
+    </div>
+  `;
+}
+
+function buildVenueSplitSectionHtml(teamLabel, homeRows, awayRows, rollingWindowGames = 5, includeChart = true) {
   const mergedRows = [...homeRows, ...awayRows].sort((a, b) =>
     String(b.date_time || "").localeCompare(String(a.date_time || ""))
   );
   return `
     <h3 class="section-title">${escapeHtml(teamLabel)}: Home & Away Matches</h3>
-    ${buildMetricTrendPlotHtml(mergedRows, "Total games trend", teamLabel, rollingWindowGames)}
+    ${includeChart ? buildMetricTrendPlotHtml(mergedRows, "Total games trend", teamLabel, rollingWindowGames) : ""}
     ${buildRecentMatchesTableHtml("All matches", mergedRows, teamLabel)}
   `;
 }
@@ -929,12 +1121,26 @@ function buildGamesShownControlHtml(value, maxValue, rollingMaxValue = maxValue)
   const safeValue = Math.max(1, Math.min(safeMax, clampRecentMatchesCount(value)));
   const safeRollingMax = Number.isFinite(rollingMaxValue) && rollingMaxValue > 0 ? Math.floor(rollingMaxValue) : safeMax;
   const safeRollingValue = Math.max(1, Math.min(safeRollingMax, clampRecentMatchesCount(rollingWindowCount)));
+  const showChartsChecked = showTrendCharts ? " checked" : "";
   return `
     <div class="details-options">
       <label for="gamesShownInputInline">Last X games</label>
       <input id="gamesShownInputInline" type="number" min="1" max="${safeMax}" step="1" value="${safeValue}" />
+      <label class="checkbox-label" for="showTrendChartsToggle">Show charts</label>
+      <input id="showTrendChartsToggle" type="checkbox"${showChartsChecked} />
       <label for="rollingWindowInputInline">Rolling avg games</label>
       <input id="rollingWindowInputInline" type="number" min="1" max="${safeRollingMax}" step="1" value="${safeRollingValue}" />
+    </div>
+  `;
+}
+
+function buildStatsGamesShownControlHtml(value, maxValue) {
+  const safeMax = Number.isFinite(maxValue) && maxValue > 0 ? Math.floor(maxValue) : 1;
+  const safeValue = Math.max(1, Math.min(safeMax, clampRecentMatchesCount(value)));
+  return `
+    <div class="details-options">
+      <label for="statsGamesShownInput">Last X games</label>
+      <input id="statsGamesShownInput" type="number" min="1" max="${safeMax}" step="1" value="${safeValue}" />
     </div>
   `;
 }
@@ -1290,22 +1496,27 @@ function renderCurrentDay() {
 
 function renderXgd(payload) {
   lastXgdPayload = payload;
+  const payloadPeriodRows = Array.isArray(payload.period_rows) ? payload.period_rows : [];
+  const payloadHomeRecentRows = Array.isArray(payload.home_recent_rows) ? payload.home_recent_rows : [];
+  const payloadAwayRecentRows = Array.isArray(payload.away_recent_rows) ? payload.away_recent_rows : [];
+  const payloadHomeVenueRows =
+    payload.home_team_venue_rows && typeof payload.home_team_venue_rows === "object"
+      ? payload.home_team_venue_rows
+      : { home: [], away: [] };
+  const payloadAwayVenueRows =
+    payload.away_team_venue_rows && typeof payload.away_team_venue_rows === "object"
+      ? payload.away_team_venue_rows
+      : { home: [], away: [] };
   const fallbackView = {
     id: "fixture",
     label: "Fixture",
     summary: payload.summary || null,
-    period_rows: Array.isArray(payload.period_rows) ? payload.period_rows : [],
+    period_rows: payloadPeriodRows,
     warning: payload.warning || "",
-    home_recent_rows: Array.isArray(payload.home_recent_rows) ? payload.home_recent_rows : [],
-    away_recent_rows: Array.isArray(payload.away_recent_rows) ? payload.away_recent_rows : [],
-    home_team_venue_rows:
-      payload.home_team_venue_rows && typeof payload.home_team_venue_rows === "object"
-        ? payload.home_team_venue_rows
-        : { home: [], away: [] },
-    away_team_venue_rows:
-      payload.away_team_venue_rows && typeof payload.away_team_venue_rows === "object"
-        ? payload.away_team_venue_rows
-        : { home: [], away: [] },
+    home_recent_rows: payloadHomeRecentRows,
+    away_recent_rows: payloadAwayRecentRows,
+    home_team_venue_rows: payloadHomeVenueRows,
+    away_team_venue_rows: payloadAwayVenueRows,
   };
 
   const providedViews = Array.isArray(payload.xgd_views) ? payload.xgd_views : [];
@@ -1367,7 +1578,8 @@ function renderXgd(payload) {
   `
     : "";
 
-  const periodRows = Array.isArray(activeView.period_rows) ? activeView.period_rows : [];
+  const periodRowsRaw = Array.isArray(activeView.period_rows) ? activeView.period_rows : [];
+  const periodRows = periodRowsRaw.length ? periodRowsRaw : payloadPeriodRows;
   const periodTable = buildXgdPeriodTableHtml(periodRows, "xGD Output");
 
   const mappingRows = Array.isArray(payload.mapping_rows) ? payload.mapping_rows : [];
@@ -1413,16 +1625,23 @@ function renderXgd(payload) {
   `
     : "";
 
-  const homeRecentRows = Array.isArray(activeView.home_recent_rows) ? activeView.home_recent_rows : [];
-  const awayRecentRows = Array.isArray(activeView.away_recent_rows) ? activeView.away_recent_rows : [];
-  const homeTeamVenueRows =
-    activeView.home_team_venue_rows && typeof activeView.home_team_venue_rows === "object"
-      ? activeView.home_team_venue_rows
-      : {};
-  const awayTeamVenueRows =
-    activeView.away_team_venue_rows && typeof activeView.away_team_venue_rows === "object"
-      ? activeView.away_team_venue_rows
-      : {};
+  const normalizeVenueRows = (rowsObj) => ({
+    home: Array.isArray(rowsObj?.home) ? rowsObj.home : [],
+    away: Array.isArray(rowsObj?.away) ? rowsObj.away : [],
+  });
+  const hasAnyVenueRows = (rowsObj) => rowsObj.home.length > 0 || rowsObj.away.length > 0;
+  const homeRecentRowsRaw = Array.isArray(activeView.home_recent_rows) ? activeView.home_recent_rows : [];
+  const awayRecentRowsRaw = Array.isArray(activeView.away_recent_rows) ? activeView.away_recent_rows : [];
+  const homeRecentRows = homeRecentRowsRaw.length ? homeRecentRowsRaw : payloadHomeRecentRows;
+  const awayRecentRows = awayRecentRowsRaw.length ? awayRecentRowsRaw : payloadAwayRecentRows;
+  const homeTeamVenueRowsRaw = normalizeVenueRows(activeView.home_team_venue_rows);
+  const awayTeamVenueRowsRaw = normalizeVenueRows(activeView.away_team_venue_rows);
+  const fallbackHomeTeamVenueRows = normalizeVenueRows(payloadHomeVenueRows);
+  const fallbackAwayTeamVenueRows = normalizeVenueRows(payloadAwayVenueRows);
+  const homeTeamVenueRows = hasAnyVenueRows(homeTeamVenueRowsRaw) ? homeTeamVenueRowsRaw : fallbackHomeTeamVenueRows;
+  const awayTeamVenueRows = hasAnyVenueRows(awayTeamVenueRowsRaw) ? awayTeamVenueRowsRaw : fallbackAwayTeamVenueRows;
+  const homeFixtureVenueRows = Array.isArray(homeTeamVenueRows.home) ? homeTeamVenueRows.home : [];
+  const awayFixtureVenueRows = Array.isArray(awayTeamVenueRows.away) ? awayTeamVenueRows.away : [];
   const mappingHead = mappingRows[0] || {};
   const homeLabel = mappingHead.home_sofa || mappingHead.home_raw || "Home team";
   const awayLabel = mappingHead.away_sofa || mappingHead.away_raw || "Away team";
@@ -1448,12 +1667,57 @@ function renderXgd(payload) {
     ${buildGamesShownControlHtml(gamesShownCount, maxGamesShown, maxRollingWindow)}
     ${buildRecentSwitchHtml(homeLabel, awayLabel)}
     ${buildRecentAveragesTableHtml(activeRows, gamesShownCount, activeLabel)}
-    ${buildMetricTrendPlotHtml(shownRows, "Venue games trend", activeLabel, rollingWindowCount)}
+    ${showTrendCharts ? buildMetricTrendPlotHtml(shownRows, "Venue games trend", activeLabel, rollingWindowCount) : ""}
     ${buildRecentMatchesTableHtml("Fixture-side matches", shownRows, activeLabel)}
-    ${buildVenueSplitSectionHtml(activeLabel, activeHomeVenueRows, activeAwayVenueRows, rollingWindowCount)}
+    ${buildVenueSplitSectionHtml(activeLabel, activeHomeVenueRows, activeAwayVenueRows, rollingWindowCount, showTrendCharts)}
   `;
 
-  linesContainer.innerHTML = `${viewTabsHtml}${warning}${metricHtml}${periodTable}${recentMatchesSection}${mappingTable}`;
+  const xgdTabContent = `${warning}${metricHtml}${periodTable}${recentMatchesSection}${mappingTable}`;
+  const statsIsAway = statsTeamView === "away";
+  const statsActiveLabel = statsIsAway ? awayLabel : homeLabel;
+  const statsActiveRows = statsIsAway ? awayRecentRows : homeRecentRows;
+  const statsMaxGamesShown = Math.max(1, homeRecentRows.length, awayRecentRows.length);
+  if (statsGamesShownAuto) {
+    statsGamesShownCount = statsMaxGamesShown;
+  } else if (!Number.isFinite(statsGamesShownCount) || statsGamesShownCount < 1) {
+    statsGamesShownCount = 1;
+  }
+  statsGamesShownCount = Math.max(1, Math.min(statsMaxGamesShown, clampRecentMatchesCount(statsGamesShownCount)));
+  const cardsTabContent = `
+    <h3 class="section-title">Cards & Corners</h3>
+    ${buildStatsGamesShownControlHtml(statsGamesShownCount, statsMaxGamesShown)}
+    ${buildCardsCornersAveragesTableHtml(homeRecentRows, awayRecentRows, homeLabel, awayLabel, statsGamesShownCount)}
+    ${buildCardsCornersVenueTableHtml(
+      homeFixtureVenueRows,
+      awayFixtureVenueRows,
+      homeLabel,
+      awayLabel,
+      statsGamesShownCount
+    )}
+    ${buildStatsSwitchHtml(homeLabel, awayLabel)}
+    ${buildCardsCornersMatchesTableHtml(statsActiveLabel, statsActiveRows, statsGamesShownCount)}
+  `;
+  if (detailsMainTab !== "cards") {
+    detailsMainTab = "xgd";
+  }
+  const detailsTabNav = `
+    <section class="page-tabs details-main-tabs">
+      <button type="button" class="tab-btn details-main-tab ${detailsMainTab === "xgd" ? "active" : ""}" data-details-tab="xgd">xGD</button>
+      <button type="button" class="tab-btn details-main-tab ${detailsMainTab === "cards" ? "active" : ""}" data-details-tab="cards">Stats</button>
+    </section>
+  `;
+  const activeTabContent = detailsMainTab === "cards" ? cardsTabContent : xgdTabContent;
+  linesContainer.innerHTML = `${detailsTabNav}${viewTabsHtml}${activeTabContent}`;
+
+  const detailsTabButtons = linesContainer.querySelectorAll(".details-main-tab");
+  for (const button of detailsTabButtons) {
+    button.addEventListener("click", () => {
+      const targetTab = button.dataset.detailsTab === "cards" ? "cards" : "xgd";
+      if (targetTab === detailsMainTab) return;
+      detailsMainTab = targetTab;
+      if (lastXgdPayload) renderXgd(lastXgdPayload);
+    });
+  }
 
   const viewButtons = linesContainer.querySelectorAll(".xgd-view-tab");
   for (const button of viewButtons) {
@@ -1465,12 +1729,22 @@ function renderXgd(payload) {
     });
   }
 
-  const switchButtons = linesContainer.querySelectorAll(".recent-switch-btn");
+  const switchButtons = linesContainer.querySelectorAll(".recent-switch-btn[data-team-view]");
   for (const button of switchButtons) {
     button.addEventListener("click", () => {
       const targetView = button.dataset.teamView === "away" ? "away" : "home";
       if (targetView === recentTeamView) return;
       recentTeamView = targetView;
+      if (lastXgdPayload) renderXgd(lastXgdPayload);
+    });
+  }
+
+  const statsSwitchButtons = linesContainer.querySelectorAll(".stats-switch-btn");
+  for (const button of statsSwitchButtons) {
+    button.addEventListener("click", () => {
+      const targetView = button.dataset.statsTeamView === "away" ? "away" : "home";
+      if (targetView === statsTeamView) return;
+      statsTeamView = targetView;
       if (lastXgdPayload) renderXgd(lastXgdPayload);
     });
   }
@@ -1491,6 +1765,23 @@ function renderXgd(payload) {
       if (lastXgdPayload) renderXgd(lastXgdPayload);
     });
   }
+
+  const showTrendChartsToggle = linesContainer.querySelector("#showTrendChartsToggle");
+  if (showTrendChartsToggle) {
+    showTrendChartsToggle.addEventListener("change", () => {
+      showTrendCharts = Boolean(showTrendChartsToggle.checked);
+      if (lastXgdPayload) renderXgd(lastXgdPayload);
+    });
+  }
+
+  const statsGamesShownInput = linesContainer.querySelector("#statsGamesShownInput");
+  if (statsGamesShownInput) {
+    statsGamesShownInput.addEventListener("change", () => {
+      statsGamesShownAuto = false;
+      statsGamesShownCount = clampRecentMatchesCount(statsGamesShownInput.value);
+      if (lastXgdPayload) renderXgd(lastXgdPayload);
+    });
+  }
 }
 
 async function loadGameXgd(marketId) {
@@ -1505,7 +1796,12 @@ async function loadGameXgd(marketId) {
   gamesShownCount = 0;
   gamesShownAuto = true;
   rollingWindowCount = 3;
+  showTrendCharts = false;
+  detailsMainTab = "xgd";
   recentTeamView = "home";
+  statsGamesShownCount = 0;
+  statsGamesShownAuto = true;
+  statsTeamView = "home";
   activeXgdViewId = null;
   lastXgdPayload = null;
   detailsMeta.textContent = `${game.competition} | ${game.kickoff_raw}`;

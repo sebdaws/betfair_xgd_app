@@ -1,14 +1,15 @@
 # Auto-generated from Betfair listCompetitions
 # Format: competition_id|competition_name
 39218|AFC Champions League
-11627247|Albanian Superliga
+12688794|AFC Champions League Two
+4431442|Algerian Ligue 1
 67387|Argentinian Primera Division
 803237|Argentinian Primera Nacional
 12117172|Australian A-League Men
 10479956|Austrian Bundesliga
 9|Austrian Erste Liga
 4517491|Azerbaijan 1st Division
-895129|Azerbaijan Premier League
+12107313|Barbadian Premier League
 11717188|Belgian Challenger Pro League
 89979|Belgian Pro League
 3021702|Bosnian Cup
@@ -16,6 +17,7 @@
 13|Brazilian Serie A
 321319|Brazilian Serie B
 15|Bulgarian A League
+9251272|Cambodian Premier League
 857992|Chilean Primera B
 744098|Chilean Primera Division
 879931|Chinese Super League
@@ -29,12 +31,11 @@
 17|Croatian HNL
 19|Cypriot 1st Division
 12204204|Czech 1 Liga
-1987477|Czech U19
 25|Danish 1st Division
 23|Danish Superliga
-11|Dutch Eerste Divisie
 9404054|Dutch Eredivisie
 803690|Ecuadorian Serie A
+9882094|EFL Trophy
 801976|Egyptian Premier
 30558|English FA Cup
 2134|English Football League Cup
@@ -42,11 +43,9 @@
 41|English National League North
 43|English National League South
 10932509|English Premier League
-12199685|English Premier League 2 - Div 1
 7129730|English Sky Bet Championship
 35|English Sky Bet League 1
 37|English Sky Bet League 2
-12511339|English U21 Pro Development League
 12228076|Estonian Cup
 11869656|Ethiopian Premier League
 12469077|FIFA World Cup
@@ -54,53 +53,58 @@
 55|French Ligue 1
 57|French Ligue 2
 12702178|French Premiere Ligue
+11780281|Georgian Erovnuli Liga 2
+2273834|Georgian Umaglesi Liga
 59|German Bundesliga
 61|German Bundesliga 2
 11458113|German Cup
 12211021|Greek Cup
 6566654|Guatemalan Liga Nacional
-4556576|Hungarian NB II
+12202271|Honduras Liga Nacional
+827654|Hong Kong League Cup
+1842928|Hungarian NB I
 849220|Icelandic League Cup
 822951|Indonesian Super League
 12203971|Irish Premier Division
 12214429|Italian Coppa Italia
 81|Italian Serie A
-12199513|Italian Serie C
-3796898|Jamaican Premier League
+12216976|Latvian Virsliga
 879221|Lithuanian A Lyga
 5627174|Mexican Liga MX
 11687921|Mexican Liga MX Femenil
-8770515|Mexican Liga Premier
+12208242|Montenegrin 1st League
 7836682|Myanmar National League
 12199359|Northern Irish Premiership
-4051|Norwegian Cup
-3972877|Panamanian Premier League
-839575|Paraguayan Primera Division
-11993322|Paraguayan Reserves
-8594603|Peruvian Primera Division
+11068551|Norwegian Eliteserien
+11635923|Omani Professional League
+12009211|Philippines PFL
 97|Polish Ekstraklasa
 403085|Polish I Liga
 12218844|Portuguese Cup
 99|Portuguese Primeira Liga
-9513|Portuguese Segunda Liga
 12209621|Portuguese U23
+842258|Qatari Stars League
 4905|Romanian Liga I
-12209355|Rwandan National Football League
+862579|Romanian Liga II
+12209405|Saudi Professional League
+12770279|Saudi U21 Elite League
 107|Scottish Championship
 109|Scottish League One
 111|Scottish League Two
 105|Scottish Premiership
-103|Serbian Super League
+12215677|Slovakian 2 Liga
 97855|Slovakian Cup
-115|Slovenian Premier League
+12228139|Slovenian Cup
 10699940|South African Premier Division
 12395639|South Korean K1 League
 117|Spanish La Liga
 12204313|Spanish Segunda Division
+12714473|Spanish U19 Cup
+12715848|Spanish Youth League
 2608550|Specials
-18099|Swedish Cup
 135|Swiss Challenge League
 133|Swiss Super League
+11891653|Tanzanian Premier League
 12209388|Thai League 1
 175680|Turkish 1 Lig
 833222|Turkish 2 Lig
@@ -113,3 +117,4 @@
 7247362|Ugandan Premier League
 843454|Uruguayan Primera Division
 141|US MLS
+12016856|Zambian Super Division

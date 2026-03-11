@@ -18,7 +18,7 @@
 5627174|Mexican Liga MX|Tier 2
 99|Portuguese Primeira Liga|Tier 2
 12209405|Saudi Professional League|Tier 3
-105|Scottish Premiership|Tier 2
+105|Scottish Premiership|Tier 2add
 117|Spanish La Liga|Tier 1
 12204313|Spanish Segunda Division|Tier 3
 133|Swiss Super League|Tier 3

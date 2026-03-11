@@ -416,7 +416,7 @@ main {
   right: 0;
   top: 0;
   z-index: 30;
-  width: min(860px, 100vw);
+  width: min(1040px, 100vw);
   height: 100vh;
   background: #fff;
   border-left: 1px solid var(--line);
@@ -458,6 +458,12 @@ main {
 }
 .details-options input {
   width: 84px;
+}
+.details-options input[type="checkbox"] {
+  width: auto;
+}
+.details-options .checkbox-label {
+  margin-left: 6px;
 }
 
 .metric-grid {

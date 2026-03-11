@@ -985,16 +985,43 @@ def calc_wyscout_form_tables(games, data_df, periods=("Season", 5, 3), return_so
         games_tables.append((home_df, away_df, final_df, ex_calcs_out, ex_calcs_reduced))
 
         if return_source_games:
-            cols = [
-                c for c in [
-                    "match_id", "date_time", "season_id", "competition_name", "area_name",
-                    "team", "opponent", "venue", "GF", "GA", "xG", "xGA", "xGoT", "xGoTA"
-                ] if c in home_perf.columns
+            source_cols = [
+                "match_id",
+                "date_time",
+                "season_id",
+                "competition_name",
+                "area_name",
+                "team",
+                "opponent",
+                "venue",
+                "GF",
+                "GA",
+                "xG",
+                "xGA",
+                "xGoT",
+                "xGoTA",
+                "corners_for",
+                "corners_against",
+                "cards_for",
+                "cards_against",
+                "yellow_for",
+                "yellow_against",
+                "red_for",
+                "red_against",
             ]
+
+            home_source = home_perf.sort_values("date_time").copy()
+            away_source = away_perf.sort_values("date_time").copy()
+            for col in source_cols:
+                if col not in home_source.columns:
+                    home_source[col] = pd.NA
+                if col not in away_source.columns:
+                    away_source[col] = pd.NA
+
             source_games.append(
                 {
-                    "home_source_games": home_perf.sort_values("date_time")[cols].reset_index(drop=True),
-                    "away_source_games": away_perf.sort_values("date_time")[cols].reset_index(drop=True),
+                    "home_source_games": home_source[source_cols].reset_index(drop=True),
+                    "away_source_games": away_source[source_cols].reset_index(drop=True),
                     "season_id_used": season_used,
                     "warning": warning_message,
                 }

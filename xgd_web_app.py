@@ -802,6 +802,51 @@ def load_sofascore_inputs(db_path: str) -> tuple[pd.DataFrame, pd.DataFrame, lis
         WHERE LOWER(COALESCE(sd.metric, '')) = 'goals prevented'
           AND UPPER(COALESCE(ms.period, '')) = 'ALL'
         GROUP BY ms.match_id
+    ),
+    card_corner_aggs AS (
+        SELECT
+            ms.match_id,
+            MAX(
+                CASE
+                    WHEN LOWER(COALESCE(sd.metric, '')) LIKE '%corner%'
+                    THEN COALESCE(CAST(NULLIF(ms.home_value_num, '') AS REAL), CAST(NULLIF(ms.home_value_text, '') AS REAL))
+                END
+            ) AS home_corners,
+            MAX(
+                CASE
+                    WHEN LOWER(COALESCE(sd.metric, '')) LIKE '%corner%'
+                    THEN COALESCE(CAST(NULLIF(ms.away_value_num, '') AS REAL), CAST(NULLIF(ms.away_value_text, '') AS REAL))
+                END
+            ) AS away_corners,
+            MAX(
+                CASE
+                    WHEN LOWER(COALESCE(sd.metric, '')) LIKE '%yellow%' AND LOWER(COALESCE(sd.metric, '')) LIKE '%card%'
+                    THEN COALESCE(CAST(NULLIF(ms.home_value_num, '') AS REAL), CAST(NULLIF(ms.home_value_text, '') AS REAL))
+                END
+            ) AS home_yellow_cards,
+            MAX(
+                CASE
+                    WHEN LOWER(COALESCE(sd.metric, '')) LIKE '%yellow%' AND LOWER(COALESCE(sd.metric, '')) LIKE '%card%'
+                    THEN COALESCE(CAST(NULLIF(ms.away_value_num, '') AS REAL), CAST(NULLIF(ms.away_value_text, '') AS REAL))
+                END
+            ) AS away_yellow_cards,
+            MAX(
+                CASE
+                    WHEN LOWER(COALESCE(sd.metric, '')) LIKE '%red%' AND LOWER(COALESCE(sd.metric, '')) LIKE '%card%'
+                    THEN COALESCE(CAST(NULLIF(ms.home_value_num, '') AS REAL), CAST(NULLIF(ms.home_value_text, '') AS REAL))
+                END
+            ) AS home_red_cards,
+            MAX(
+                CASE
+                    WHEN LOWER(COALESCE(sd.metric, '')) LIKE '%red%' AND LOWER(COALESCE(sd.metric, '')) LIKE '%card%'
+                    THEN COALESCE(CAST(NULLIF(ms.away_value_num, '') AS REAL), CAST(NULLIF(ms.away_value_text, '') AS REAL))
+                END
+            ) AS away_red_cards
+        FROM match_stats ms
+        JOIN stat_definitions sd
+            ON sd.id = ms.stat_definition_id
+        WHERE UPPER(COALESCE(ms.period, '')) = 'ALL'
+        GROUP BY ms.match_id
     )
     SELECT
         m.id AS match_id,
@@ -824,7 +869,13 @@ def load_sofascore_inputs(db_path: str) -> tuple[pd.DataFrame, pd.DataFrame, lis
         sa.home_xgot_shots,
         sa.away_xgot_shots,
         ka.home_goalkeeper_goals_prevented,
-        ka.away_goalkeeper_goals_prevented
+        ka.away_goalkeeper_goals_prevented,
+        cca.home_corners,
+        cca.away_corners,
+        cca.home_yellow_cards,
+        cca.away_yellow_cards,
+        cca.home_red_cards,
+        cca.away_red_cards
     FROM matches m
     JOIN teams ht ON ht.id = m.home_team_id
     JOIN teams at ON at.id = m.away_team_id
@@ -833,6 +884,7 @@ def load_sofascore_inputs(db_path: str) -> tuple[pd.DataFrame, pd.DataFrame, lis
     LEFT JOIN xg_stats xg ON xg.match_id = m.id
     LEFT JOIN shot_aggs sa ON sa.match_id = m.id
     LEFT JOIN keeper_aggs ka ON ka.match_id = m.id
+    LEFT JOIN card_corner_aggs cca ON cca.match_id = m.id
     WHERE m.kickoff_ts IS NOT NULL
       AND COALESCE(m.home_ft_score, m.home_score_final) IS NOT NULL
       AND COALESCE(m.away_ft_score, m.away_score_final) IS NOT NULL
@@ -880,6 +932,12 @@ def load_sofascore_inputs(db_path: str) -> tuple[pd.DataFrame, pd.DataFrame, lis
         "away_xgot_shots",
         "home_goalkeeper_goals_prevented",
         "away_goalkeeper_goals_prevented",
+        "home_corners",
+        "away_corners",
+        "home_yellow_cards",
+        "away_yellow_cards",
+        "home_red_cards",
+        "away_red_cards",
     ]
     for col in numeric_cols:
         if col in raw_finished.columns:
@@ -899,6 +957,17 @@ def load_sofascore_inputs(db_path: str) -> tuple[pd.DataFrame, pd.DataFrame, lis
     raw_finished.loc[raw_finished["away_xgot"].isna(), "away_xgot"] = raw_finished["away_xgot_shots"]
     raw_finished.loc[raw_finished["away_xgot"].isna(), "away_xgot"] = raw_finished["away_xg"]
 
+    raw_finished["home_cards"] = raw_finished["home_yellow_cards"].fillna(0) + (2 * raw_finished["home_red_cards"].fillna(0))
+    raw_finished["away_cards"] = raw_finished["away_yellow_cards"].fillna(0) + (2 * raw_finished["away_red_cards"].fillna(0))
+    raw_finished.loc[
+        raw_finished["home_yellow_cards"].isna() & raw_finished["home_red_cards"].isna(),
+        "home_cards",
+    ] = pd.NA
+    raw_finished.loc[
+        raw_finished["away_yellow_cards"].isna() & raw_finished["away_red_cards"].isna(),
+        "away_cards",
+    ] = pd.NA
+
     finished = raw_finished[
         [
             "match_id",
@@ -917,6 +986,14 @@ def load_sofascore_inputs(db_path: str) -> tuple[pd.DataFrame, pd.DataFrame, lis
             "away_xg",
             "home_xgot",
             "away_xgot",
+            "home_corners",
+            "away_corners",
+            "home_yellow_cards",
+            "away_yellow_cards",
+            "home_red_cards",
+            "away_red_cards",
+            "home_cards",
+            "away_cards",
         ]
     ].copy()
     finished = finished.dropna(subset=["date_time", "home_team_name", "away_team_name", "home_goals", "away_goals", "home_xg", "away_xg"])
@@ -934,6 +1011,14 @@ def load_sofascore_inputs(db_path: str) -> tuple[pd.DataFrame, pd.DataFrame, lis
             "xGA": finished["away_xg"],
             "xGoT": finished["home_xgot"].where(finished["home_xgot"].notna(), finished["home_xg"]),
             "xGoTA": finished["away_xgot"].where(finished["away_xgot"].notna(), finished["away_xg"]),
+            "corners_for": finished["home_corners"],
+            "corners_against": finished["away_corners"],
+            "yellow_for": finished["home_yellow_cards"],
+            "yellow_against": finished["away_yellow_cards"],
+            "red_for": finished["home_red_cards"],
+            "red_against": finished["away_red_cards"],
+            "cards_for": finished["home_cards"],
+            "cards_against": finished["away_cards"],
             "season_id": finished["season_id"],
             "competition_name": finished["competition_name"],
             "area_name": finished["area_name"],
@@ -955,6 +1040,14 @@ def load_sofascore_inputs(db_path: str) -> tuple[pd.DataFrame, pd.DataFrame, lis
             "xGA": finished["home_xg"],
             "xGoT": finished["away_xgot"].where(finished["away_xgot"].notna(), finished["away_xg"]),
             "xGoTA": finished["home_xgot"].where(finished["home_xgot"].notna(), finished["home_xg"]),
+            "corners_for": finished["away_corners"],
+            "corners_against": finished["home_corners"],
+            "yellow_for": finished["away_yellow_cards"],
+            "yellow_against": finished["home_yellow_cards"],
+            "red_for": finished["away_red_cards"],
+            "red_against": finished["home_red_cards"],
+            "cards_for": finished["away_cards"],
+            "cards_against": finished["home_cards"],
             "season_id": finished["season_id"],
             "competition_name": finished["competition_name"],
             "area_name": finished["area_name"],
@@ -1177,7 +1270,28 @@ def build_predictions(
     )
 
     if not model_games:
-        return pd.DataFrame(mapped_games)
+        out = pd.DataFrame(mapped_games)
+        if out.empty:
+            return out
+        # Keep response shape stable for downstream rendering when no model rows can be produced.
+        default_cols: dict[str, Any] = {
+            "period": None,
+            "home_xg": None,
+            "away_xg": None,
+            "total_xg": None,
+            "xgd": None,
+            "strength": None,
+            "total_min_xg": None,
+            "total_max_xg": None,
+            "home_games_used": 0,
+            "away_games_used": 0,
+            "model_warning": "No model games available for this fixture.",
+            "xgd_competition_mismatch": False,
+        }
+        for col, default_value in default_cols.items():
+            if col not in out.columns:
+                out[col] = default_value
+        return out
 
     model_games_df = pd.DataFrame(model_games)
     game_tables, source_games = calc_wyscout_form_tables(
@@ -1248,10 +1362,13 @@ def build_predictions(
 def to_native(value: Any) -> Any:
     if value is None:
         return None
+    try:
+        if pd.isna(value):
+            return None
+    except Exception:
+        pass
     if isinstance(value, (str, bool, int, float)):
         return value
-    if pd.isna(value):
-        return None
     if isinstance(value, pd.Timestamp):
         return value.isoformat()
     if hasattr(value, "item"):
@@ -1260,6 +1377,24 @@ def to_native(value: Any) -> Any:
         except Exception:
             return str(value)
     return str(value)
+
+
+def sanitize_for_json(value: Any) -> Any:
+    if isinstance(value, dict):
+        return {str(k): sanitize_for_json(v) for k, v in value.items()}
+    if isinstance(value, (list, tuple)):
+        return [sanitize_for_json(v) for v in value]
+    try:
+        if pd.isna(value):
+            return None
+    except Exception:
+        pass
+    if hasattr(value, "item"):
+        try:
+            return sanitize_for_json(value.item())
+        except Exception:
+            return str(value)
+    return value
 
 
 def simplify_model_warning(messages: list[str]) -> str | None:
@@ -2015,6 +2150,14 @@ def build_recent_form_rows(source_df: Any, recent_n: int | None = None) -> list[
         "xGA",
         "xGoT",
         "xGoTA",
+        "corners_for",
+        "corners_against",
+        "cards_for",
+        "cards_against",
+        "yellow_for",
+        "yellow_against",
+        "red_for",
+        "red_against",
     ]
     cols = [c for c in preferred_cols if c in source_df.columns]
     if not cols:
@@ -2078,6 +2221,18 @@ def build_team_venue_recent_rows(
         "home": build_recent_form_rows(home_df, recent_n=recent_n),
         "away": build_recent_form_rows(away_df, recent_n=recent_n),
     }
+
+
+def merge_recent_rows_by_venue(rows_by_venue: dict[str, list[dict[str, Any]]] | None) -> list[dict[str, Any]]:
+    if not isinstance(rows_by_venue, dict):
+        return []
+    merged: list[dict[str, Any]] = []
+    for key in ("home", "away"):
+        chunk = rows_by_venue.get(key)
+        if isinstance(chunk, list):
+            merged.extend(chunk)
+    merged.sort(key=lambda row: str(row.get("date_time", "")), reverse=True)
+    return merged
 
 
 def format_day_label(day_iso: str) -> str:
@@ -3251,6 +3406,11 @@ class AppState:
                     competition_name=mapping_row.get("fixture_competition"),
                     area_name=mapping_row.get("fixture_area"),
                 )
+                # Fallback for game-page tables if direct source extraction fails.
+                if not home_recent_rows:
+                    home_recent_rows = merge_recent_rows_by_venue(home_team_venue_rows)
+                if not away_recent_rows:
+                    away_recent_rows = merge_recent_rows_by_venue(away_team_venue_rows)
 
                 betfair_competition = str(game_row.get("competition", "")).strip()
                 fixture_competition = str(mapping_row.get("fixture_competition", "")).strip()
@@ -3654,7 +3814,8 @@ class AppHandler(BaseHTTPRequestHandler):
         self.wfile.write(data)
 
     def _json(self, payload: dict[str, Any], status: HTTPStatus = HTTPStatus.OK) -> None:
-        body = json.dumps(payload).encode("utf-8")
+        safe_payload = sanitize_for_json(payload)
+        body = json.dumps(safe_payload, allow_nan=False).encode("utf-8")
         self.send_response(status)
         self.send_header("Content-Type", "application/json; charset=utf-8")
         self.send_header("Content-Length", str(len(body)))
