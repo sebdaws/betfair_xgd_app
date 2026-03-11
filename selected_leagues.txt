@@ -2,6 +2,7 @@
 # Lines starting with # are ignored
 # Example:
 # 10932509|English Premier League|Tier 1
+67387|Argentinian Primera Division|Tier 2
 12117172|Australian A-League Men|Tier 3
 89979|Belgian Pro League|Tier 2
 13|Brazilian Serie A|Tier 2
@@ -18,10 +19,10 @@
 5627174|Mexican Liga MX|Tier 2
 99|Portuguese Primeira Liga|Tier 2
 12209405|Saudi Professional League|Tier 3
-105|Scottish Premiership|Tier 2add
+105|Scottish Premiership|Tier 2
 117|Spanish La Liga|Tier 1
 12204313|Spanish Segunda Division|Tier 3
-133|Swiss Super League|Tier 3
+133|Swiss Super League|Tier 2
 194215|Turkish Super League|Tier 2
 228|UEFA Champions League|Tier 0
 12375833|UEFA Europa Conference League|Tier 0

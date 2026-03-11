@@ -1,7 +1,7 @@
 # Auto-generated from Betfair listCompetitions
 # Format: competition_id|competition_name
-39218|AFC Champions League
 12688794|AFC Champions League Two
+12276605|AFC Ladies Asian Cup
 4431442|Algerian Ligue 1
 67387|Argentinian Primera Division
 803237|Argentinian Primera Nacional
@@ -9,7 +9,8 @@
 10479956|Austrian Bundesliga
 9|Austrian Erste Liga
 4517491|Azerbaijan 1st Division
-12107313|Barbadian Premier League
+895129|Azerbaijan Premier League
+12206014|Bahraini Premier
 11717188|Belgian Challenger Pro League
 89979|Belgian Pro League
 3021702|Bosnian Cup
@@ -17,8 +18,7 @@
 13|Brazilian Serie A
 321319|Brazilian Serie B
 15|Bulgarian A League
-9251272|Cambodian Premier League
-857992|Chilean Primera B
+12292686|Bulgarian B League
 744098|Chilean Primera Division
 879931|Chinese Super League
 844197|Colombian Primera A
@@ -27,12 +27,12 @@
 12147796|CONMEBOL Copa Libertadores
 3039445|Costa Rican Liga de Ascenso
 2079376|Costa Rican Primera Division
-12226103|Croatian Cup
 17|Croatian HNL
 19|Cypriot 1st Division
 12204204|Czech 1 Liga
 25|Danish 1st Division
 23|Danish Superliga
+11|Dutch Eerste Divisie
 9404054|Dutch Eredivisie
 803690|Ecuadorian Serie A
 9882094|EFL Trophy
@@ -47,65 +47,82 @@
 35|English Sky Bet League 1
 37|English Sky Bet League 2
 12228076|Estonian Cup
+873203|Estonian Esiliiga
+12216175|Estonian Premier League
 11869656|Ethiopian Premier League
 12469077|FIFA World Cup
 12209560|French Cup
 55|French Ligue 1
 57|French Ligue 2
+1081960|French National
 12702178|French Premiere Ligue
-11780281|Georgian Erovnuli Liga 2
+12005859|Friendly Matches
 2273834|Georgian Umaglesi Liga
+11591693|German 3 Liga
 59|German Bundesliga
 61|German Bundesliga 2
 11458113|German Cup
 12211021|Greek Cup
+67|Greek Super League
 6566654|Guatemalan Liga Nacional
+6812603|Guatemalan Primera Division de Ascenso
 12202271|Honduras Liga Nacional
-827654|Hong Kong League Cup
 1842928|Hungarian NB I
 849220|Icelandic League Cup
+12213874|Icelandic League Cup B
+6251219|Indian Super League
 822951|Indonesian Super League
+12005855|Irish Division 1
 12203971|Irish Premier Division
 12214429|Italian Coppa Italia
 81|Italian Serie A
+12199689|Italian Serie B
+12199513|Italian Serie C
+12782082|Japanese J. League 100 Year Vision
 12216976|Latvian Virsliga
 879221|Lithuanian A Lyga
 5627174|Mexican Liga MX
 11687921|Mexican Liga MX Femenil
 12208242|Montenegrin 1st League
-7836682|Myanmar National League
-12199359|Northern Irish Premiership
 11068551|Norwegian Eliteserien
+872276|Norwegian U19
 11635923|Omani Professional League
-12009211|Philippines PFL
+8594603|Peruvian Primera Division
+11838780|Polish 2 Liga
 97|Polish Ekstraklasa
 403085|Polish I Liga
 12218844|Portuguese Cup
 99|Portuguese Primeira Liga
-12209621|Portuguese U23
+9513|Portuguese Segunda Liga
 842258|Qatari Stars League
 4905|Romanian Liga I
 862579|Romanian Liga II
+2315454|Saudi 1st Division
 12209405|Saudi Professional League
-12770279|Saudi U21 Elite League
 107|Scottish Championship
 109|Scottish League One
 111|Scottish League Two
 105|Scottish Premiership
+103|Serbian Super League
 12215677|Slovakian 2 Liga
 97855|Slovakian Cup
+12013300|Slovakian Super League
 12228139|Slovenian Cup
+115|Slovenian Premier League
 10699940|South African Premier Division
 12395639|South Korean K1 League
+12395641|South Korean K2 League
 117|Spanish La Liga
 12204313|Spanish Segunda Division
 12714473|Spanish U19 Cup
 12715848|Spanish Youth League
 2608550|Specials
+8964557|Swiss 1 Liga Promotion
 135|Swiss Challenge League
 133|Swiss Super League
 11891653|Tanzanian Premier League
 12209388|Thai League 1
+4608858|Thai League 2
 175680|Turkish 1 Lig
 833222|Turkish 2 Lig
 194215|Turkish Super League
@@ -115,6 +132,10 @@
 12375833|UEFA Europa Conference League
 2005|UEFA Europa League
 7247362|Ugandan Premier League
+139|Ukrainian Premier League
 843454|Uruguayan Primera Division
 141|US MLS
+12704680|Uzbekistan Super League
+1065530|Venezuelan Primera Division
+12209059|Vietnamese V-League
 12016856|Zambian Super Division

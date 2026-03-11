@@ -58,6 +58,8 @@ let detailsMainTab = "xgd";
 let activeTab = "games";
 let mappingSubTab = "teams";
 let lastManualMappingPayload = null;
+let teamMappingSearchBetfair = "";
+let teamMappingSearchSavedTeams = "";
 const AUTO_REFRESH_MS = 2 * 60 * 1000;
 
 function escapeHtml(value) {
@@ -104,6 +106,23 @@ function setMappingSubTab(tabName) {
   competitionMappingsPane.classList.toggle("hidden", teamsActive);
 }
 
+function rerenderManualMappingsPreserveSearchFocus(selectionStart = null, selectionEnd = null) {
+  if (!lastManualMappingPayload) return;
+  renderManualMappingSections(lastManualMappingPayload);
+  const input = unmatchedTeamsContainer.querySelector('input.mapping-search-input[data-search="betfair"]');
+  if (!(input instanceof HTMLInputElement)) return;
+  input.focus();
+  if (selectionStart == null || selectionEnd == null) return;
+  const maxLen = input.value.length;
+  const start = Math.max(0, Math.min(selectionStart, maxLen));
+  const end = Math.max(start, Math.min(selectionEnd, maxLen));
+  try {
+    input.setSelectionRange(start, end);
+  } catch (_err) {
+    // Ignore browsers/inputs that do not support explicit selection ranges.
+  }
+}
+
 function renderManualMappingSections(payload) {
   lastManualMappingPayload = payload;
   const teamMappings = Array.isArray(payload?.mappings) ? payload.mappings : [];
@@ -146,15 +165,60 @@ function renderManualMappingSections(payload) {
   const availableSofaCompetitions = sofaCompetitions
     .map((competition) => String(competition || "").trim())
     .filter((competition) => !!competition && !mappedSofaCompetitionNames.has(competition));
+  const sofascoreDbPath = String(payload?.sofascore_db_path || "").trim();
+  const sofascoreDbLabel = sofascoreDbPath
+    ? sofascoreDbPath.split("/").filter(Boolean).slice(-2).join("/")
+    : "";
 
   mappingStatus.textContent =
     `${unmatchedTeams.length} unmatched teams | ${manualCount} manual, ${autoCount} auto teams | ` +
     `${unmatchedCompetitions.length} unmatched competitions | ` +
-    `${manualCompetitionCount} manual, ${autoCompetitionCount} auto competitions`;
+    `${manualCompetitionCount} manual, ${autoCompetitionCount} auto competitions` +
+    (sofascoreDbLabel ? ` | DB: ${sofascoreDbLabel}` : "");
 
   unmatchedTeamsContainer.innerHTML = "";
+  const teamSearchControls = document.createElement("div");
+  teamSearchControls.className = "mapping-search-row";
+  teamSearchControls.innerHTML = `
+    <label class="mapping-search-field">
+      <span>Search Betfair Teams</span>
+      <input type="search" class="mapping-search-input" data-search="betfair" placeholder="Type Betfair team..." />
+    </label>
+  `;
+  const betfairSearchInput = teamSearchControls.querySelector('input.mapping-search-input[data-search="betfair"]');
+  if (betfairSearchInput) {
+    betfairSearchInput.value = teamMappingSearchBetfair;
+    betfairSearchInput.addEventListener("input", () => {
+      teamMappingSearchBetfair = String(betfairSearchInput.value || "");
+      rerenderManualMappingsPreserveSearchFocus(
+        betfairSearchInput.selectionStart,
+        betfairSearchInput.selectionEnd
+      );
+    });
+  }
+  unmatchedTeamsContainer.innerHTML = "";
+  unmatchedTeamsContainer.appendChild(teamSearchControls);
+
+  const betfairQuery = teamMappingSearchBetfair.trim().toLowerCase();
+  const filteredUnmatchedTeams = !betfairQuery
+    ? unmatchedTeams
+    : unmatchedTeams.filter((row) => {
+        const raw = String(row.raw_name || "").toLowerCase();
+        const event = String(row.event_name || "").toLowerCase();
+        const league = String(row.competition || "").toLowerCase();
+        return raw.includes(betfairQuery) || event.includes(betfairQuery) || league.includes(betfairQuery);
+      });
+
   if (!unmatchedTeams.length) {
-    unmatchedTeamsContainer.innerHTML = `<p class="mapping-empty">No unmatched teams in current games.</p>`;
+    const empty = document.createElement("p");
+    empty.className = "mapping-empty";
+    empty.textContent = "No unmatched teams in current games.";
+    unmatchedTeamsContainer.appendChild(empty);
+  } else if (!filteredUnmatchedTeams.length) {
+    const empty = document.createElement("p");
+    empty.className = "mapping-empty";
+    empty.textContent = "No unmatched teams match this filter.";
+    unmatchedTeamsContainer.appendChild(empty);
   } else {
     const table = document.createElement("table");
     table.className = "mapping-table";
@@ -174,7 +238,7 @@ function renderManualMappingSections(payload) {
     `;
     const tbody = table.querySelector("tbody");
 
-    for (const row of unmatchedTeams) {
+    for (const row of filteredUnmatchedTeams) {
       const tr = document.createElement("tr");
       const rawName = String(row.raw_name || "");
       const existing = teamMappings.find((m) => String(m.raw_name || "") === rawName);
@@ -183,9 +247,17 @@ function renderManualMappingSections(payload) {
       if (existingSofaName && !rowOptions.includes(existingSofaName)) {
         rowOptions.unshift(existingSofaName);
       }
-      const optionsHtml =
-        `<option value="">Select team...</option>` +
-        rowOptions.map((team) => `<option value="${escapeHtml(team)}">${escapeHtml(team)}</option>`).join("");
+      const uniqueRowOptions = [];
+      const seenOptions = new Set();
+      for (const team of rowOptions) {
+        const normalized = String(team || "").trim();
+        if (!normalized) continue;
+        const key = normalized.toLowerCase();
+        if (seenOptions.has(key)) continue;
+        seenOptions.add(key);
+        uniqueRowOptions.push(normalized);
+      }
+      const rowOptionLookup = new Map(uniqueRowOptions.map((team) => [team.toLowerCase(), team]));
       tr.innerHTML = `
         <td>${escapeHtml(String(row.event_name || "-"))}</td>
         <td>${escapeHtml(String(row.competition || "-"))}</td>
@@ -193,22 +265,76 @@ function renderManualMappingSections(payload) {
         <td>${escapeHtml(String(row.side || "-"))}</td>
         <td>${escapeHtml(rawName)}</td>
         <td>
-          <select class="mapping-select">
-            ${optionsHtml}
-          </select>
+          <div class="mapping-team-picker-wrap">
+            <input type="text" class="mapping-team-picker" placeholder="Type to search teams..." autocomplete="off" />
+            <div class="mapping-team-dropdown hidden"></div>
+          </div>
         </td>
         <td><button type="button" class="mapping-save-btn">Save</button></td>
       `;
-      const select = tr.querySelector(".mapping-select");
-      if (select && existing?.sofa_name) {
-        select.value = String(existing.sofa_name);
+      const input = tr.querySelector(".mapping-team-picker");
+      const dropdown = tr.querySelector(".mapping-team-dropdown");
+      const renderDropdownOptions = (query = "") => {
+        if (!dropdown) return;
+        const q = String(query || "").trim().toLowerCase();
+        const options = !q
+          ? uniqueRowOptions
+          : uniqueRowOptions.filter((team) => team.toLowerCase().includes(q));
+        if (!options.length) {
+          dropdown.innerHTML = `<div class="mapping-team-option-empty">No matching teams</div>`;
+          return;
+        }
+        dropdown.innerHTML = options
+          .map(
+            (team) =>
+              `<button type="button" class="mapping-team-option" data-team="${escapeHtml(team)}">${escapeHtml(team)}</button>`
+          )
+          .join("");
+      };
+      if (input && dropdown) {
+        input.addEventListener("focus", () => {
+          renderDropdownOptions(input.value);
+          dropdown.classList.remove("hidden");
+        });
+        input.addEventListener("input", () => {
+          renderDropdownOptions(input.value);
+          dropdown.classList.remove("hidden");
+        });
+        input.addEventListener("keydown", (evt) => {
+          if (evt.key === "Escape") {
+            dropdown.classList.add("hidden");
+          }
+        });
+        input.addEventListener("blur", () => {
+          window.setTimeout(() => {
+            dropdown.classList.add("hidden");
+          }, 120);
+        });
+        dropdown.addEventListener("mousedown", (evt) => {
+          evt.preventDefault();
+        });
+        dropdown.addEventListener("click", (evt) => {
+          const target = evt.target;
+          if (!(target instanceof HTMLElement)) return;
+          const optionBtn = target.closest(".mapping-team-option");
+          if (!(optionBtn instanceof HTMLElement)) return;
+          const selectedTeam = String(optionBtn.dataset.team || "").trim();
+          if (!selectedTeam) return;
+          input.value = selectedTeam;
+          dropdown.classList.add("hidden");
+          input.focus();
+        });
+      }
+      if (input && existing?.sofa_name) {
+        input.value = String(existing.sofa_name);
       }
       const saveBtn = tr.querySelector(".mapping-save-btn");
-      if (saveBtn && select) {
+      if (saveBtn && input) {
         saveBtn.addEventListener("click", async () => {
-          const sofaName = String(select.value || "").trim();
+          const inputValue = String(input.value || "").trim();
+          const sofaName = rowOptionLookup.get(inputValue.toLowerCase()) || "";
           if (!sofaName) {
-            mappingStatus.textContent = "Select a SofaScore team before saving.";
+            mappingStatus.textContent = "Pick a SofaScore team from the dropdown suggestions before saving.";
             return;
           }
           await upsertManualTeamMapping(rawName, sofaName);
@@ -223,6 +349,33 @@ function renderManualMappingSections(payload) {
   if (!teamMappings.length) {
     savedMappingsContainer.innerHTML = `<p class="mapping-empty">No mappings available yet.</p>`;
   } else {
+    const savedSearchControls = document.createElement("div");
+    savedSearchControls.className = "mapping-search-row";
+    savedSearchControls.innerHTML = `
+      <label class="mapping-search-field">
+        <span>Search Saved Mappings</span>
+        <input type="search" class="mapping-search-input" data-search="saved-team-mappings" placeholder="Type Betfair or SofaScore team..." />
+      </label>
+    `;
+    const savedSearchInput = savedSearchControls.querySelector(
+      'input.mapping-search-input[data-search="saved-team-mappings"]'
+    );
+    if (savedSearchInput) {
+      savedSearchInput.value = teamMappingSearchSavedTeams;
+      savedSearchInput.addEventListener("input", () => {
+        teamMappingSearchSavedTeams = String(savedSearchInput.value || "");
+        const query = teamMappingSearchSavedTeams.trim().toLowerCase();
+        const rows = savedMappingsContainer.querySelectorAll("table.mapping-table tbody tr");
+        for (const row of rows) {
+          const betfairTeam = String(row.getAttribute("data-betfair-team") || "").toLowerCase();
+          const sofaTeam = String(row.getAttribute("data-sofa-team") || "").toLowerCase();
+          const show = !query || betfairTeam.includes(query) || sofaTeam.includes(query);
+          row.classList.toggle("hidden", !show);
+        }
+      });
+    }
+    savedMappingsContainer.appendChild(savedSearchControls);
+
     const table = document.createElement("table");
     table.className = "mapping-table";
     table.innerHTML = `
@@ -240,6 +393,9 @@ function renderManualMappingSections(payload) {
     for (const row of teamMappings) {
       const tr = document.createElement("tr");
       const rawName = String(row.raw_name || "");
+      const sofaName = String(row.sofa_name || "");
+      tr.setAttribute("data-betfair-team", rawName);
+      tr.setAttribute("data-sofa-team", sofaName);
       const isManual = row?.is_manual !== false;
       const method = String(row.match_method || "").trim().toLowerCase();
       const methodLabel = method ? `${method.charAt(0).toUpperCase()}${method.slice(1)}` : "Auto";
@@ -249,7 +405,7 @@ function renderManualMappingSections(payload) {
         : `<span class="mapping-auto-badge">Auto</span>`;
       tr.innerHTML = `
         <td>${escapeHtml(rawName)}</td>
-        <td>${escapeHtml(String(row.sofa_name || ""))}</td>
+        <td>${escapeHtml(sofaName)}</td>
         <td>${escapeHtml(typeLabel)}</td>
         <td>${actionHtml}</td>
       `;
@@ -262,6 +418,9 @@ function renderManualMappingSections(payload) {
       tbody.appendChild(tr);
     }
     savedMappingsContainer.appendChild(table);
+    if (savedSearchInput && teamMappingSearchSavedTeams.trim()) {
+      savedSearchInput.dispatchEvent(new Event("input"));
+    }
   }
 
   unmatchedCompetitionsContainer.innerHTML = "";
@@ -567,6 +726,27 @@ function buildPeriodMetricStackCell(seasonValue, last5Value, last3Value, highlig
         .join("")}
     </div>
   `;
+}
+
+function toMetricNumberOrNull(value) {
+  const text = String(value ?? "").trim();
+  if (!text || text === "-") return null;
+  const num = Number(text);
+  return Number.isFinite(num) ? num : null;
+}
+
+function hasNoXgMetricSignal(game) {
+  const values = [
+    game?.season_strength,
+    game?.last5_strength,
+    game?.last3_strength,
+    game?.season_xgd,
+    game?.last5_xgd,
+    game?.last3_xgd,
+  ];
+  const numericValues = values.map(toMetricNumberOrNull).filter((v) => v != null);
+  if (!numericValues.length) return false;
+  return numericValues.every((v) => Math.abs(v) < 1e-9);
 }
 
 function buildRecentMatchesTableHtml(title, rows, relevantTeamName = "") {
@@ -905,6 +1085,20 @@ function averageMetric(rows, metricKey) {
   return total / count;
 }
 
+function sumMetric(rows, metricKey) {
+  const safeRows = Array.isArray(rows) ? rows : [];
+  let total = 0;
+  let count = 0;
+  for (const row of safeRows) {
+    const value = Number(row?.[metricKey]);
+    if (!Number.isFinite(value)) continue;
+    total += value;
+    count += 1;
+  }
+  if (!count) return null;
+  return total;
+}
+
 function limitStatsRows(rows, sampleSize) {
   const safeRows = Array.isArray(rows) ? rows : [];
   const maxRows = safeRows.length;
@@ -997,51 +1191,140 @@ function buildCardsCornersVenueTableHtml(homeVenueRows, awayVenueRows, homeLabel
   `;
 }
 
-function buildCardsCornersMatchesTableHtml(teamLabel, rows, sampleSize = null) {
+function buildGamestateTableHtml(homeRows, awayRows, homeLabel, awayLabel, sampleSize = null) {
+  const sampleLabel = sampleSize == null ? "All Previous Games" : `Last ${clampRecentMatchesCount(sampleSize)} Games`;
+  const entries = [
+    { label: homeLabel || "Home team", rows: limitStatsRows(homeRows || [], sampleSize) },
+    { label: awayLabel || "Away team", rows: limitStatsRows(awayRows || [], sampleSize) },
+  ];
+  const states = [
+    { key: "drawing", label: "D" },
+    { key: "winning", label: "W" },
+    { key: "losing", label: "L" },
+  ];
+  const metricCols = [
+    { metric: "corners", direction: "for", label: "Corners For" },
+    { metric: "corners", direction: "against", label: "Corners Against" },
+    { metric: "cards", direction: "for", label: "Cards For" },
+    { metric: "cards", direction: "against", label: "Cards Against" },
+  ];
+
+  return `
+    <section class="recent-team-block">
+      <h4>Gamestate Corners/Cards Totals (${escapeHtml(sampleLabel)})</h4>
+      <div class="recent-table-wrap">
+        <table class="lines-table recent-lines-table">
+          <thead>
+            <tr>
+              <th>Team</th>
+              ${metricCols
+                .map(
+                  (metric) =>
+                    states
+                      .map((state) => `<th>${escapeHtml(metric.label)} (${escapeHtml(state.label)})</th>`)
+                      .join("")
+                )
+                .join("")}
+            </tr>
+          </thead>
+          <tbody>
+            ${entries
+              .map((entry) => {
+                const cells = metricCols
+                  .map((metric) =>
+                    states
+                      .map((state) => {
+                        const key = `${metric.metric}_${metric.direction}_${state.key}`;
+                        return `<td>${formatMetricValue(sumMetric(entry.rows, key), 0)}</td>`;
+                      })
+                      .join("")
+                  )
+                  .join("");
+                return `
+                  <tr>
+                    <td><strong>${escapeHtml(entry.label)}</strong></td>
+                    ${cells}
+                  </tr>
+                `;
+              })
+              .join("")}
+          </tbody>
+        </table>
+      </div>
+    </section>
+  `;
+}
+
+function buildCardsCornersMatchesTableHtml(teamLabel, rows, sampleSize = null, titleOverride = "") {
   const safeRows = Array.isArray(rows) ? [...rows] : [];
   safeRows.sort((a, b) => String(b?.date_time || "").localeCompare(String(a?.date_time || "")));
   const shownRows = limitStatsRows(safeRows, sampleSize);
   const titleSuffix = sampleSize == null ? "" : ` (Last ${clampRecentMatchesCount(sampleSize)})`;
+  const defaultTitle = `${escapeHtml(teamLabel || "Team")} - Previous Games${escapeHtml(titleSuffix)}`;
+  const title = titleOverride ? `${escapeHtml(titleOverride)}${escapeHtml(titleSuffix)}` : defaultTitle;
   if (!shownRows.length) {
     return `
       <section class="recent-team-block">
-        <h4>${escapeHtml(teamLabel || "Team")} - Previous Games${escapeHtml(titleSuffix)}</h4>
+        <h4>${title}</h4>
         <p class="recent-empty">No previous games available.</p>
       </section>
     `;
   }
   return `
     <section class="recent-team-block">
-      <h4>${escapeHtml(teamLabel || "Team")} - Previous Games${escapeHtml(titleSuffix)}</h4>
+      <h4>${title}</h4>
       <div class="recent-table-wrap">
         <table class="lines-table recent-lines-table">
           <thead>
             <tr>
               <th>Date</th>
               <th>Competition</th>
-              <th>Venue</th>
-              <th>Opponent</th>
-              <th>Corners For</th>
-              <th>Corners Against</th>
-              <th>Cards For</th>
-              <th>Cards Against</th>
+              <th>Home</th>
+              <th>Away</th>
+              <th>G<span class="metric-suffix">H</span></th>
+              <th>G<span class="metric-suffix">A</span></th>
+              <th>Corners<span class="metric-suffix">H</span></th>
+              <th>Corners<span class="metric-suffix">A</span></th>
+              <th>Cards<span class="metric-suffix">H</span></th>
+              <th>Cards<span class="metric-suffix">A</span></th>
             </tr>
           </thead>
           <tbody>
             ${shownRows
               .map(
-                (row) => `
+                (row) => {
+                  const isHome = String(row?.venue || "").toLowerCase() === "home";
+                  const relevantTeam = String(teamLabel || row?.team || "").trim();
+                  const opponentTeam = String(row?.opponent || "").trim();
+                  const homeTeam = isHome ? relevantTeam : opponentTeam;
+                  const awayTeam = isHome ? opponentTeam : relevantTeam;
+                  const homeTeamCell = isHome
+                    ? `<strong>${escapeHtml(homeTeam || "-")}</strong>`
+                    : escapeHtml(homeTeam || "-");
+                  const awayTeamCell = isHome
+                    ? escapeHtml(awayTeam || "-")
+                    : `<strong>${escapeHtml(awayTeam || "-")}</strong>`;
+                  const goalsHome = isHome ? row?.GF : row?.GA;
+                  const goalsAway = isHome ? row?.GA : row?.GF;
+                  const cornersHome = isHome ? row?.corners_for : row?.corners_against;
+                  const cornersAway = isHome ? row?.corners_against : row?.corners_for;
+                  const cardsHome = isHome ? row?.cards_for : row?.cards_against;
+                  const cardsAway = isHome ? row?.cards_against : row?.cards_for;
+                  return `
               <tr>
                 <td>${escapeHtml(row?.date_time || "-")}</td>
                 <td>${escapeHtml(row?.competition_name || "-")}</td>
-                <td>${escapeHtml(row?.venue || "-")}</td>
-                <td>${escapeHtml(row?.opponent || "-")}</td>
-                <td>${formatMetricValue(row?.corners_for, 2)}</td>
-                <td>${formatMetricValue(row?.corners_against, 2)}</td>
-                <td>${formatMetricValue(row?.cards_for, 2)}</td>
-                <td>${formatMetricValue(row?.cards_against, 2)}</td>
+                <td>${homeTeamCell}</td>
+                <td>${awayTeamCell}</td>
+                <td>${formatMetricValue(goalsHome, 0)}</td>
+                <td>${formatMetricValue(goalsAway, 0)}</td>
+                <td>${formatMetricValue(cornersHome, 2)}</td>
+                <td>${formatMetricValue(cornersAway, 2)}</td>
+                <td>${formatMetricValue(cardsHome, 2)}</td>
+                <td>${formatMetricValue(cardsAway, 2)}</td>
               </tr>
-            `
+            `;
+                }
               )
               .join("")}
           </tbody>
@@ -1465,9 +1748,20 @@ function renderCurrentDay() {
       row.dataset.marketId = game.market_id;
       if (selectedMarketId === game.market_id) row.classList.add("selected");
       const xgdMismatch = Boolean(game.xgd_competition_mismatch);
-      const mismatchMetricCellClass = xgdMismatch ? "metric-stack-cell xgd-mismatch-cell" : "metric-stack-cell";
-      const mismatchMetricCellTitle = xgdMismatch
-        ? ` title="xGD derived from a different competition than this fixture."`
+      const noXgMetrics = hasNoXgMetricSignal(game);
+      const metricCellClasses = ["metric-stack-cell"];
+      const metricCellNotes = [];
+      if (xgdMismatch) {
+        metricCellClasses.push("xgd-mismatch-cell");
+        metricCellNotes.push("xGD derived from a different competition than this fixture.");
+      }
+      if (noXgMetrics) {
+        metricCellClasses.push("no-xg-cell");
+        metricCellNotes.push("No xG data available for this league; xStrength/xGD shown as 0.");
+      }
+      const metricCellClass = metricCellClasses.join(" ");
+      const metricCellTitleAttr = metricCellNotes.length
+        ? ` title="${escapeHtml(metricCellNotes.join(" | "))}"`
         : "";
       row.innerHTML = `
         <td>${escapeHtml(game.kickoff_utc)}</td>
@@ -1476,13 +1770,13 @@ function renderCurrentDay() {
         <td class="home-price-col">${escapeHtml(game.home_price || "-")}</td>
         <td class="line-col">${escapeHtml(game.mainline || "-")}</td>
         <td class="away-price-col">${escapeHtml(game.away_price || "-")}</td>
-        <td class="${mismatchMetricCellClass}"${mismatchMetricCellTitle}>${buildPeriodMetricStackCell(game.season_strength, game.last5_strength, game.last3_strength, xgdMismatch)}</td>
-        <td class="${mismatchMetricCellClass}"${mismatchMetricCellTitle}>${buildPeriodMetricStackCell(game.season_xgd, game.last5_xgd, game.last3_xgd, xgdMismatch)}</td>
+        <td class="${metricCellClass}"${metricCellTitleAttr}>${buildPeriodMetricStackCell(game.season_strength, game.last5_strength, game.last3_strength, xgdMismatch)}</td>
+        <td class="${metricCellClass}"${metricCellTitleAttr}>${buildPeriodMetricStackCell(game.season_xgd, game.last5_xgd, game.last3_xgd, xgdMismatch)}</td>
         <td class="goal-under-price-col">${escapeHtml(game.goal_under_price || "-")}</td>
         <td class="goal-line-col">${escapeHtml(game.goal_mainline || "-")}</td>
         <td class="goal-over-price-col">${escapeHtml(game.goal_over_price || "-")}</td>
-        <td class="${mismatchMetricCellClass}"${mismatchMetricCellTitle}>${buildPeriodMetricStackCell(game.season_min_xg, game.last5_min_xg, game.last3_min_xg, xgdMismatch)}</td>
-        <td class="${mismatchMetricCellClass}"${mismatchMetricCellTitle}>${buildPeriodMetricStackCell(game.season_max_xg, game.last5_max_xg, game.last3_max_xg, xgdMismatch)}</td>
+        <td class="metric-stack-cell"${xgdMismatch ? ` title="xGD derived from a different competition than this fixture."` : ""}>${buildPeriodMetricStackCell(game.season_min_xg, game.last5_min_xg, game.last3_min_xg, xgdMismatch)}</td>
+        <td class="metric-stack-cell"${xgdMismatch ? ` title="xGD derived from a different competition than this fixture."` : ""}>${buildPeriodMetricStackCell(game.season_max_xg, game.last5_max_xg, game.last3_max_xg, xgdMismatch)}</td>
       `;
       row.addEventListener("click", () => loadGameXgd(game.market_id));
       tbody.appendChild(row);
@@ -1676,6 +1970,11 @@ function renderXgd(payload) {
   const statsIsAway = statsTeamView === "away";
   const statsActiveLabel = statsIsAway ? awayLabel : homeLabel;
   const statsActiveRows = statsIsAway ? awayRecentRows : homeRecentRows;
+  const statsActiveVenueRows = statsIsAway ? awayTeamVenueRows : homeTeamVenueRows;
+  const statsAllVenueRows = [
+    ...(Array.isArray(statsActiveVenueRows?.home) ? statsActiveVenueRows.home : []),
+    ...(Array.isArray(statsActiveVenueRows?.away) ? statsActiveVenueRows.away : []),
+  ];
   const statsMaxGamesShown = Math.max(1, homeRecentRows.length, awayRecentRows.length);
   if (statsGamesShownAuto) {
     statsGamesShownCount = statsMaxGamesShown;
@@ -1687,6 +1986,7 @@ function renderXgd(payload) {
     <h3 class="section-title">Cards & Corners</h3>
     ${buildStatsGamesShownControlHtml(statsGamesShownCount, statsMaxGamesShown)}
     ${buildCardsCornersAveragesTableHtml(homeRecentRows, awayRecentRows, homeLabel, awayLabel, statsGamesShownCount)}
+    ${buildGamestateTableHtml(homeRecentRows, awayRecentRows, homeLabel, awayLabel, statsGamesShownCount)}
     ${buildCardsCornersVenueTableHtml(
       homeFixtureVenueRows,
       awayFixtureVenueRows,
@@ -1695,7 +1995,9 @@ function renderXgd(payload) {
       statsGamesShownCount
     )}
     ${buildStatsSwitchHtml(homeLabel, awayLabel)}
-    ${buildCardsCornersMatchesTableHtml(statsActiveLabel, statsActiveRows, statsGamesShownCount)}
+    ${buildCardsCornersMatchesTableHtml(statsActiveLabel, statsActiveRows, statsGamesShownCount, "Fixture-side matches")}
+    <h3 class="section-title">${escapeHtml(statsActiveLabel)}: Home & Away Matches</h3>
+    ${buildCardsCornersMatchesTableHtml(statsActiveLabel, statsAllVenueRows, statsGamesShownCount, "All matches")}
   `;
   if (detailsMainTab !== "cards") {
     detailsMainTab = "xgd";

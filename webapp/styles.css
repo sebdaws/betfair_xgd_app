@@ -328,6 +328,40 @@ main {
   font-size: 0.95rem;
 }
 
+.mapping-search-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
+  margin: 0 0 10px 0;
+}
+
+.mapping-search-field {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  min-width: 240px;
+}
+
+.mapping-search-field span {
+  font-size: 0.74rem;
+  font-weight: 700;
+  color: #475569;
+  letter-spacing: 0.02em;
+  text-transform: uppercase;
+}
+
+.mapping-search-input {
+  border: 1px solid var(--line);
+  background: #fff;
+  color: var(--ink);
+  padding: 7px 10px;
+  border-radius: 8px;
+}
+
+.mapping-search-input:hover {
+  border-color: var(--accent);
+}
+
 .mapping-table {
   width: 100%;
   border-collapse: collapse;
@@ -346,9 +380,73 @@ main {
   border-bottom: none;
 }
 
-.mapping-table select {
+.mapping-table select,
+.mapping-table .mapping-team-picker {
   min-width: 220px;
   max-width: 320px;
+}
+
+.mapping-team-picker-wrap {
+  position: relative;
+  min-width: 220px;
+  max-width: 320px;
+}
+
+.mapping-table .mapping-team-picker {
+  width: 100%;
+  border: 1px solid var(--line);
+  background: #fff;
+  color: var(--ink);
+  padding: 7px 10px;
+  border-radius: 8px;
+}
+
+.mapping-table .mapping-team-picker:hover,
+.mapping-table .mapping-team-picker:focus {
+  border-color: var(--accent);
+}
+
+.mapping-team-dropdown {
+  position: absolute;
+  top: calc(100% + 4px);
+  left: 0;
+  right: 0;
+  max-height: 220px;
+  overflow-y: auto;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: #fff;
+  box-shadow: 0 10px 24px rgba(15, 23, 42, 0.14);
+  z-index: 40;
+}
+
+.mapping-team-option {
+  display: block;
+  width: 100%;
+  text-align: left;
+  background: #fff;
+  border: 0;
+  border-bottom: 1px solid #edf2f7;
+  border-radius: 0;
+  padding: 7px 10px;
+  color: #0f172a;
+  font-size: 0.84rem;
+}
+
+.mapping-team-option:last-child {
+  border-bottom: 0;
+}
+
+.mapping-team-option:hover {
+  background: #f8fafc;
+  border-color: #edf2f7;
+}
+
+.mapping-team-option-empty {
+  padding: 8px 10px;
+  color: #64748b;
+  font-size: 0.82rem;
+  font-style: italic;
 }
 
 .mapping-empty {
@@ -411,16 +509,22 @@ main {
   color: #b45309;
 }
 
+.games-table td.no-xg-cell .metric-stack-label,
+.games-table td.no-xg-cell .metric-stack-value {
+  color: #94a3b8;
+}
+
 .details-panel {
   position: fixed;
+  left: 0;
   right: 0;
   top: 0;
   z-index: 30;
-  width: min(1040px, 100vw);
+  width: 100vw;
   height: 100vh;
   background: #fff;
-  border-left: 1px solid var(--line);
-  box-shadow: -8px 0 30px rgba(15, 23, 42, 0.14);
+  border-left: 0;
+  box-shadow: none;
   padding: 16px;
   overflow: auto;
 }
