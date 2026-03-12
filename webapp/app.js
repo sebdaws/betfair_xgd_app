@@ -45,9 +45,11 @@ let currentDayIndex = 0;
 let selectedMarketId = null;
 let gamesMode = "upcoming";
 let fillMissingDays = true;
+let historicalHasMoreOlder = false;
 let selectedLeagues = new Set();
 let selectedTiers = new Set();
 let sortMode = "kickoff";
+let leagueFilterSearch = "";
 let gamesShownCount = 0;
 let gamesShownAuto = true;
 let rollingWindowCount = 3;
@@ -116,6 +118,9 @@ function setGamesMode(mode, reload = true) {
   const changed = nextMode !== gamesMode;
   gamesMode = nextMode;
   fillMissingDays = gamesMode !== "historical";
+  if (gamesMode !== "historical") {
+    historicalHasMoreOlder = false;
+  }
   upcomingModeBtn.classList.toggle("active", gamesMode === "upcoming");
   historicalModeBtn.classList.toggle("active", gamesMode === "historical");
   todayBtn.textContent = gamesMode === "historical" ? "Latest" : "Today";
@@ -425,15 +430,44 @@ function renderManualMappingSections(payload) {
       const method = String(row.match_method || "").trim().toLowerCase();
       const methodLabel = method ? `${method.charAt(0).toUpperCase()}${method.slice(1)}` : "Auto";
       const typeLabel = isManual ? "Manual" : `Auto (${methodLabel})`;
+      const rowOptions = [...sofaTeams];
+      if (sofaName && !rowOptions.includes(sofaName)) {
+        rowOptions.unshift(sofaName);
+      }
+      const optionsHtml = rowOptions
+        .map((teamName) => `<option value="${escapeHtml(teamName)}">${escapeHtml(teamName)}</option>`)
+        .join("");
       const actionHtml = isManual
-        ? `<button type="button" class="mapping-delete-btn">Delete</button>`
-        : `<span class="mapping-auto-badge">Auto</span>`;
+        ? `
+            <button type="button" class="mapping-save-btn">Save</button>
+            <button type="button" class="mapping-delete-btn">Delete</button>
+          `
+        : `<button type="button" class="mapping-save-btn">Override</button>`;
       tr.innerHTML = `
         <td>${escapeHtml(rawName)}</td>
-        <td>${escapeHtml(sofaName)}</td>
+        <td>
+          <select class="mapping-select">
+            ${optionsHtml}
+          </select>
+        </td>
         <td>${escapeHtml(typeLabel)}</td>
         <td>${actionHtml}</td>
       `;
+      const select = tr.querySelector(".mapping-select");
+      if (select && sofaName) {
+        select.value = sofaName;
+      }
+      const saveBtn = tr.querySelector(".mapping-save-btn");
+      if (saveBtn && select) {
+        saveBtn.addEventListener("click", async () => {
+          const selectedSofaName = String(select.value || "").trim();
+          if (!selectedSofaName) {
+            mappingStatus.textContent = "Select a SofaScore team before saving.";
+            return;
+          }
+          await upsertManualTeamMapping(rawName, selectedSofaName);
+        });
+      }
       const deleteBtn = tr.querySelector(".mapping-delete-btn");
       if (deleteBtn && isManual) {
         deleteBtn.addEventListener("click", async () => {
@@ -855,7 +889,7 @@ function toMetricNumberOrNull(value) {
 }
 
 function hasNoXgMetricSignal(game) {
-  const values = [
+  const coreValues = [
     game?.season_strength,
     game?.last5_strength,
     game?.last3_strength,
@@ -863,9 +897,51 @@ function hasNoXgMetricSignal(game) {
     game?.last5_xgd,
     game?.last3_xgd,
   ];
-  const numericValues = values.map(toMetricNumberOrNull).filter((v) => v != null);
-  if (!numericValues.length) return false;
-  return numericValues.every((v) => Math.abs(v) < 1e-9);
+  const rangeValues = [
+    game?.season_min_xg,
+    game?.last5_min_xg,
+    game?.last3_min_xg,
+    game?.season_max_xg,
+    game?.last5_max_xg,
+    game?.last3_max_xg,
+  ];
+  const coreNumeric = coreValues.map(toMetricNumberOrNull).filter((v) => v != null);
+  if (!coreNumeric.length) return false;
+  const coreAllZero = coreNumeric.every((v) => Math.abs(v) < 1e-9);
+  if (!coreAllZero) return false;
+
+  // No-xG leagues usually produce all-zero xG bands too.
+  const rangeNumeric = rangeValues.map(toMetricNumberOrNull).filter((v) => v != null);
+  if (!rangeNumeric.length) return true;
+  return rangeNumeric.every((v) => Math.abs(v) < 1e-9);
+}
+
+function getHcMetricConsensusDirection(game, periodValues) {
+  const handicap = toMetricNumberOrNull(game?.mainline);
+  if (handicap == null) return null;
+  const metricValues = periodValues.map(toMetricNumberOrNull);
+  if (metricValues.some((value) => value == null)) return null;
+  const sums = metricValues.map((value) => handicap + value);
+  const threshold = 0.1;
+  if (sums.every((value) => value > threshold)) return "positive";
+  if (sums.every((value) => value < -threshold)) return "negative";
+  return null;
+}
+
+function getHcXgdConsensusDirection(game) {
+  return getHcMetricConsensusDirection(game, [
+    game?.season_strength,
+    game?.last5_strength,
+    game?.last3_strength,
+  ]);
+}
+
+function getHcXgdPerfConsensusDirection(game) {
+  return getHcMetricConsensusDirection(game, [
+    game?.season_xgd,
+    game?.last5_xgd,
+    game?.last3_xgd,
+  ]);
 }
 
 function buildRecentMatchesTableHtml(title, rows, relevantTeamName = "") {
@@ -1592,7 +1668,7 @@ function buildStatsGamesShownControlHtml(value, maxValue) {
 }
 
 function updateSortButtonLabel() {
-  sortModeBtn.textContent = sortMode === "kickoff" ? "Sort: Kickoff" : "Sort: League";
+  sortModeBtn.value = sortMode;
 }
 
 function setLeagueFilterOpen(isOpen) {
@@ -1632,6 +1708,24 @@ function updateTierFilterButtonLabel() {
 function updateLeagueFilterMenu(leagues) {
   leagueFilterMenu.innerHTML = "";
 
+  const searchWrap = document.createElement("div");
+  searchWrap.className = "league-filter-search";
+  const searchInput = document.createElement("input");
+  searchInput.type = "search";
+  searchInput.className = "league-filter-search-input";
+  searchInput.placeholder = "Search leagues...";
+  searchInput.value = leagueFilterSearch;
+  searchInput.addEventListener("input", () => {
+    leagueFilterSearch = String(searchInput.value || "");
+    updateLeagueFilterMenu(leagues);
+    const nextInput = leagueFilterMenu.querySelector(".league-filter-search-input");
+    if (nextInput instanceof HTMLInputElement) {
+      nextInput.focus();
+    }
+  });
+  searchWrap.appendChild(searchInput);
+  leagueFilterMenu.appendChild(searchWrap);
+
   const allRow = document.createElement("label");
   allRow.className = "league-option";
   const allInput = document.createElement("input");
@@ -1644,7 +1738,19 @@ function updateLeagueFilterMenu(leagues) {
   allRow.appendChild(allText);
   leagueFilterMenu.appendChild(allRow);
 
-  for (const league of leagues) {
+  const query = leagueFilterSearch.trim().toLowerCase();
+  const visibleLeagues = !query
+    ? leagues
+    : leagues.filter((league) => String(league || "").toLowerCase().includes(query));
+  if (!visibleLeagues.length) {
+    const empty = document.createElement("p");
+    empty.className = "league-filter-empty";
+    empty.textContent = "No leagues match search.";
+    leagueFilterMenu.appendChild(empty);
+    return;
+  }
+
+  for (const league of visibleLeagues) {
     const row = document.createElement("label");
     row.className = "league-option";
     const input = document.createElement("input");
@@ -1817,6 +1923,24 @@ function kickoffSortKey(game) {
 
 function sortGamesForDay(games) {
   const out = [...games];
+  const tierSortRank = (tierValue) => {
+    const tierText = String(tierValue || "").trim().toLowerCase();
+    if (!tierText) return Number.MAX_SAFE_INTEGER;
+    const match = tierText.match(/(?:^|\s)tier\s*([0-9]+)(?:\s|$)/i) || tierText.match(/^([0-9]+)$/);
+    if (!match) return Number.MAX_SAFE_INTEGER;
+    const tierNum = Number.parseInt(match[1], 10);
+    return Number.isFinite(tierNum) ? tierNum : Number.MAX_SAFE_INTEGER;
+  };
+  if (sortMode === "tier") {
+    out.sort((a, b) => {
+      const tierCmp = tierSortRank(a.tier) - tierSortRank(b.tier);
+      if (tierCmp !== 0) return tierCmp;
+      const leagueCmp = String(a.competition || "").localeCompare(String(b.competition || ""));
+      if (leagueCmp !== 0) return leagueCmp;
+      return kickoffSortKey(a) - kickoffSortKey(b);
+    });
+    return out;
+  }
   if (sortMode === "league") {
     out.sort((a, b) => {
       const leagueCmp = String(a.competition || "").localeCompare(String(b.competition || ""));
@@ -1827,6 +1951,18 @@ function sortGamesForDay(games) {
   }
   out.sort((a, b) => kickoffSortKey(a) - kickoffSortKey(b));
   return out;
+}
+
+function tierRowClass(tierValue) {
+  const tierText = String(tierValue || "").trim().toLowerCase();
+  if (!tierText) return "";
+  const match = tierText.match(/(?:^|\s)tier\s*([0-9]+)(?:\s|$)/i) || tierText.match(/^([0-9]+)$/);
+  if (!match) return "";
+  const tierNum = Number.parseInt(match[1], 10);
+  if (tierNum === 1) return "tier-row-1";
+  if (tierNum === 2) return "tier-row-2";
+  if (tierNum === 3) return "tier-row-3";
+  return "";
 }
 
 function dayHasComputedXgdMetrics(dayGames) {
@@ -1876,20 +2012,42 @@ async function calculateHistoricalDayXgd(dayIso) {
   }
 }
 
-async function loadGames() {
-  statusText.textContent = gamesMode === "historical" ? "Loading historical matches..." : "Loading games...";
+async function loadGames(options = {}) {
+  const loadMoreHistorical = Boolean(options && options.loadMoreHistorical);
+  const shouldLoadMoreHistorical = gamesMode === "historical" && loadMoreHistorical;
+  if (shouldLoadMoreHistorical && !historicalHasMoreOlder) {
+    return true;
+  }
+
+  statusText.textContent = shouldLoadMoreHistorical
+    ? "Loading older historical matches..."
+    : (gamesMode === "historical" ? "Loading historical matches..." : "Loading games...");
   try {
-    const res = await fetch(`/api/games?mode=${encodeURIComponent(gamesMode)}`);
+    const query = new URLSearchParams();
+    query.set("mode", gamesMode);
+    if (shouldLoadMoreHistorical) {
+      query.set("load_more", "1");
+    }
+    const res = await fetch(`/api/games?${query.toString()}`);
     const payload = await parseApiResponse(res);
     if (!res.ok) throw new Error(payload.error || "Failed to load games");
     rawDays = payload.days || [];
     fillMissingDays = payload.fill_missing_days !== false;
+    historicalHasMoreOlder = gamesMode === "historical" ? Boolean(payload.has_more_older) : false;
     updateLeagueFilterOptions();
     updateTierFilterOptions(payload.tiers || []);
     applyGameFilters();
     renderCurrentDay();
     if (gamesMode === "historical") {
-      statusText.textContent = `Loaded ${payload.total_games || 0} historical matches`;
+      const loadedTotal = Number(payload.total_games) || 0;
+      if (shouldLoadMoreHistorical) {
+        const addedGames = Number(payload.added_games) || 0;
+        statusText.textContent = `Loaded ${addedGames} older matches (${loadedTotal} total)`;
+      } else if (loadedTotal === 0 && historicalHasMoreOlder) {
+        statusText.textContent = "No matches in the latest window. Click Previous Day to load older matches.";
+      } else {
+        statusText.textContent = `Loaded ${loadedTotal} historical matches`;
+      }
     } else {
       statusText.textContent = `Loaded ${payload.total_games || 0} games`;
     }
@@ -1901,8 +2059,10 @@ async function loadGames() {
       selectedMarketId = null;
       detailsPanel.classList.add("hidden");
     }
+    return true;
   } catch (err) {
     statusText.textContent = String(err.message || err);
+    return false;
   }
 }
 
@@ -1912,28 +2072,33 @@ function renderCurrentDay() {
 
   if (!allDays.length) {
     dayLabel.textContent = "No games";
-    prevDayBtn.disabled = true;
+    const canLoadOlderHistorical = gamesMode === "historical" && historicalHasMoreOlder;
+    prevDayBtn.disabled = !canLoadOlderHistorical;
     todayBtn.disabled = true;
     nextDayBtn.disabled = true;
-    calendarView.innerHTML = "<p>No games found for selected filters.</p>";
+    calendarView.innerHTML = canLoadOlderHistorical
+      ? "<p>No games in the current historical window. Click Previous Day to load older matches.</p>"
+      : "<p>No games found for selected filters.</p>";
     return;
   }
 
   currentDayIndex = clampDayIndex(currentDayIndex);
   const day = allDays[currentDayIndex];
   const sortedDayGames = sortGamesForDay(day.games || []);
+  const isHistorical = gamesMode === "historical";
   const todayIndex = allDays.findIndex((entry) => String(entry.date || "") === getTodayIsoUtc());
   const jumpTargetIndex = (todayIndex >= 0)
     ? todayIndex
     : (gamesMode === "historical" ? allDays.length - 1 : -1);
   dayLabel.textContent = `${day.date_label} (${sortedDayGames.length})`;
-  prevDayBtn.disabled = currentDayIndex === 0;
+  const atOldestLoadedDay = currentDayIndex === 0;
+  const canLoadOlderHistorical = isHistorical && atOldestLoadedDay && historicalHasMoreOlder;
+  prevDayBtn.disabled = atOldestLoadedDay && !canLoadOlderHistorical;
   todayBtn.disabled = jumpTargetIndex < 0 || currentDayIndex === jumpTargetIndex;
   nextDayBtn.disabled = currentDayIndex === allDays.length - 1;
 
   const block = document.createElement("section");
   block.className = "day-block";
-  const isHistorical = gamesMode === "historical";
 
   const header = document.createElement("div");
   header.className = "day-header day-header-bar";
@@ -1977,17 +2142,15 @@ function renderCurrentDay() {
           <th>League</th>
           <th>Game</th>
           <th class="home-price-col">Home</th>
-          <th class="line-col">Handicap</th>
+          <th class="line-col handicap-line-col">HC</th>
           <th class="away-price-col">Away</th>
           <th class="goal-under-price-col">Under</th>
           <th class="goal-line-col">Goals</th>
           <th class="goal-over-price-col">Over</th>
-          <th class="line-col">Score</th>
-          <th>xG H</th>
-          <th>xG A</th>
-          <th>Corners H-A</th>
-          <th>Cards H-A</th>
-          <th>xStrength</th>
+          <th class="xg-home-col">xG H</th>
+          <th class="line-col score-col">Score</th>
+          <th class="xg-away-col">xG A</th>
+          <th>xGD</th>
           <th>xGD Perf</th>
           <th>Min</th>
           <th>Max</th>
@@ -2003,9 +2166,9 @@ function renderCurrentDay() {
           <th>League</th>
           <th>Game</th>
           <th class="home-price-col">Home</th>
-          <th class="line-col">Handicap</th>
+          <th class="line-col handicap-line-col">HC</th>
           <th class="away-price-col">Away</th>
-          <th>xStrength</th>
+          <th>xGD</th>
           <th>xGD Perf</th>
           <th class="goal-under-price-col">Under</th>
           <th class="goal-line-col">Goals</th>
@@ -2021,7 +2184,7 @@ function renderCurrentDay() {
   const tbody = table.querySelector("tbody");
   if (!sortedDayGames.length) {
     const row = document.createElement("tr");
-    row.innerHTML = `<td class="no-games-row" colspan="${isHistorical ? "18" : "13"}">No games</td>`;
+    row.innerHTML = `<td class="no-games-row" colspan="${isHistorical ? "16" : "13"}">No games</td>`;
     tbody.appendChild(row);
   } else {
     for (const game of sortedDayGames) {
@@ -2029,44 +2192,71 @@ function renderCurrentDay() {
       const row = document.createElement("tr");
       row.dataset.marketId = game.market_id;
       if (selectedMarketId === game.market_id) row.classList.add("selected");
+      const tierClass = tierRowClass(game.tier);
+      if (tierClass) row.classList.add(tierClass);
       const xgdMismatch = Boolean(game.xgd_competition_mismatch);
       const noXgMetrics = hasNoXgMetricSignal(game);
-      const metricCellClasses = ["metric-stack-cell"];
-      const metricCellNotes = [];
+      const baseMetricCellClasses = ["metric-stack-cell"];
+      const baseMetricCellNotes = [];
       if (xgdMismatch) {
-        metricCellClasses.push("xgd-mismatch-cell");
-        metricCellNotes.push("xGD derived from a different competition than this fixture.");
+        baseMetricCellClasses.push("xgd-mismatch-cell");
+        baseMetricCellNotes.push("xGD derived from a different competition than this fixture.");
       }
       if (noXgMetrics) {
-        metricCellClasses.push("no-xg-cell");
-        metricCellNotes.push("No xG data available for this league; xStrength/xGD shown as 0.");
+        baseMetricCellClasses.push("no-xg-cell");
+        baseMetricCellNotes.push("No xG data available for this league; xGD/xGD Perf shown as -.");
       }
-      const metricCellClass = metricCellClasses.join(" ");
-      const metricCellTitleAttr = metricCellNotes.length
-        ? ` title="${escapeHtml(metricCellNotes.join(" | "))}"`
+      const seasonStrengthValue = noXgMetrics ? "-" : game.season_strength;
+      const last5StrengthValue = noXgMetrics ? "-" : game.last5_strength;
+      const last3StrengthValue = noXgMetrics ? "-" : game.last3_strength;
+      const seasonXgdValue = noXgMetrics ? "-" : game.season_xgd;
+      const last5XgdValue = noXgMetrics ? "-" : game.last5_xgd;
+      const last3XgdValue = noXgMetrics ? "-" : game.last3_xgd;
+      const xgdCellClasses = [...baseMetricCellClasses];
+      const xgdCellNotes = [...baseMetricCellNotes];
+      const hcXgdConsensusDirection = noXgMetrics ? null : getHcXgdConsensusDirection(game);
+      if (hcXgdConsensusDirection === "positive") {
+        xgdCellClasses.push("hc-xgd-consensus-positive");
+        xgdCellNotes.push("HC + xGD is > 0.1 for S/5/3.");
+      } else if (hcXgdConsensusDirection === "negative") {
+        xgdCellClasses.push("hc-xgd-consensus-negative");
+        xgdCellNotes.push("HC + xGD is < -0.1 for S/5/3.");
+      }
+      const xgdCellClass = xgdCellClasses.join(" ");
+      const xgdCellTitleAttr = xgdCellNotes.length
+        ? ` title="${escapeHtml(xgdCellNotes.join(" | "))}"`
+        : "";
+
+      const xgdPerfCellClasses = [...baseMetricCellClasses];
+      const xgdPerfCellNotes = [...baseMetricCellNotes];
+      const hcXgdPerfConsensusDirection = noXgMetrics ? null : getHcXgdPerfConsensusDirection(game);
+      if (hcXgdPerfConsensusDirection === "positive") {
+        xgdPerfCellClasses.push("hc-xgd-consensus-positive");
+        xgdPerfCellNotes.push("HC + xGD Perf is > 0.1 for S/5/3.");
+      } else if (hcXgdPerfConsensusDirection === "negative") {
+        xgdPerfCellClasses.push("hc-xgd-consensus-negative");
+        xgdPerfCellNotes.push("HC + xGD Perf is < -0.1 for S/5/3.");
+      }
+      const xgdPerfCellClass = xgdPerfCellClasses.join(" ");
+      const xgdPerfCellTitleAttr = xgdPerfCellNotes.length
+        ? ` title="${escapeHtml(xgdPerfCellNotes.join(" | "))}"`
         : "";
       if (isHistorical) {
-        const cornersHome = String(game.home_corners_actual || "-");
-        const cornersAway = String(game.away_corners_actual || "-");
-        const cardsHome = String(game.home_cards_actual || "-");
-        const cardsAway = String(game.away_cards_actual || "-");
         row.innerHTML = `
           <td>${escapeHtml(game.kickoff_utc)}</td>
           <td>${escapeHtml(game.competition)}</td>
           <td>${escapeHtml(game.event_name)}</td>
           <td class="home-price-col">${escapeHtml(game.home_price || "-")}</td>
-          <td class="line-col">${escapeHtml(game.mainline || "-")}</td>
+          <td class="line-col handicap-line-col">${escapeHtml(game.mainline || "-")}</td>
           <td class="away-price-col">${escapeHtml(game.away_price || "-")}</td>
           <td class="goal-under-price-col">${escapeHtml(game.goal_under_price || "-")}</td>
           <td class="goal-line-col">${escapeHtml(game.goal_mainline || "-")}</td>
           <td class="goal-over-price-col">${escapeHtml(game.goal_over_price || "-")}</td>
-          <td class="line-col">${escapeHtml(game.scoreline || "-")}</td>
-          <td>${escapeHtml(game.home_xg_actual || "-")}</td>
-          <td>${escapeHtml(game.away_xg_actual || "-")}</td>
-          <td>${escapeHtml(`${cornersHome}-${cornersAway}`)}</td>
-          <td>${escapeHtml(`${cardsHome}-${cardsAway}`)}</td>
-          <td class="${metricCellClass}"${metricCellTitleAttr}>${buildPeriodMetricStackCell(game.season_strength, game.last5_strength, game.last3_strength, xgdMismatch)}</td>
-          <td class="${metricCellClass}"${metricCellTitleAttr}>${buildPeriodMetricStackCell(game.season_xgd, game.last5_xgd, game.last3_xgd, xgdMismatch)}</td>
+          <td class="xg-home-col">${escapeHtml(game.home_xg_actual || "-")}</td>
+          <td class="line-col score-col">${escapeHtml(game.scoreline || "-")}</td>
+          <td class="xg-away-col">${escapeHtml(game.away_xg_actual || "-")}</td>
+          <td class="${xgdCellClass}"${xgdCellTitleAttr}>${buildPeriodMetricStackCell(seasonStrengthValue, last5StrengthValue, last3StrengthValue, xgdMismatch)}</td>
+          <td class="${xgdPerfCellClass}"${xgdPerfCellTitleAttr}>${buildPeriodMetricStackCell(seasonXgdValue, last5XgdValue, last3XgdValue, xgdMismatch)}</td>
           <td class="metric-stack-cell"${xgdMismatch ? ` title="xGD derived from a different competition than this fixture."` : ""}>${buildPeriodMetricStackCell(game.season_min_xg, game.last5_min_xg, game.last3_min_xg, xgdMismatch)}</td>
           <td class="metric-stack-cell"${xgdMismatch ? ` title="xGD derived from a different competition than this fixture."` : ""}>${buildPeriodMetricStackCell(game.season_max_xg, game.last5_max_xg, game.last3_max_xg, xgdMismatch)}</td>
         `;
@@ -2076,10 +2266,10 @@ function renderCurrentDay() {
           <td>${escapeHtml(game.competition)}</td>
           <td>${escapeHtml(game.event_name)}</td>
           <td class="home-price-col">${escapeHtml(game.home_price || "-")}</td>
-          <td class="line-col">${escapeHtml(game.mainline || "-")}</td>
+          <td class="line-col handicap-line-col">${escapeHtml(game.mainline || "-")}</td>
           <td class="away-price-col">${escapeHtml(game.away_price || "-")}</td>
-          <td class="${metricCellClass}"${metricCellTitleAttr}>${buildPeriodMetricStackCell(game.season_strength, game.last5_strength, game.last3_strength, xgdMismatch)}</td>
-          <td class="${metricCellClass}"${metricCellTitleAttr}>${buildPeriodMetricStackCell(game.season_xgd, game.last5_xgd, game.last3_xgd, xgdMismatch)}</td>
+          <td class="${xgdCellClass}"${xgdCellTitleAttr}>${buildPeriodMetricStackCell(seasonStrengthValue, last5StrengthValue, last3StrengthValue, xgdMismatch)}</td>
+          <td class="${xgdPerfCellClass}"${xgdPerfCellTitleAttr}>${buildPeriodMetricStackCell(seasonXgdValue, last5XgdValue, last3XgdValue, xgdMismatch)}</td>
           <td class="goal-under-price-col">${escapeHtml(game.goal_under_price || "-")}</td>
           <td class="goal-line-col">${escapeHtml(game.goal_mainline || "-")}</td>
           <td class="goal-over-price-col">${escapeHtml(game.goal_over_price || "-")}</td>
@@ -2457,7 +2647,15 @@ leagueFilterBtn.addEventListener("click", (event) => {
   event.stopPropagation();
   const willOpen = leagueFilterMenu.classList.contains("hidden");
   setLeagueFilterOpen(willOpen);
-  if (willOpen) setTierFilterOpen(false);
+  if (willOpen) {
+    setTierFilterOpen(false);
+    window.setTimeout(() => {
+      const searchInput = leagueFilterMenu.querySelector(".league-filter-search-input");
+      if (searchInput instanceof HTMLInputElement) {
+        searchInput.focus();
+      }
+    }, 0);
+  }
 });
 leagueFilterMenu.addEventListener("change", (event) => {
   const target = event.target;
@@ -2517,13 +2715,46 @@ document.addEventListener("keydown", (event) => {
     setTierFilterOpen(false);
   }
 });
-sortModeBtn.addEventListener("click", () => {
-  sortMode = sortMode === "kickoff" ? "league" : "kickoff";
+sortModeBtn.addEventListener("change", () => {
+  const selectedSortMode = String(sortModeBtn.value || "").trim().toLowerCase();
+  if (selectedSortMode === "league" || selectedSortMode === "tier" || selectedSortMode === "kickoff") {
+    sortMode = selectedSortMode;
+  } else {
+    sortMode = "kickoff";
+  }
   updateSortButtonLabel();
   renderCurrentDay();
 });
-prevDayBtn.addEventListener("click", () => {
-  currentDayIndex = clampDayIndex(currentDayIndex - 1);
+prevDayBtn.addEventListener("click", async () => {
+  if (gamesMode !== "historical") {
+    currentDayIndex = clampDayIndex(currentDayIndex - 1);
+    renderCurrentDay();
+    return;
+  }
+
+  if (currentDayIndex > 0) {
+    currentDayIndex = clampDayIndex(currentDayIndex - 1);
+    renderCurrentDay();
+    return;
+  }
+
+  if (!historicalHasMoreOlder) {
+    return;
+  }
+
+  const currentDayIso = allDays[currentDayIndex] && allDays[currentDayIndex].date
+    ? String(allDays[currentDayIndex].date)
+    : "";
+  const ok = await loadGames({ loadMoreHistorical: true });
+  if (!ok || !allDays.length) {
+    return;
+  }
+  const currentDayAfterReloadIndex = allDays.findIndex((entry) => String(entry.date || "") === currentDayIso);
+  if (currentDayAfterReloadIndex > 0) {
+    currentDayIndex = currentDayAfterReloadIndex - 1;
+  } else {
+    currentDayIndex = clampDayIndex(currentDayIndex - 1);
+  }
   renderCurrentDay();
 });
 todayBtn.addEventListener("click", () => {

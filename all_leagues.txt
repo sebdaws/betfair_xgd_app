@@ -29,6 +29,7 @@
 3039445|Costa Rican Liga de Ascenso
 2079376|Costa Rican Primera Division
 17|Croatian HNL
+3992967|Croatian Prva NL
 19|Cypriot 1st Division
 12204204|Czech 1 Liga
 862638|Czech 2 Liga
@@ -52,7 +53,6 @@
 37|English Sky Bet League 2
 12511339|English U21 Pro Development League
 12202273|English WSL
-873203|Estonian Esiliiga
 12216175|Estonian Premier League
 11869656|Ethiopian Premier League
 12232258|Faroe 1 Deild
@@ -76,6 +76,7 @@
 833990|Hong Kong Premier League
 1842928|Hungarian NB I
 12213874|Icelandic League Cup B
+12199393|Indian I-League
 6251219|Indian Super League
 822951|Indonesian Super League
 12005855|Irish Division 1
@@ -87,13 +88,16 @@
 12782082|Japanese J. League 100 Year Vision
 12200652|Jordanian Premier League
 12216976|Latvian Virsliga
+1587980|Lithuanian 1 Lyga
 879221|Lithuanian A Lyga
+840886|Malaysian Super League
 5627174|Mexican Liga MX
 11687921|Mexican Liga MX Femenil
-11730241|Nigerian Premier League
+8770515|Mexican Liga Premier
 11068551|Norwegian Eliteserien
 11635923|Omani Professional League
 3972877|Panamanian Premier League
+839575|Paraguayan Primera Division
 8594603|Peruvian Primera Division
 11838780|Polish 2 Liga
 97|Polish Ekstraklasa
@@ -143,6 +147,7 @@
 7247362|Ugandan Premier League
 139|Ukrainian Premier League
 843454|Uruguayan Primera Division
+6104087|Uruguayan Segunda Division
 141|US MLS
 1065530|Venezuelan Primera Division
 12209059|Vietnamese V-League

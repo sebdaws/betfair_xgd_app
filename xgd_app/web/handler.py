@@ -56,7 +56,9 @@ class AppHandler(BaseHTTPRequestHandler):
         if path == "/api/games":
             query = parse_qs(parsed.query)
             mode = (query.get("mode") or ["upcoming"])[0]
-            return self._serve_games(mode=mode)
+            load_more_raw = (query.get("load_more") or ["0"])[0]
+            load_more_historical = str(load_more_raw or "").strip().lower() in {"1", "true", "yes", "on"}
+            return self._serve_games(mode=mode, load_more_historical=load_more_historical)
         if path == "/api/game-xgd":
             query = parse_qs(parsed.query)
             market_id = (query.get("market_id") or [""])[0]
@@ -87,9 +89,12 @@ class AppHandler(BaseHTTPRequestHandler):
 
         self._json({"error": "Not found"}, status=HTTPStatus.NOT_FOUND)
 
-    def _serve_games(self, mode: str = "upcoming") -> None:
+    def _serve_games(self, mode: str = "upcoming", load_more_historical: bool = False) -> None:
         try:
-            payload = self.state.list_games_grouped_by_day(mode=mode)
+            payload = self.state.list_games_grouped_by_day(
+                mode=mode,
+                load_more_historical=bool(load_more_historical),
+            )
             self._json(payload)
         except Exception as exc:
             self._json({"error": str(exc)}, status=HTTPStatus.INTERNAL_SERVER_ERROR)

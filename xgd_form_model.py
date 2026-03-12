@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import warnings
 from typing import Any
 
 import numpy as np
@@ -231,7 +230,6 @@ def calc_wyscout_form_tables(games, data_df, periods=("Season", 5, 3), return_so
                 warning_message = (
                     f"{home} vs {away} on {cutoff.date()}: no common active season found from season boundaries."
                 )
-                warnings.warn(warning_message, UserWarning)
                 home_perf = home_perf.iloc[0:0].copy()
                 away_perf = away_perf.iloc[0:0].copy()
             elif len(home_perf) < min_games or len(away_perf) < min_games:
@@ -239,13 +237,11 @@ def calc_wyscout_form_tables(games, data_df, periods=("Season", 5, 3), return_so
                     f"{home} vs {away} on {cutoff.date()}: same-season sample is small "
                     f"(season_id={season_used}, home={len(home_perf)}, away={len(away_perf)}, min_games={min_games})."
                 )
-                warnings.warn(warning_message, UserWarning)
         elif "season_id" in form_df.columns:
             warning_message = (
                 f"{home} vs {away}: season boundaries unavailable in input; "
                 "unable to enforce strict same-season filtering."
             )
-            warnings.warn(warning_message, UserWarning)
 
         home_df = _build_period_df(home_perf)
         away_df = _build_period_df(away_perf)

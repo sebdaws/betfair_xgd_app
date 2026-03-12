@@ -45,7 +45,12 @@
           <button id="tierFilterBtn" type="button" aria-haspopup="true" aria-expanded="false">All Tiers</button>
           <div id="tierFilterMenu" class="league-filter-menu hidden" role="menu" aria-label="Tier filter options"></div>
         </div>
-        <button id="sortModeBtn" type="button">Sort: Kickoff</button>
+        <label for="sortModeBtn" class="control-label">Sort</label>
+        <select id="sortModeBtn" aria-label="Sort games">
+          <option value="kickoff">Kickoff</option>
+          <option value="league">League</option>
+          <option value="tier">Tier</option>
+        </select>
       </section>
       <section id="calendarView" class="calendar-view"></section>
     </section>

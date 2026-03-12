@@ -110,7 +110,9 @@ class AppState:
         self._historical_match_price_cache: dict[tuple[str, str, str], dict[str, str]] = {}
 
         self.games_df = pd.DataFrame()
-        self.historical_games_df = self.historical_data_service._build_historical_games_df()
+        self.historical_games_df = pd.DataFrame()
+        self.upcoming_metrics_cache: dict[str, dict[str, Any]] = {}
+        self.historical_data_service.initialize_historical_games(initial_days=7)
         self.last_refresh: dt.datetime | None = None
 
     def get_manual_mapping_lookup_snapshot(self) -> dict[str, str]:
@@ -151,8 +153,21 @@ class AppState:
             if col not in games_df.columns:
                 games_df[col] = None
 
+        cache_updates: dict[str, dict[str, Any]] = {}
+        if "market_id" in games_df.columns:
+            metric_cols = [col for col in PERIOD_METRIC_COLUMNS if col in games_df.columns]
+            if metric_cols:
+                metric_rows_df = games_df[["market_id", *metric_cols]].dropna(subset=["market_id"])
+                for row in metric_rows_df.to_dict(orient="records"):
+                    market_id = str(row.get("market_id", "")).strip()
+                    if not market_id:
+                        continue
+                    cache_updates[market_id] = {col: row.get(col) for col in metric_cols}
+
         with self.lock:
             self.games_df = games_df
+            if cache_updates:
+                self.upcoming_metrics_cache.update(cache_updates)
 
     # Compatibility wrappers for migrated historical-data helpers.
     @staticmethod
@@ -238,8 +253,8 @@ class AppState:
     def refresh_games(self, force: bool = False) -> None:
         self.games_service.refresh(force=force)
 
-    def list_games_grouped_by_day(self, mode: str = "upcoming") -> dict[str, Any]:
-        return self.games_service.list_grouped_by_day(mode=mode)
+    def list_games_grouped_by_day(self, mode: str = "upcoming", load_more_historical: bool = False) -> dict[str, Any]:
+        return self.games_service.list_grouped_by_day(mode=mode, load_more_historical=load_more_historical)
 
     def calculate_historical_day_xgd(self, day_iso: str) -> dict[str, Any]:
         return self.historical_service.calculate_day_xgd(day_iso=day_iso)

@@ -55,6 +55,9 @@ DEFAULT_MANUAL_TEAM_MAPPINGS = APP_DIR / "manual_team_mappings.json"
 DEFAULT_MANUAL_COMPETITION_MAPPINGS = APP_DIR / "manual_competition_mappings.json"
 DEFAULT_LEAGUE_TIER = "Unassigned"
 DEFAULT_BETFAIR_HISTORICAL_DIR = APP_DIR / "data" / "BASIC"
+_fallback_historical_dir = APP_DIR / "historical_data" / "BASIC"
+if (not DEFAULT_BETFAIR_HISTORICAL_DIR.exists()) and _fallback_historical_dir.exists():
+    DEFAULT_BETFAIR_HISTORICAL_DIR = _fallback_historical_dir
 
 MONTH_ABBR_TO_NUM = {
     "jan": 1,
@@ -1221,7 +1224,8 @@ def source_competitions_differ_from_betfair_competition(
 
     if not source_keys:
         return False
-    return any(
+    # Treat as mismatch only when none of the source competitions align with the fixture competition.
+    return all(
         all(not competition_keys_match(expected_key, source_key) for expected_key in expected_keys)
         for source_key in source_keys
     )
@@ -1443,4 +1447,3 @@ def format_day_label(day_iso: str) -> str:
         return dt_obj.strftime("%a %Y-%m-%d")
     except Exception:
         return day_iso
-

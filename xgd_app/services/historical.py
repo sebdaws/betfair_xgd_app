@@ -146,7 +146,12 @@ class HistoricalService:
             updated_df = self.state.historical_games_df.copy()
             update_mask = updated_df["kickoff_time"].dt.strftime("%Y-%m-%d") == day_text
             for col in metric_cols:
-                updated_df.loc[update_mask, col] = None
+                if pd.api.types.is_bool_dtype(updated_df[col].dtype):
+                    # Use nullable boolean so clearing values does not trigger dtype warnings.
+                    updated_df[col] = updated_df[col].astype("boolean")
+                    updated_df.loc[update_mask, col] = pd.NA
+                else:
+                    updated_df.loc[update_mask, col] = float("nan")
 
             if not metrics_df.empty:
                 update_cols = ["market_id", *metric_cols]

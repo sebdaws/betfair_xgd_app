@@ -186,7 +186,7 @@ class GamesService:
                 delta = (now - self.state.last_refresh).total_seconds()
                 if delta < self.state.refresh_seconds:
                     return
-            cached_games_df = self.state.games_df.copy()
+            metrics_cache = dict(getattr(self.state, "upcoming_metrics_cache", {}))
 
         client = self._login_client()
         try:
@@ -396,21 +396,20 @@ class GamesService:
 
         games_df = pd.DataFrame(rows)
         if not games_df.empty:
-            cached_metric_cols = [col for col in self.period_metric_columns if col in cached_games_df.columns]
-            cached_metrics_df = pd.DataFrame()
-            if (not cached_games_df.empty) and ("market_id" in cached_games_df.columns) and cached_metric_cols:
-                cached_metrics_df = (
-                    cached_games_df[["market_id", *cached_metric_cols]]
-                    .dropna(subset=["market_id"])
-                    .drop_duplicates(subset=["market_id"], keep="first")
-                )
+            market_ids = [str(value).strip() for value in games_df["market_id"].tolist() if str(value).strip()]
+            missing_market_ids = [
+                market_id
+                for market_id in market_ids
+                if market_id not in metrics_cache
+            ]
 
-            if cached_metrics_df.empty:
+            if missing_market_ids:
                 manual_mapping_lookup = self.state.get_manual_mapping_lookup_snapshot()
                 manual_competition_mapping_lookup = self.state.get_manual_competition_mapping_lookup_snapshot()
+                missing_games_df = games_df[games_df["market_id"].astype(str).isin(set(missing_market_ids))].copy()
                 try:
                     prediction_df = self.build_predictions(
-                        betfair_games_df=games_df,
+                        betfair_games_df=missing_games_df,
                         form_df=self.state.form_df,
                         fixtures_df=self.state.fixtures_df,
                         team_matcher=self.state.team_matcher,
@@ -425,8 +424,40 @@ class GamesService:
 
                 period_metrics_df = self.extract_period_metrics(prediction_df)
                 if not period_metrics_df.empty:
-                    games_df = games_df.merge(period_metrics_df, on="market_id", how="left")
-            else:
+                    metric_cols = [col for col in self.period_metric_columns if col in period_metrics_df.columns]
+                    if metric_cols:
+                        metric_rows = period_metrics_df[["market_id", *metric_cols]].drop_duplicates(
+                            subset=["market_id"],
+                            keep="first",
+                        )
+                        for row in metric_rows.to_dict(orient="records"):
+                            market_id = str(row.get("market_id", "")).strip()
+                            if not market_id:
+                                continue
+                            metrics_cache[market_id] = {
+                                col: row.get(col) for col in self.period_metric_columns
+                            }
+                # Cache explicit empty metrics for unresolved markets so we don't recompute every refresh.
+                for market_id in missing_market_ids:
+                    metrics_cache.setdefault(
+                        market_id,
+                        {col: None for col in self.period_metric_columns},
+                    )
+
+            cached_metric_rows: list[dict[str, Any]] = []
+            for market_id in market_ids:
+                metrics = metrics_cache.get(market_id)
+                if not isinstance(metrics, dict):
+                    continue
+                row = {"market_id": market_id}
+                for col in self.period_metric_columns:
+                    row[col] = metrics.get(col)
+                cached_metric_rows.append(row)
+            if cached_metric_rows:
+                cached_metrics_df = pd.DataFrame(cached_metric_rows).drop_duplicates(
+                    subset=["market_id"],
+                    keep="first",
+                )
                 games_df = games_df.merge(cached_metrics_df, on="market_id", how="left")
 
             for col in self.period_metric_columns:
@@ -438,13 +469,25 @@ class GamesService:
         with self.state.lock:
             self.state.games_df = games_df
             self.state.last_refresh = dt.datetime.now(dt.timezone.utc)
+            self.state.upcoming_metrics_cache = metrics_cache
 
-    def list_grouped_by_day(self, mode: str = "upcoming") -> dict[str, Any]:
+    def list_grouped_by_day(self, mode: str = "upcoming", load_more_historical: bool = False) -> dict[str, Any]:
         mode_norm = str(mode or "").strip().lower()
+        has_more_older = False
+        added_games = 0
         if mode_norm == "historical":
+            if bool(load_more_historical):
+                load_result = self.state.historical_data_service.load_previous_historical_days(days=1)
+                if isinstance(load_result, dict):
+                    try:
+                        added_games = int(load_result.get("added_games", 0) or 0)
+                    except Exception:
+                        added_games = 0
             with self.state.lock:
                 games_df = self.state.historical_games_df.copy()
                 last_refresh = self.state.last_refresh
+            loaded_start_day, loaded_end_day = self.state.historical_data_service.loaded_historical_day_bounds()
+            has_more_older = self.state.historical_data_service.has_more_older_historical_days()
             fill_missing_days = False
         else:
             mode_norm = "upcoming"
@@ -452,9 +495,10 @@ class GamesService:
             with self.state.lock:
                 games_df = self.state.games_df.copy()
                 last_refresh = self.state.last_refresh
+            loaded_start_day, loaded_end_day = None, None
             fill_missing_days = True
 
-        if games_df.empty:
+        if games_df.empty and not (mode_norm == "historical" and loaded_start_day and loaded_end_day):
             return {
                 "days": [],
                 "tiers": [],
@@ -462,17 +506,38 @@ class GamesService:
                 "last_refresh_utc": last_refresh.isoformat() if last_refresh else None,
                 "mode": mode_norm,
                 "fill_missing_days": fill_missing_days,
+                "has_more_older": bool(has_more_older),
+                "added_games": int(added_games),
             }
 
-        if "tier" not in games_df.columns:
-            games_df["tier"] = self.default_league_tier
-        games_df["tier"] = games_df["tier"].fillna(self.default_league_tier).astype(str)
-        available_tiers = sorted({tier.strip() for tier in games_df["tier"].tolist() if tier.strip()})
+        if games_df.empty:
+            available_tiers: list[str] = []
+            day_values: list[str] = []
+        else:
+            if "tier" not in games_df.columns:
+                games_df["tier"] = self.default_league_tier
+            games_df["tier"] = games_df["tier"].fillna(self.default_league_tier).astype(str)
+            available_tiers = sorted({tier.strip() for tier in games_df["tier"].tolist() if tier.strip()})
+            games_df["day"] = games_df["kickoff_time"].dt.strftime("%Y-%m-%d")
+            day_values = sorted(games_df["day"].dropna().unique().tolist())
 
-        games_df["day"] = games_df["kickoff_time"].dt.strftime("%Y-%m-%d")
+        if mode_norm == "historical" and loaded_start_day and loaded_end_day:
+            start_ts = pd.to_datetime(loaded_start_day, errors="coerce", utc=True)
+            end_ts = pd.to_datetime(loaded_end_day, errors="coerce", utc=True)
+            if pd.notna(start_ts) and pd.notna(end_ts) and start_ts <= end_ts:
+                day_values = [
+                    (start_ts + pd.Timedelta(days=offset)).strftime("%Y-%m-%d")
+                    for offset in range((end_ts - start_ts).days + 1)
+                ]
+            elif not day_values:
+                day_values = [loaded_start_day]
+
         days_out: list[dict[str, Any]] = []
-        for day in sorted(games_df["day"].dropna().unique().tolist()):
-            day_df = games_df[games_df["day"] == day].sort_values(["kickoff_time", "competition", "event_name"])
+        for day in day_values:
+            if games_df.empty or "day" not in games_df.columns:
+                day_df = pd.DataFrame()
+            else:
+                day_df = games_df[games_df["day"] == day].sort_values(["kickoff_time", "competition", "event_name"])
             games: list[dict[str, Any]] = []
             for row in day_df.to_dict(orient="records"):
                 kickoff_ts = row.get("kickoff_time")
@@ -538,6 +603,8 @@ class GamesService:
             "last_refresh_utc": last_refresh.isoformat() if last_refresh else None,
             "mode": mode_norm,
             "fill_missing_days": fill_missing_days,
+            "has_more_older": bool(has_more_older),
+            "added_games": int(added_games),
         }
 
     def get_game_xgd(self, market_id: str, recent_n: int = 5, venue_recent_n: int = 5) -> dict[str, Any]:

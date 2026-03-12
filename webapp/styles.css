@@ -175,6 +175,35 @@ main {
   z-index: 25;
 }
 
+.league-filter-search {
+  padding: 4px 6px 8px 6px;
+  border-bottom: 1px solid #edf2f7;
+  margin-bottom: 4px;
+}
+
+.league-filter-search-input {
+  width: 100%;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  padding: 6px 8px;
+  font-size: 0.84rem;
+  color: var(--ink);
+  background: #fff;
+}
+
+.league-filter-search-input:hover,
+.league-filter-search-input:focus {
+  border-color: var(--accent);
+  outline: none;
+}
+
+.league-filter-empty {
+  margin: 4px 6px 6px 6px;
+  color: #64748b;
+  font-size: 0.82rem;
+  font-style: italic;
+}
+
 .league-option {
   display: flex;
   align-items: center;
@@ -253,6 +282,12 @@ main {
 .games-table tbody tr:hover { background: #f7fbff; }
 .games-table tbody tr:nth-child(even) { background: #fbfdff; }
 .games-table tbody tr.selected td { background: #dff7f6; }
+.games-table tbody tr.tier-row-1:not(.selected) td { background: #eef5ff; }
+.games-table tbody tr.tier-row-2:not(.selected) td { background: #f1fbf4; }
+.games-table tbody tr.tier-row-3:not(.selected) td { background: #fffbe6; }
+.games-table tbody tr.tier-row-1:hover:not(.selected) td { background: #e4efff; }
+.games-table tbody tr.tier-row-2:hover:not(.selected) td { background: #e7f7ec; }
+.games-table tbody tr.tier-row-3:hover:not(.selected) td { background: #fff6d2; }
 .games-table th {
   background: #f7fafc;
   color: #475569;
@@ -279,18 +314,22 @@ main {
 .games-table td:nth-child(3) { font-weight: 600; }
 .games-table th.home-price-col,
 .games-table td.home-price-col {
-  width: 84px;
+  width: 64px;
 }
 .games-table th.away-price-col,
 .games-table td.away-price-col {
-  width: 84px;
+  width: 64px;
 }
 .games-table td.home-price-col,
 .games-table td.away-price-col { font-size: 0.84rem; }
 .games-table th.line-col,
 .games-table td.line-col {
   text-align: center;
-  width: 78px;
+  width: 72px;
+}
+.games-table th.handicap-line-col,
+.games-table td.handicap-line-col {
+  width: 60px;
 }
 .games-table td.line-col {
   font-size: 1.04rem;
@@ -300,21 +339,82 @@ main {
 .games-table th.goal-line-col,
 .games-table td.goal-line-col {
   text-align: center;
-  width: 74px;
+  width: 60px;
+}
+.games-table th.xg-home-col,
+.games-table td.xg-home-col,
+.games-table th.xg-away-col,
+.games-table td.xg-away-col {
+  width: 60px;
 }
 .games-table th.goal-under-price-col,
 .games-table td.goal-under-price-col {
-  width: 84px;
+  width: 64px;
 }
 .games-table th.goal-over-price-col,
 .games-table td.goal-over-price-col {
-  width: 84px;
+  width: 64px;
 }
 .games-table td.goal-under-price-col,
 .games-table td.goal-over-price-col { font-size: 0.84rem; }
 .games-table td.goal-line-col {
   font-size: 1rem;
   font-weight: 700;
+}
+.games-table th.home-price-col,
+.games-table td.home-price-col,
+.games-table th.away-price-col,
+.games-table td.away-price-col,
+.games-table th.handicap-line-col,
+.games-table td.handicap-line-col,
+.games-table th.goal-under-price-col,
+.games-table td.goal-under-price-col,
+.games-table th.goal-over-price-col,
+.games-table td.goal-over-price-col {
+  padding-left: 4px;
+  padding-right: 4px;
+}
+.games-table th.goal-line-col,
+.games-table td.goal-line-col {
+  padding-left: 4px;
+  padding-right: 4px;
+}
+.games-table th.xg-home-col,
+.games-table td.xg-home-col,
+.games-table th.xg-away-col,
+.games-table td.xg-away-col,
+.games-table th.score-col,
+.games-table td.score-col {
+  padding-left: 4px;
+  padding-right: 4px;
+}
+.games-table th.home-price-col,
+.games-table td.home-price-col,
+.games-table th.goal-under-price-col,
+.games-table td.goal-under-price-col,
+.games-table th.xg-home-col,
+.games-table td.xg-home-col {
+  border-left: 1px solid #e6edf4;
+}
+.games-table th.away-price-col,
+.games-table td.away-price-col,
+.games-table th.goal-over-price-col,
+.games-table td.goal-over-price-col,
+.games-table th.xg-away-col,
+.games-table td.xg-away-col {
+  border-right: 1px solid #e6edf4;
+}
+.games-table td.home-price-col,
+.games-table td.handicap-line-col,
+.games-table td.away-price-col,
+.games-table td.goal-under-price-col,
+.games-table td.goal-line-col,
+.games-table td.goal-over-price-col,
+.games-table td.xg-home-col,
+.games-table td.score-col,
+.games-table td.xg-away-col {
+  font-variant-numeric: tabular-nums;
+  font-feature-settings: "tnum" 1;
 }
 
 .mapping-header {
@@ -532,6 +632,14 @@ main {
 .games-table td.no-xg-cell .metric-stack-label,
 .games-table td.no-xg-cell .metric-stack-value {
   color: #94a3b8;
+}
+
+.games-table td.hc-xgd-consensus-positive {
+  box-shadow: inset 0 0 0 1px rgba(22, 163, 74, 0.35);
+}
+
+.games-table td.hc-xgd-consensus-negative {
+  box-shadow: inset 0 0 0 1px rgba(220, 38, 38, 0.35);
 }
 
 .details-panel {
