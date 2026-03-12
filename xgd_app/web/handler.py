@@ -1,0 +1,218 @@
+"""HTTP handler implementation for the xGD app."""
+
+from __future__ import annotations
+
+import json
+from http import HTTPStatus
+from http.server import BaseHTTPRequestHandler
+from pathlib import Path
+from typing import Any
+from urllib.parse import parse_qs, urlparse
+
+import pandas as pd
+
+WEBAPP_DIR = Path(__file__).resolve().parents[2] / "webapp"
+
+
+def _clamp_int(value: Any, default: int, min_value: int, max_value: int) -> int:
+    try:
+        out = int(value)
+    except Exception:
+        out = int(default)
+    return max(min_value, min(max_value, out))
+
+
+def _sanitize_for_json(value: Any) -> Any:
+    if isinstance(value, dict):
+        return {str(k): _sanitize_for_json(v) for k, v in value.items()}
+    if isinstance(value, (list, tuple)):
+        return [_sanitize_for_json(v) for v in value]
+    try:
+        if pd.isna(value):
+            return None
+    except Exception:
+        pass
+    if hasattr(value, "item"):
+        try:
+            return _sanitize_for_json(value.item())
+        except Exception:
+            return str(value)
+    return value
+
+
+class AppHandler(BaseHTTPRequestHandler):
+    state: Any
+
+    def do_GET(self) -> None:  # noqa: N802
+        parsed = urlparse(self.path)
+        path = parsed.path
+
+        if path == "/":
+            return self._serve_static("index.html", "text/html; charset=utf-8")
+        if path == "/app.js":
+            return self._serve_static("app.js", "application/javascript; charset=utf-8")
+        if path == "/styles.css":
+            return self._serve_static("styles.css", "text/css; charset=utf-8")
+        if path == "/api/games":
+            query = parse_qs(parsed.query)
+            mode = (query.get("mode") or ["upcoming"])[0]
+            return self._serve_games(mode=mode)
+        if path == "/api/game-xgd":
+            query = parse_qs(parsed.query)
+            market_id = (query.get("market_id") or [""])[0]
+            recent_n_raw = (query.get("recent_n") or ["5"])[0]
+            recent_n = _clamp_int(recent_n_raw, default=5, min_value=1, max_value=20)
+            venue_recent_n_raw = (query.get("venue_recent_n") or ["5"])[0]
+            venue_recent_n = _clamp_int(venue_recent_n_raw, default=5, min_value=1, max_value=20)
+            return self._serve_game_xgd(market_id, recent_n, venue_recent_n)
+        if path == "/api/manual-mappings":
+            return self._serve_manual_mappings()
+
+        self._json({"error": "Not found"}, status=HTTPStatus.NOT_FOUND)
+
+    def do_POST(self) -> None:  # noqa: N802
+        parsed = urlparse(self.path)
+        path = parsed.path
+
+        if path == "/api/historical-day-xgd":
+            return self._serve_historical_day_xgd()
+        if path == "/api/manual-mappings":
+            return self._upsert_manual_mapping()
+        if path == "/api/manual-mappings/delete":
+            return self._delete_manual_mapping()
+        if path == "/api/manual-competition-mappings":
+            return self._upsert_manual_competition_mapping()
+        if path == "/api/manual-competition-mappings/delete":
+            return self._delete_manual_competition_mapping()
+
+        self._json({"error": "Not found"}, status=HTTPStatus.NOT_FOUND)
+
+    def _serve_games(self, mode: str = "upcoming") -> None:
+        try:
+            payload = self.state.list_games_grouped_by_day(mode=mode)
+            self._json(payload)
+        except Exception as exc:
+            self._json({"error": str(exc)}, status=HTTPStatus.INTERNAL_SERVER_ERROR)
+
+    def _serve_game_xgd(self, market_id: str, recent_n: int, venue_recent_n: int) -> None:
+        if not market_id:
+            self._json({"error": "market_id is required"}, status=HTTPStatus.BAD_REQUEST)
+            return
+        try:
+            payload = self.state.get_game_xgd(market_id, recent_n=recent_n, venue_recent_n=venue_recent_n)
+            self._json(payload)
+        except KeyError:
+            self._json({"error": "Market not found"}, status=HTTPStatus.NOT_FOUND)
+        except Exception as exc:
+            self._json({"error": str(exc)}, status=HTTPStatus.INTERNAL_SERVER_ERROR)
+
+    def _serve_historical_day_xgd(self) -> None:
+        payload = self._read_json_body()
+        day_iso = str(payload.get("date", "")).strip()
+        if not day_iso:
+            self._json({"error": "date is required (YYYY-MM-DD)"}, status=HTTPStatus.BAD_REQUEST)
+            return
+        try:
+            out = self.state.calculate_historical_day_xgd(day_iso=day_iso)
+            self._json({"ok": True, **out})
+        except ValueError as exc:
+            self._json({"error": str(exc)}, status=HTTPStatus.BAD_REQUEST)
+        except Exception as exc:
+            self._json({"error": str(exc)}, status=HTTPStatus.INTERNAL_SERVER_ERROR)
+
+    def _serve_manual_mappings(self) -> None:
+        try:
+            payload = self.state.list_manual_team_mappings()
+            self._json(payload)
+        except Exception as exc:
+            self._json({"error": str(exc)}, status=HTTPStatus.INTERNAL_SERVER_ERROR)
+
+    def _upsert_manual_mapping(self) -> None:
+        payload = self._read_json_body()
+        raw_name = str(payload.get("raw_name", "")).strip()
+        sofa_name = str(payload.get("sofa_name", "")).strip()
+        try:
+            self.state.upsert_manual_team_mapping(raw_name=raw_name, sofa_name=sofa_name)
+            self._json({"ok": True})
+        except ValueError as exc:
+            self._json({"error": str(exc)}, status=HTTPStatus.BAD_REQUEST)
+        except Exception as exc:
+            self._json({"error": str(exc)}, status=HTTPStatus.INTERNAL_SERVER_ERROR)
+
+    def _delete_manual_mapping(self) -> None:
+        payload = self._read_json_body()
+        raw_name = str(payload.get("raw_name", "")).strip()
+        try:
+            deleted = self.state.delete_manual_team_mapping(raw_name=raw_name)
+            self._json({"ok": True, "deleted": bool(deleted)})
+        except ValueError as exc:
+            self._json({"error": str(exc)}, status=HTTPStatus.BAD_REQUEST)
+        except Exception as exc:
+            self._json({"error": str(exc)}, status=HTTPStatus.INTERNAL_SERVER_ERROR)
+
+    def _upsert_manual_competition_mapping(self) -> None:
+        payload = self._read_json_body()
+        raw_name = str(payload.get("raw_name", "")).strip()
+        sofa_name = str(payload.get("sofa_name", "")).strip()
+        try:
+            self.state.upsert_manual_competition_mapping(raw_name=raw_name, sofa_name=sofa_name)
+            self._json({"ok": True})
+        except ValueError as exc:
+            self._json({"error": str(exc)}, status=HTTPStatus.BAD_REQUEST)
+        except Exception as exc:
+            self._json({"error": str(exc)}, status=HTTPStatus.INTERNAL_SERVER_ERROR)
+
+    def _delete_manual_competition_mapping(self) -> None:
+        payload = self._read_json_body()
+        raw_name = str(payload.get("raw_name", "")).strip()
+        try:
+            deleted = self.state.delete_manual_competition_mapping(raw_name=raw_name)
+            self._json({"ok": True, "deleted": bool(deleted)})
+        except ValueError as exc:
+            self._json({"error": str(exc)}, status=HTTPStatus.BAD_REQUEST)
+        except Exception as exc:
+            self._json({"error": str(exc)}, status=HTTPStatus.INTERNAL_SERVER_ERROR)
+
+    def _read_json_body(self) -> dict[str, Any]:
+        length_raw = self.headers.get("Content-Length", "0")
+        try:
+            length = max(0, int(length_raw))
+        except Exception:
+            length = 0
+        if length <= 0:
+            return {}
+        body = self.rfile.read(length)
+        if not body:
+            return {}
+        try:
+            parsed = json.loads(body.decode("utf-8"))
+        except Exception:
+            return {}
+        return parsed if isinstance(parsed, dict) else {}
+
+    def _serve_static(self, relative_path: str, content_type: str) -> None:
+        path = WEBAPP_DIR / relative_path
+        if not path.exists():
+            self._json({"error": f"Missing asset: {path}"}, status=HTTPStatus.NOT_FOUND)
+            return
+        data = path.read_bytes()
+        self.send_response(HTTPStatus.OK)
+        self.send_header("Content-Type", content_type)
+        self.send_header("Content-Length", str(len(data)))
+        self.end_headers()
+        self.wfile.write(data)
+
+    def _json(self, payload: dict[str, Any], status: HTTPStatus = HTTPStatus.OK) -> None:
+        safe_payload = _sanitize_for_json(payload)
+        body = json.dumps(safe_payload, allow_nan=False).encode("utf-8")
+        self.send_response(status)
+        self.send_header("Content-Type", "application/json; charset=utf-8")
+        self.send_header("Content-Length", str(len(body)))
+        self.end_headers()
+        self.wfile.write(body)
+
+    def log_message(self, format: str, *args) -> None:  # noqa: A003
+        return
+
+
+__all__ = ["AppHandler"]

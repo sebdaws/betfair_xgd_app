@@ -118,7 +118,14 @@ main {
 .day-actions {
   display: flex;
   justify-content: flex-start;
+  gap: 8px;
   margin-bottom: 0;
+}
+
+.mode-btn.active {
+  border-color: var(--accent);
+  background: #ecfdf5;
+  color: #065f46;
 }
 
 .day-nav {
@@ -211,6 +218,19 @@ main {
 .day-header-title {
   margin: 0;
   font-size: 1rem;
+}
+
+.day-header-actions {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin-left: auto;
+}
+
+.day-calc-btn {
+  white-space: nowrap;
+  font-size: 0.82rem;
+  padding: 6px 10px;
 }
 
 .games-table {

@@ -1,6 +1,5 @@
 # Auto-generated from Betfair listCompetitions
 # Format: competition_id|competition_name
-12688794|AFC Champions League Two
 12276605|AFC Ladies Asian Cup
 4431442|Algerian Ligue 1
 67387|Argentinian Primera Division
@@ -12,6 +11,7 @@
 4517491|Azerbaijan 1st Division
 895129|Azerbaijan Premier League
 12206014|Bahraini Premier
+12185789|Bangladesh Premier League
 11717188|Belgian Challenger Pro League
 89979|Belgian Pro League
 89219|Brazilian Cup
@@ -19,11 +19,11 @@
 321319|Brazilian Serie B
 15|Bulgarian A League
 12292686|Bulgarian B League
+987643|CAF Champions League
 857992|Chilean Primera B
 744098|Chilean Primera Division
 879931|Chinese Super League
 844197|Colombian Primera A
-856134|Colombian Primera B
 194961|CONCACAF Champions League
 12147796|CONMEBOL Copa Libertadores
 3039445|Costa Rican Liga de Ascenso
@@ -39,20 +39,24 @@
 803690|Ecuadorian Serie A
 9882094|EFL Trophy
 4643366|Egyptian 2nd Division
+802004|Egyptian Cup
 30558|English FA Cup
 2134|English Football League Cup
 11086347|English National League
 41|English National League North
 43|English National League South
 10932509|English Premier League
+12199685|English Premier League 2 - Div 1
 7129730|English Sky Bet Championship
 35|English Sky Bet League 1
 37|English Sky Bet League 2
 12511339|English U21 Pro Development League
+12202273|English WSL
 873203|Estonian Esiliiga
 12216175|Estonian Premier League
 11869656|Ethiopian Premier League
 12232258|Faroe 1 Deild
+11804597|Faroe Premier League
 12469077|FIFA World Cup
 12209560|French Cup
 55|French Ligue 1
@@ -66,12 +70,12 @@
 11458113|German Cup
 12211021|Greek Cup
 67|Greek Super League
+12267123|Greek Super League 2
 6566654|Guatemalan Liga Nacional
 12202271|Honduras Liga Nacional
 833990|Hong Kong Premier League
 1842928|Hungarian NB I
 12213874|Icelandic League Cup B
-12199393|Indian I-League
 6251219|Indian Super League
 822951|Indonesian Super League
 12005855|Irish Division 1
@@ -107,6 +111,7 @@
 109|Scottish League One
 111|Scottish League Two
 105|Scottish Premiership
+12212459|Serbian First League
 103|Serbian Super League
 12215677|Slovakian 2 Liga
 12013300|Slovakian Super League
@@ -120,6 +125,7 @@
 12204313|Spanish Segunda Division
 12714473|Spanish U19 Cup
 2608550|Specials
+18099|Swedish Cup
 135|Swiss Challenge League
 133|Swiss Super League
 11891653|Tanzanian Premier League
@@ -127,8 +133,8 @@
 4608858|Thai League 2
 175680|Turkish 1 Lig
 833222|Turkish 2 Lig
-12765770|Turkish Ladies Super Lig
 194215|Turkish Super League
+12016770|Turkish U19
 11641480|UAE Arabian Gulf League
 12710780|UAE U23
 228|UEFA Champions League
@@ -140,4 +146,5 @@
 141|US MLS
 1065530|Venezuelan Primera Division
 12209059|Vietnamese V-League
-12016856|Zambian Super Division
+12223731|Vietnamese V-League 2
+252549|Welsh Premiership

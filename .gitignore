@@ -3,3 +3,4 @@ __pycache__/
 betfair_credentials.py
 .DS_Store
 .vscode/
+historical_data/

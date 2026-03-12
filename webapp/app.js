@@ -33,6 +33,8 @@ const prevDayBtn = document.getElementById("prevDayBtn");
 const todayBtn = document.getElementById("todayBtn");
 const nextDayBtn = document.getElementById("nextDayBtn");
 const dayLabel = document.getElementById("dayLabel");
+const upcomingModeBtn = document.getElementById("upcomingModeBtn");
+const historicalModeBtn = document.getElementById("historicalModeBtn");
 
 let gamesById = new Map();
 let rawDays = [];
@@ -41,6 +43,8 @@ let availableTiers = [];
 let allDays = [];
 let currentDayIndex = 0;
 let selectedMarketId = null;
+let gamesMode = "upcoming";
+let fillMissingDays = true;
 let selectedLeagues = new Set();
 let selectedTiers = new Set();
 let sortMode = "kickoff";
@@ -60,6 +64,7 @@ let mappingSubTab = "teams";
 let lastManualMappingPayload = null;
 let teamMappingSearchBetfair = "";
 let teamMappingSearchSavedTeams = "";
+const historicalDayCalcInFlight = new Set();
 const AUTO_REFRESH_MS = 2 * 60 * 1000;
 
 function escapeHtml(value) {
@@ -104,6 +109,26 @@ function setMappingSubTab(tabName) {
   competitionMappingsSubTabBtn.classList.toggle("active", !teamsActive);
   teamMappingsPane.classList.toggle("hidden", !teamsActive);
   competitionMappingsPane.classList.toggle("hidden", teamsActive);
+}
+
+function setGamesMode(mode, reload = true) {
+  const nextMode = mode === "historical" ? "historical" : "upcoming";
+  const changed = nextMode !== gamesMode;
+  gamesMode = nextMode;
+  fillMissingDays = gamesMode !== "historical";
+  upcomingModeBtn.classList.toggle("active", gamesMode === "upcoming");
+  historicalModeBtn.classList.toggle("active", gamesMode === "historical");
+  todayBtn.textContent = gamesMode === "historical" ? "Latest" : "Today";
+
+  if (!changed) {
+    if (reload) loadGames();
+    return;
+  }
+
+  selectedMarketId = null;
+  detailsPanel.classList.add("hidden");
+  currentDayIndex = gamesMode === "historical" ? Number.MAX_SAFE_INTEGER : 0;
+  if (reload) loadGames();
 }
 
 function rerenderManualMappingsPreserveSearchFocus(selectionStart = null, selectionEnd = null) {
@@ -628,7 +653,13 @@ function jumpToTodayDay() {
   if (!allDays.length) return;
   const todayIso = getTodayIsoUtc();
   const targetIndex = allDays.findIndex((day) => String(day.date || "") === todayIso);
-  if (targetIndex < 0) return;
+  if (targetIndex < 0) {
+    if (gamesMode === "historical") {
+      currentDayIndex = allDays.length - 1;
+      renderCurrentDay();
+    }
+    return;
+  }
   currentDayIndex = targetIndex;
   renderCurrentDay();
 }
@@ -687,6 +718,94 @@ function buildXgdPeriodTableHtml(periodRows, title, warningText = "") {
       </tbody>
     </table>
   `;
+}
+
+function buildHistoricalResultSection(payload) {
+  if (!payload || payload.is_historical !== true) return "";
+  const result = payload.historical_result && typeof payload.historical_result === "object"
+    ? payload.historical_result
+    : {};
+  const comparison = payload.prediction_vs_actual && typeof payload.prediction_vs_actual === "object"
+    ? payload.prediction_vs_actual
+    : null;
+
+  const resultHtml = `
+    <h3 class="section-title">Actual Match Result</h3>
+    <table class="lines-table">
+      <thead>
+        <tr>
+          <th>Score</th>
+          <th>Home Goals</th>
+          <th>Away Goals</th>
+          <th>Home xG</th>
+          <th>Away xG</th>
+          <th>Home Corners</th>
+          <th>Away Corners</th>
+          <th>Home Cards</th>
+          <th>Away Cards</th>
+        </tr>
+      </thead>
+      <tbody>
+        <tr>
+          <td>${escapeHtml(result.score || "-")}</td>
+          <td>${formatMetricValue(result.home_goals, 0)}</td>
+          <td>${formatMetricValue(result.away_goals, 0)}</td>
+          <td>${formatMetricValue(result.home_xg, 2)}</td>
+          <td>${formatMetricValue(result.away_xg, 2)}</td>
+          <td>${formatMetricValue(result.home_corners, 1)}</td>
+          <td>${formatMetricValue(result.away_corners, 1)}</td>
+          <td>${formatMetricValue(result.home_cards, 1)}</td>
+          <td>${formatMetricValue(result.away_cards, 1)}</td>
+        </tr>
+      </tbody>
+    </table>
+  `;
+
+  if (!comparison) {
+    return resultHtml;
+  }
+
+  const comparisonHtml = `
+    <h3 class="section-title">Prediction vs Actual</h3>
+    <table class="lines-table">
+      <thead>
+        <tr>
+          <th>Metric</th>
+          <th>Predicted</th>
+          <th>Actual</th>
+          <th>Delta</th>
+        </tr>
+      </thead>
+      <tbody>
+        <tr>
+          <td>Home xG</td>
+          <td>${formatMetricValue(comparison.pred_home_xg, 2)}</td>
+          <td>${formatMetricValue(comparison.actual_home_xg, 2)}</td>
+          <td>${formatMetricValue(comparison.delta_home_xg, 2)}</td>
+        </tr>
+        <tr>
+          <td>Away xG</td>
+          <td>${formatMetricValue(comparison.pred_away_xg, 2)}</td>
+          <td>${formatMetricValue(comparison.actual_away_xg, 2)}</td>
+          <td>${formatMetricValue(comparison.delta_away_xg, 2)}</td>
+        </tr>
+        <tr>
+          <td>Total xG</td>
+          <td>${formatMetricValue(comparison.pred_total_xg, 2)}</td>
+          <td>${formatMetricValue(comparison.actual_total_xg, 2)}</td>
+          <td>${formatMetricValue(comparison.delta_total_xg, 2)}</td>
+        </tr>
+        <tr>
+          <td>xGD</td>
+          <td>${formatMetricValue(comparison.pred_xgd, 2)}</td>
+          <td>${formatMetricValue(comparison.actual_xgd, 2)}</td>
+          <td>${formatMetricValue(comparison.delta_xgd, 2)}</td>
+        </tr>
+      </tbody>
+    </table>
+  `;
+
+  return `${resultHtml}${comparisonHtml}`;
 }
 
 function buildPeriodMetricStackCell(seasonValue, last5Value, last3Value, highlighted = false) {
@@ -1614,20 +1733,33 @@ function applyGameFilters() {
     allDays[currentDayIndex] && allDays[currentDayIndex].date
       ? String(allDays[currentDayIndex].date)
       : null;
-  const filteredDays = rawDays.map((day) => ({
-    ...day,
-    games: (day.games || []).filter((game) => {
-      const leagueName = String(game.competition || "");
-      const tierName = String(game.tier || "").trim();
-      const leaguePass = !selectedLeagues.size || selectedLeagues.has(leagueName);
-      const tierPass = !selectedTiers.size || selectedTiers.has(tierName);
-      return leaguePass && tierPass;
-    }),
-  }));
+  const filteredDays = rawDays
+    .map((day) => ({
+      ...day,
+      games: (day.games || []).filter((game) => {
+        const leagueName = String(game.competition || "");
+        const tierName = String(game.tier || "").trim();
+        const leaguePass = !selectedLeagues.size || selectedLeagues.has(leagueName);
+        const tierPass = !selectedTiers.size || selectedTiers.has(tierName);
+        return leaguePass && tierPass;
+      }),
+    }))
+    .sort((a, b) => String(a.date || "").localeCompare(String(b.date || "")));
 
   if (!filteredDays.length) {
     allDays = [];
     currentDayIndex = 0;
+    return;
+  }
+
+  if (!fillMissingDays) {
+    allDays = filteredDays;
+    if (previousDayIso) {
+      const nextIndex = allDays.findIndex((d) => String(d.date || "") === previousDayIso);
+      currentDayIndex = nextIndex >= 0 ? nextIndex : clampDayIndex(currentDayIndex);
+    } else {
+      currentDayIndex = clampDayIndex(currentDayIndex);
+    }
     return;
   }
 
@@ -1697,18 +1829,70 @@ function sortGamesForDay(games) {
   return out;
 }
 
-async function loadGames() {
-  statusText.textContent = "Loading games...";
+function dayHasComputedXgdMetrics(dayGames) {
+  const metricKeys = [
+    "season_xgd",
+    "last5_xgd",
+    "last3_xgd",
+    "season_strength",
+    "last5_strength",
+    "last3_strength",
+  ];
+  return (dayGames || []).some((game) => {
+    return metricKeys.some((metricKey) => {
+      const value = game?.[metricKey];
+      if (value == null) return false;
+      return String(value).trim() !== "";
+    });
+  });
+}
+
+async function calculateHistoricalDayXgd(dayIso) {
+  const dayText = String(dayIso || "").trim();
+  if (!dayText || gamesMode !== "historical") return;
+  if (historicalDayCalcInFlight.has(dayText)) return;
+
+  historicalDayCalcInFlight.add(dayText);
+  renderCurrentDay();
+  statusText.textContent = `Calculating historical xGD for ${dayText}...`;
+
   try {
-    const res = await fetch("/api/games");
+    const res = await fetch("/api/historical-day-xgd", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ date: dayText }),
+    });
+    const payload = await parseApiResponse(res);
+    if (!res.ok) throw new Error(payload.error || "Failed to calculate historical day xGD");
+    await loadGames();
+    const computedGames = Number(payload?.computed_games) || 0;
+    const gamesCount = Number(payload?.games_count) || 0;
+    statusText.textContent = `Computed xGD for ${computedGames}/${gamesCount} games on ${dayText}`;
+  } catch (err) {
+    statusText.textContent = String(err.message || err);
+  } finally {
+    historicalDayCalcInFlight.delete(dayText);
+    renderCurrentDay();
+  }
+}
+
+async function loadGames() {
+  statusText.textContent = gamesMode === "historical" ? "Loading historical matches..." : "Loading games...";
+  try {
+    const res = await fetch(`/api/games?mode=${encodeURIComponent(gamesMode)}`);
     const payload = await parseApiResponse(res);
     if (!res.ok) throw new Error(payload.error || "Failed to load games");
     rawDays = payload.days || [];
+    fillMissingDays = payload.fill_missing_days !== false;
     updateLeagueFilterOptions();
     updateTierFilterOptions(payload.tiers || []);
     applyGameFilters();
     renderCurrentDay();
-    statusText.textContent = `Loaded ${payload.total_games || 0} games`;
+    if (gamesMode === "historical") {
+      statusText.textContent = `Loaded ${payload.total_games || 0} historical matches`;
+    } else {
+      statusText.textContent = `Loaded ${payload.total_games || 0} games`;
+    }
     if (activeTab === "mapping") {
       loadManualMappings();
     }
@@ -1739,13 +1923,17 @@ function renderCurrentDay() {
   const day = allDays[currentDayIndex];
   const sortedDayGames = sortGamesForDay(day.games || []);
   const todayIndex = allDays.findIndex((entry) => String(entry.date || "") === getTodayIsoUtc());
+  const jumpTargetIndex = (todayIndex >= 0)
+    ? todayIndex
+    : (gamesMode === "historical" ? allDays.length - 1 : -1);
   dayLabel.textContent = `${day.date_label} (${sortedDayGames.length})`;
   prevDayBtn.disabled = currentDayIndex === 0;
-  todayBtn.disabled = todayIndex < 0 || currentDayIndex === todayIndex;
+  todayBtn.disabled = jumpTargetIndex < 0 || currentDayIndex === jumpTargetIndex;
   nextDayBtn.disabled = currentDayIndex === allDays.length - 1;
 
   const block = document.createElement("section");
   block.className = "day-block";
+  const isHistorical = gamesMode === "historical";
 
   const header = document.createElement("div");
   header.className = "day-header day-header-bar";
@@ -1753,37 +1941,87 @@ function renderCurrentDay() {
   headerTitle.className = "day-header-title";
   headerTitle.textContent = day.date_label;
   header.appendChild(headerTitle);
+
+  const headerActions = document.createElement("div");
+  headerActions.className = "day-header-actions";
   if (tableControls) {
-    header.appendChild(tableControls);
+    headerActions.appendChild(tableControls);
+  }
+  if (isHistorical) {
+    const dayIso = String(day.date || "").trim();
+    const isComputingDay = historicalDayCalcInFlight.has(dayIso);
+    const hasComputedXgd = dayHasComputedXgdMetrics(sortedDayGames);
+    const calculateBtn = document.createElement("button");
+    calculateBtn.type = "button";
+    calculateBtn.className = "day-calc-btn";
+    calculateBtn.disabled = isComputingDay || !dayIso;
+    calculateBtn.textContent = isComputingDay
+      ? "Calculating xGD..."
+      : (hasComputedXgd ? "Recalculate Day xGD" : "Calculate Day xGD");
+    calculateBtn.addEventListener("click", () => {
+      calculateHistoricalDayXgd(dayIso);
+    });
+    headerActions.appendChild(calculateBtn);
+  }
+  if (headerActions.childElementCount > 0) {
+    header.appendChild(headerActions);
   }
 
   const table = document.createElement("table");
   table.className = "games-table";
-  table.innerHTML = `
-    <thead>
-      <tr>
-        <th>Kickoff (UTC)</th>
-        <th>League</th>
-        <th>Game</th>
-        <th class="home-price-col">Home</th>
-        <th class="line-col">Handicap</th>
-        <th class="away-price-col">Away</th>
-        <th>xStrength</th>
-        <th>xGD Perf</th>
-        <th class="goal-under-price-col">Under</th>
-        <th class="goal-line-col">Goals</th>
-        <th class="goal-over-price-col">Over</th>
-        <th>Min</th>
-        <th>Max</th>
-      </tr>
-    </thead>
-    <tbody></tbody>
-  `;
+  if (isHistorical) {
+    table.innerHTML = `
+      <thead>
+        <tr>
+          <th>Kickoff (UTC)</th>
+          <th>League</th>
+          <th>Game</th>
+          <th class="home-price-col">Home</th>
+          <th class="line-col">Handicap</th>
+          <th class="away-price-col">Away</th>
+          <th class="goal-under-price-col">Under</th>
+          <th class="goal-line-col">Goals</th>
+          <th class="goal-over-price-col">Over</th>
+          <th class="line-col">Score</th>
+          <th>xG H</th>
+          <th>xG A</th>
+          <th>Corners H-A</th>
+          <th>Cards H-A</th>
+          <th>xStrength</th>
+          <th>xGD Perf</th>
+          <th>Min</th>
+          <th>Max</th>
+        </tr>
+      </thead>
+      <tbody></tbody>
+    `;
+  } else {
+    table.innerHTML = `
+      <thead>
+        <tr>
+          <th>Kickoff (UTC)</th>
+          <th>League</th>
+          <th>Game</th>
+          <th class="home-price-col">Home</th>
+          <th class="line-col">Handicap</th>
+          <th class="away-price-col">Away</th>
+          <th>xStrength</th>
+          <th>xGD Perf</th>
+          <th class="goal-under-price-col">Under</th>
+          <th class="goal-line-col">Goals</th>
+          <th class="goal-over-price-col">Over</th>
+          <th>Min</th>
+          <th>Max</th>
+        </tr>
+      </thead>
+      <tbody></tbody>
+    `;
+  }
 
   const tbody = table.querySelector("tbody");
   if (!sortedDayGames.length) {
     const row = document.createElement("tr");
-    row.innerHTML = `<td class="no-games-row" colspan="13">No games</td>`;
+    row.innerHTML = `<td class="no-games-row" colspan="${isHistorical ? "18" : "13"}">No games</td>`;
     tbody.appendChild(row);
   } else {
     for (const game of sortedDayGames) {
@@ -1807,21 +2045,48 @@ function renderCurrentDay() {
       const metricCellTitleAttr = metricCellNotes.length
         ? ` title="${escapeHtml(metricCellNotes.join(" | "))}"`
         : "";
-      row.innerHTML = `
-        <td>${escapeHtml(game.kickoff_utc)}</td>
-        <td>${escapeHtml(game.competition)}</td>
-        <td>${escapeHtml(game.event_name)}</td>
-        <td class="home-price-col">${escapeHtml(game.home_price || "-")}</td>
-        <td class="line-col">${escapeHtml(game.mainline || "-")}</td>
-        <td class="away-price-col">${escapeHtml(game.away_price || "-")}</td>
-        <td class="${metricCellClass}"${metricCellTitleAttr}>${buildPeriodMetricStackCell(game.season_strength, game.last5_strength, game.last3_strength, xgdMismatch)}</td>
-        <td class="${metricCellClass}"${metricCellTitleAttr}>${buildPeriodMetricStackCell(game.season_xgd, game.last5_xgd, game.last3_xgd, xgdMismatch)}</td>
-        <td class="goal-under-price-col">${escapeHtml(game.goal_under_price || "-")}</td>
-        <td class="goal-line-col">${escapeHtml(game.goal_mainline || "-")}</td>
-        <td class="goal-over-price-col">${escapeHtml(game.goal_over_price || "-")}</td>
-        <td class="metric-stack-cell"${xgdMismatch ? ` title="xGD derived from a different competition than this fixture."` : ""}>${buildPeriodMetricStackCell(game.season_min_xg, game.last5_min_xg, game.last3_min_xg, xgdMismatch)}</td>
-        <td class="metric-stack-cell"${xgdMismatch ? ` title="xGD derived from a different competition than this fixture."` : ""}>${buildPeriodMetricStackCell(game.season_max_xg, game.last5_max_xg, game.last3_max_xg, xgdMismatch)}</td>
-      `;
+      if (isHistorical) {
+        const cornersHome = String(game.home_corners_actual || "-");
+        const cornersAway = String(game.away_corners_actual || "-");
+        const cardsHome = String(game.home_cards_actual || "-");
+        const cardsAway = String(game.away_cards_actual || "-");
+        row.innerHTML = `
+          <td>${escapeHtml(game.kickoff_utc)}</td>
+          <td>${escapeHtml(game.competition)}</td>
+          <td>${escapeHtml(game.event_name)}</td>
+          <td class="home-price-col">${escapeHtml(game.home_price || "-")}</td>
+          <td class="line-col">${escapeHtml(game.mainline || "-")}</td>
+          <td class="away-price-col">${escapeHtml(game.away_price || "-")}</td>
+          <td class="goal-under-price-col">${escapeHtml(game.goal_under_price || "-")}</td>
+          <td class="goal-line-col">${escapeHtml(game.goal_mainline || "-")}</td>
+          <td class="goal-over-price-col">${escapeHtml(game.goal_over_price || "-")}</td>
+          <td class="line-col">${escapeHtml(game.scoreline || "-")}</td>
+          <td>${escapeHtml(game.home_xg_actual || "-")}</td>
+          <td>${escapeHtml(game.away_xg_actual || "-")}</td>
+          <td>${escapeHtml(`${cornersHome}-${cornersAway}`)}</td>
+          <td>${escapeHtml(`${cardsHome}-${cardsAway}`)}</td>
+          <td class="${metricCellClass}"${metricCellTitleAttr}>${buildPeriodMetricStackCell(game.season_strength, game.last5_strength, game.last3_strength, xgdMismatch)}</td>
+          <td class="${metricCellClass}"${metricCellTitleAttr}>${buildPeriodMetricStackCell(game.season_xgd, game.last5_xgd, game.last3_xgd, xgdMismatch)}</td>
+          <td class="metric-stack-cell"${xgdMismatch ? ` title="xGD derived from a different competition than this fixture."` : ""}>${buildPeriodMetricStackCell(game.season_min_xg, game.last5_min_xg, game.last3_min_xg, xgdMismatch)}</td>
+          <td class="metric-stack-cell"${xgdMismatch ? ` title="xGD derived from a different competition than this fixture."` : ""}>${buildPeriodMetricStackCell(game.season_max_xg, game.last5_max_xg, game.last3_max_xg, xgdMismatch)}</td>
+        `;
+      } else {
+        row.innerHTML = `
+          <td>${escapeHtml(game.kickoff_utc)}</td>
+          <td>${escapeHtml(game.competition)}</td>
+          <td>${escapeHtml(game.event_name)}</td>
+          <td class="home-price-col">${escapeHtml(game.home_price || "-")}</td>
+          <td class="line-col">${escapeHtml(game.mainline || "-")}</td>
+          <td class="away-price-col">${escapeHtml(game.away_price || "-")}</td>
+          <td class="${metricCellClass}"${metricCellTitleAttr}>${buildPeriodMetricStackCell(game.season_strength, game.last5_strength, game.last3_strength, xgdMismatch)}</td>
+          <td class="${metricCellClass}"${metricCellTitleAttr}>${buildPeriodMetricStackCell(game.season_xgd, game.last5_xgd, game.last3_xgd, xgdMismatch)}</td>
+          <td class="goal-under-price-col">${escapeHtml(game.goal_under_price || "-")}</td>
+          <td class="goal-line-col">${escapeHtml(game.goal_mainline || "-")}</td>
+          <td class="goal-over-price-col">${escapeHtml(game.goal_over_price || "-")}</td>
+          <td class="metric-stack-cell"${xgdMismatch ? ` title="xGD derived from a different competition than this fixture."` : ""}>${buildPeriodMetricStackCell(game.season_min_xg, game.last5_min_xg, game.last3_min_xg, xgdMismatch)}</td>
+          <td class="metric-stack-cell"${xgdMismatch ? ` title="xGD derived from a different competition than this fixture."` : ""}>${buildPeriodMetricStackCell(game.season_max_xg, game.last5_max_xg, game.last3_max_xg, xgdMismatch)}</td>
+        `;
+      }
       row.addEventListener("click", () => loadGameXgd(game.market_id));
       tbody.appendChild(row);
     }
@@ -2009,8 +2274,9 @@ function renderXgd(payload) {
     ${buildRecentMatchesTableHtml("Fixture-side matches", shownRows, activeLabel)}
     ${buildVenueSplitSectionHtml(activeLabel, activeHomeVenueRows, activeAwayVenueRows, rollingWindowCount, showTrendCharts)}
   `;
+  const historicalResultSection = buildHistoricalResultSection(payload);
 
-  const xgdTabContent = `${warning}${metricHtml}${periodTable}${recentMatchesSection}${mappingTable}`;
+  const xgdTabContent = `${warning}${historicalResultSection}${metricHtml}${periodTable}${recentMatchesSection}${mappingTable}`;
   const statsIsAway = statsTeamView === "away";
   const statsActiveLabel = statsIsAway ? awayLabel : homeLabel;
   const statsActiveRows = statsIsAway ? awayRecentRows : homeRecentRows;
@@ -2150,7 +2416,8 @@ async function loadGameXgd(marketId) {
   statsTeamView = "home";
   activeXgdViewId = null;
   lastXgdPayload = null;
-  detailsMeta.textContent = `${game.competition} | ${game.kickoff_raw}`;
+  const scoreMeta = game.is_historical ? ` | FT ${String(game.scoreline || "-")}` : "";
+  detailsMeta.textContent = `${game.competition} | ${game.kickoff_raw}${scoreMeta}`;
   linesContainer.innerHTML = "<p>Calculating xGD...</p>";
 
   try {
@@ -2170,6 +2437,12 @@ gamesTabBtn.addEventListener("click", () => {
 manualMappingTabBtn.addEventListener("click", () => {
   setActiveTab("mapping");
   loadManualMappings();
+});
+upcomingModeBtn.addEventListener("click", () => {
+  setGamesMode("upcoming");
+});
+historicalModeBtn.addEventListener("click", () => {
+  setGamesMode("historical");
 });
 teamMappingsSubTabBtn.addEventListener("click", () => {
   setMappingSubTab("teams");
@@ -2272,6 +2545,7 @@ updateLeagueFilterButtonLabel();
 updateTierFilterButtonLabel();
 setMappingSubTab("teams");
 setActiveTab("games");
+setGamesMode("upcoming", false);
 loadGames();
 setInterval(() => {
   loadGames();

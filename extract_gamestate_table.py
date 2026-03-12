@@ -10,7 +10,7 @@ from typing import Any
 import pandas as pd
 
 import xgd_web_app as app
-import wyscout_data as wd
+import xgd_form_model as wd
 
 
 def parse_args() -> argparse.Namespace:

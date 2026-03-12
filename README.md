@@ -31,4 +31,4 @@ You can override with `--db-path`.
 ## Repo Notes
 
 - `betfair_credentials.py` should be gitignored if it contains secrets.
-- `betfair_scraper.py` and `wyscout_data.py` are bundled locally so this folder can become its own repo.
+- `betfair_scraper.py` and `xgd_form_model.py` are bundled locally so this folder can become its own repo.
