@@ -82,6 +82,8 @@ GAMESTATE_EVENT_METRIC_KEYS = tuple(
     for direction in ("for", "against")
     for state in GAMESTATES
 )
+GAMESTATE_TIME_KEYS = tuple(f"minutes_{state}" for state in GAMESTATES)
+GAMESTATE_ALL_KEYS = GAMESTATE_EVENT_METRIC_KEYS + GAMESTATE_TIME_KEYS
 
 TOKEN_REPLACEMENTS = {
     "utd": "united",
@@ -724,7 +726,14 @@ def parse_season_date(value: Any, is_end: bool) -> pd.Timestamp | pd.NaT:
 
 
 def parse_score_after(value: Any) -> tuple[int, int] | None:
-    text = str(value or "").strip()
+    if value is None:
+        return None
+    try:
+        if pd.isna(value):
+            return None
+    except Exception:
+        pass
+    text = str(value).strip()
     if not text:
         return None
     match = re.match(r"^(\d+)\s*[-:]\s*(\d+)$", text)
@@ -745,18 +754,85 @@ def gamestate_for_perspective(home_score: int, away_score: int, perspective_side
     return "drawing"
 
 
-def build_match_gamestate_event_counts(events_df: pd.DataFrame) -> pd.DataFrame:
-    out_cols = ["match_id"] + [f"home_{key}" for key in GAMESTATE_EVENT_METRIC_KEYS] + [
-        f"away_{key}" for key in GAMESTATE_EVENT_METRIC_KEYS
+def build_match_gamestate_event_counts(
+    events_df: pd.DataFrame,
+    goal_shots_df: pd.DataFrame | None = None,
+) -> pd.DataFrame:
+    out_cols = ["match_id"] + [f"home_{key}" for key in GAMESTATE_ALL_KEYS] + [
+        f"away_{key}" for key in GAMESTATE_ALL_KEYS
     ]
-    if not isinstance(events_df, pd.DataFrame) or events_df.empty:
+    has_events = isinstance(events_df, pd.DataFrame) and not events_df.empty
+    has_goal_shots = isinstance(goal_shots_df, pd.DataFrame) and not goal_shots_df.empty
+    if not has_events and not has_goal_shots:
         return pd.DataFrame(columns=out_cols)
 
-    required = {"match_id", "event_type", "team_side_code", "minute"}
-    if not required.issubset(events_df.columns):
-        return pd.DataFrame(columns=out_cols)
+    work = events_df.copy() if isinstance(events_df, pd.DataFrame) else pd.DataFrame()
+    expected_event_cols = [
+        "id",
+        "match_id",
+        "event_type",
+        "card_type",
+        "goal_type",
+        "score_after",
+        "minute",
+        "added_time",
+        "team_side_code",
+    ]
+    for col in expected_event_cols:
+        if col not in work.columns:
+            work[col] = pd.NA
 
-    work = events_df.copy()
+    if has_goal_shots:
+        work_event_type_norm = work["event_type"].fillna("").astype(str).str.strip().str.lower()
+        match_ids_with_event_goals: set[int] = set(
+            pd.to_numeric(
+                work.loc[work_event_type_norm == "goal", "match_id"],
+                errors="coerce",
+            )
+            .dropna()
+            .astype(int)
+            .tolist()
+        )
+
+        goal_work = goal_shots_df.copy()
+        if "team_side_code" not in goal_work.columns and "is_home" in goal_work.columns:
+            is_home_num = pd.to_numeric(goal_work.get("is_home"), errors="coerce")
+            goal_work["team_side_code"] = is_home_num.map(
+                lambda v: 1 if pd.notna(v) and int(v) == 1 else (2 if pd.notna(v) and int(v) == 0 else pd.NA)
+            )
+
+        goal_work["match_id_int"] = pd.to_numeric(goal_work.get("match_id"), errors="coerce")
+        goal_work["minute_int"] = pd.to_numeric(goal_work.get("minute"), errors="coerce")
+        goal_work["side_int"] = pd.to_numeric(goal_work.get("team_side_code"), errors="coerce")
+        goal_work["id_int"] = pd.to_numeric(goal_work.get("id"), errors="coerce")
+        goal_work = goal_work[
+            goal_work["match_id_int"].notna()
+            & goal_work["minute_int"].notna()
+            & goal_work["side_int"].isin([1, 2])
+        ].copy()
+        if not goal_work.empty:
+            goal_work["match_id_int"] = goal_work["match_id_int"].astype(int)
+            goal_work["side_int"] = goal_work["side_int"].astype(int)
+            if match_ids_with_event_goals:
+                goal_work = goal_work[~goal_work["match_id_int"].isin(match_ids_with_event_goals)].copy()
+        if not goal_work.empty:
+            fallback_ids = pd.Series(range(-1, -len(goal_work) - 1, -1), index=goal_work.index, dtype="int64")
+            shot_ids = goal_work["id_int"].where(goal_work["id_int"].notna(), fallback_ids)
+            shot_goal_events = pd.DataFrame(
+                {
+                    "id": shot_ids,
+                    "match_id": goal_work["match_id_int"],
+                    "event_type": "goal",
+                    "card_type": pd.NA,
+                    "goal_type": pd.NA,
+                    "score_after": pd.NA,
+                    "minute": goal_work["minute_int"],
+                    "added_time": 0,
+                    "team_side_code": goal_work["side_int"],
+                }
+            )
+            work = pd.concat([work, shot_goal_events], ignore_index=True, sort=False)
+
     work["event_type_norm"] = work["event_type"].fillna("").astype(str).str.strip().str.lower()
     work = work[work["event_type_norm"].isin({"goal", "corner", "card"})].copy()
     if work.empty:
@@ -768,8 +844,9 @@ def build_match_gamestate_event_counts(events_df: pd.DataFrame) -> pd.DataFrame:
     work["added_int"] = pd.to_numeric(work.get("added_time"), errors="coerce").fillna(0)
     work["side_int"] = pd.to_numeric(work.get("team_side_code"), errors="coerce")
     work["event_id_sort"] = pd.to_numeric(work.get("id"), errors="coerce")
-    if work["event_id_sort"].isna().all():
-        work["event_id_sort"] = range(len(work))
+    fallback_sort = pd.Series(range(len(work)), index=work.index, dtype="float64")
+    work["event_id_sort"] = work["event_id_sort"].where(work["event_id_sort"].notna(), fallback_sort)
+    work["event_sort_priority"] = work["event_type_norm"].map(lambda event_type: 0 if event_type == "goal" else 1)
 
     rows: list[dict[str, Any]] = []
     for match_id, match_events in work.groupby("match_id", sort=False):
@@ -782,8 +859,16 @@ def build_match_gamestate_event_counts(events_df: pd.DataFrame) -> pd.DataFrame:
             1: {key: 0 for key in GAMESTATE_EVENT_METRIC_KEYS},
             2: {key: 0 for key in GAMESTATE_EVENT_METRIC_KEYS},
         }
+        side_minutes: dict[int, dict[str, float]] = {
+            1: {state: 0.0 for state in GAMESTATES},
+            2: {state: 0.0 for state in GAMESTATES},
+        }
+        last_goal_time = 0.0
 
-        ordered = match_events.sort_values(["minute_int", "added_int", "event_id_sort"], na_position="last")
+        ordered = match_events.sort_values(
+            ["minute_int", "added_int", "event_sort_priority", "event_id_sort"],
+            na_position="last",
+        )
         for _, event in ordered.iterrows():
             event_type = str(event.get("event_type_norm", "")).strip().lower()
             side_raw = event.get("side_int")
@@ -799,6 +884,18 @@ def build_match_gamestate_event_counts(events_df: pd.DataFrame) -> pd.DataFrame:
                     side_counts[perspective_side][metric_key] += 1
 
             if event_type == "goal":
+                if minute_known:
+                    event_time = float(event.get("minute_int") or 0) + float(event.get("added_int") or 0)
+                    if event_time < last_goal_time:
+                        event_time = last_goal_time
+                    elapsed = max(0.0, event_time - last_goal_time)
+                    if elapsed > 0:
+                        state_home = gamestate_for_perspective(score_home, score_away, 1)
+                        state_away = gamestate_for_perspective(score_home, score_away, 2)
+                        side_minutes[1][state_home] += elapsed
+                        side_minutes[2][state_away] += elapsed
+                    last_goal_time = event_time
+
                 score_after = parse_score_after(event.get("score_after"))
                 if score_after is not None:
                     score_home, score_away = score_after
@@ -811,10 +908,26 @@ def build_match_gamestate_event_counts(events_df: pd.DataFrame) -> pd.DataFrame:
                     else:
                         score_away += 1
 
+        match_times = (
+            ordered.loc[ordered["minute_int"].notna(), "minute_int"].astype(float)
+            + ordered.loc[ordered["minute_int"].notna(), "added_int"].astype(float)
+        )
+        max_timeline_time = float(match_times.max()) if not match_times.empty else 90.0
+        end_time = max(90.0, max_timeline_time, last_goal_time)
+        elapsed_tail = max(0.0, end_time - last_goal_time)
+        if elapsed_tail > 0:
+            state_home = gamestate_for_perspective(score_home, score_away, 1)
+            state_away = gamestate_for_perspective(score_home, score_away, 2)
+            side_minutes[1][state_home] += elapsed_tail
+            side_minutes[2][state_away] += elapsed_tail
+
         row: dict[str, Any] = {"match_id": match_id}
         for key in GAMESTATE_EVENT_METRIC_KEYS:
             row[f"home_{key}"] = side_counts[1][key]
             row[f"away_{key}"] = side_counts[2][key]
+        for state in GAMESTATES:
+            row[f"home_minutes_{state}"] = side_minutes[1][state]
+            row[f"away_minutes_{state}"] = side_minutes[2][state]
         rows.append(row)
 
     if not rows:
@@ -1102,6 +1215,22 @@ def load_sofascore_inputs(db_path: str) -> tuple[pd.DataFrame, pd.DataFrame, lis
             """,
             conn,
         )
+        goal_shots_df = pd.read_sql_query(
+            """
+            SELECT
+                id,
+                match_id,
+                time_minute AS minute,
+                CASE
+                    WHEN is_home = 1 THEN 1
+                    WHEN is_home = 0 THEN 2
+                    ELSE NULL
+                END AS team_side_code
+            FROM match_shots
+            WHERE LOWER(TRIM(COALESCE(shot_type, ''))) = 'goal'
+            """,
+            conn,
+        )
         teams_df = pd.read_sql_query(
             """
             SELECT DISTINCT t.name
@@ -1147,7 +1276,7 @@ def load_sofascore_inputs(db_path: str) -> tuple[pd.DataFrame, pd.DataFrame, lis
         if col in raw_finished.columns:
             raw_finished[col] = pd.to_numeric(raw_finished[col], errors="coerce")
 
-    gamestate_counts_df = build_match_gamestate_event_counts(match_events_df)
+    gamestate_counts_df = build_match_gamestate_event_counts(match_events_df, goal_shots_df=goal_shots_df)
     if not gamestate_counts_df.empty and "match_id" in raw_finished.columns:
         raw_finished = raw_finished.merge(gamestate_counts_df, on="match_id", how="left")
         gamestate_numeric_cols = [col for col in gamestate_counts_df.columns if col != "match_id"]
@@ -1206,8 +1335,8 @@ def load_sofascore_inputs(db_path: str) -> tuple[pd.DataFrame, pd.DataFrame, lis
         "away_cards",
     ] = pd.NA
 
-    gamestate_match_cols = [f"home_{key}" for key in GAMESTATE_EVENT_METRIC_KEYS] + [
-        f"away_{key}" for key in GAMESTATE_EVENT_METRIC_KEYS
+    gamestate_match_cols = [f"home_{key}" for key in GAMESTATE_ALL_KEYS] + [
+        f"away_{key}" for key in GAMESTATE_ALL_KEYS
     ]
     for col in gamestate_match_cols:
         if col not in raw_finished.columns:
@@ -1265,7 +1394,7 @@ def load_sofascore_inputs(db_path: str) -> tuple[pd.DataFrame, pd.DataFrame, lis
             "red_against": finished["away_red_cards"],
             "cards_for": finished["home_cards"],
             "cards_against": finished["away_cards"],
-            **{key: finished[f"home_{key}"] for key in GAMESTATE_EVENT_METRIC_KEYS},
+            **{key: finished[f"home_{key}"] for key in GAMESTATE_ALL_KEYS},
             "season_id": finished["season_id"],
             "competition_name": finished["competition_name"],
             "area_name": finished["area_name"],
@@ -1295,7 +1424,7 @@ def load_sofascore_inputs(db_path: str) -> tuple[pd.DataFrame, pd.DataFrame, lis
             "red_against": finished["home_red_cards"],
             "cards_for": finished["away_cards"],
             "cards_against": finished["home_cards"],
-            **{key: finished[f"away_{key}"] for key in GAMESTATE_EVENT_METRIC_KEYS},
+            **{key: finished[f"away_{key}"] for key in GAMESTATE_ALL_KEYS},
             "season_id": finished["season_id"],
             "competition_name": finished["competition_name"],
             "area_name": finished["area_name"],
@@ -2451,7 +2580,7 @@ def build_recent_form_rows(source_df: Any, recent_n: int | None = None) -> list[
         "yellow_against",
         "red_for",
         "red_against",
-        *GAMESTATE_EVENT_METRIC_KEYS,
+        *GAMESTATE_ALL_KEYS,
     ]
     cols = [c for c in preferred_cols if c in source_df.columns]
     if not cols:

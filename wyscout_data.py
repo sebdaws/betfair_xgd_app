@@ -7,6 +7,16 @@ import numpy as np
 import pandas as pd
 from sqlalchemy import bindparam, create_engine, text
 
+GAMESTATES = ("drawing", "winning", "losing")
+GAMESTATE_EVENT_METRIC_KEYS = tuple(
+    f"{metric}_{direction}_{state}"
+    for metric in ("corners", "cards")
+    for direction in ("for", "against")
+    for state in GAMESTATES
+)
+GAMESTATE_TIME_KEYS = tuple(f"minutes_{state}" for state in GAMESTATES)
+GAMESTATE_ALL_KEYS = GAMESTATE_EVENT_METRIC_KEYS + GAMESTATE_TIME_KEYS
+
 DEFAULT_REMOTE_CONFIG = {
     "host": "35.234.132.229",
     "port": "5432",
@@ -1008,6 +1018,7 @@ def calc_wyscout_form_tables(games, data_df, periods=("Season", 5, 3), return_so
                 "yellow_against",
                 "red_for",
                 "red_against",
+                *GAMESTATE_ALL_KEYS,
             ]
 
             home_source = home_perf.sort_values("date_time").copy()

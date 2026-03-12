@@ -1209,49 +1209,93 @@ function buildGamestateTableHtml(homeRows, awayRows, homeLabel, awayLabel, sampl
     { metric: "cards", direction: "against", label: "Cards Against" },
   ];
 
-  return `
+  const toSafeNumber = (value) => {
+    const num = Number(value);
+    return Number.isFinite(num) ? num : 0;
+  };
+  const formatRate = (total, minutes, factor) => {
+    if (!Number.isFinite(total) || !Number.isFinite(minutes) || minutes <= 0) return "-";
+    return formatMetricValue((total / minutes) * factor, 2);
+  };
+
+  const renderTeamTable = (entry) => `
     <section class="recent-team-block">
-      <h4>Gamestate Corners/Cards Totals (${escapeHtml(sampleLabel)})</h4>
+      <h4>${escapeHtml(entry.label)} - Gamestate Totals (${escapeHtml(sampleLabel)})</h4>
       <div class="recent-table-wrap">
         <table class="lines-table recent-lines-table">
           <thead>
             <tr>
-              <th>Team</th>
-              ${metricCols
-                .map(
-                  (metric) =>
-                    states
-                      .map((state) => `<th>${escapeHtml(metric.label)} (${escapeHtml(state.label)})</th>`)
-                      .join("")
-                )
-                .join("")}
+              <th>State</th>
+              <th>Minutes</th>
+              <th>Time %</th>
             </tr>
           </thead>
           <tbody>
-            ${entries
-              .map((entry) => {
-                const cells = metricCols
-                  .map((metric) =>
-                    states
-                      .map((state) => {
-                        const key = `${metric.metric}_${metric.direction}_${state.key}`;
-                        return `<td>${formatMetricValue(sumMetric(entry.rows, key), 0)}</td>`;
-                      })
-                      .join("")
-                  )
+            ${(() => {
+              const minutesByState = {};
+              for (const state of states) {
+                const key = `minutes_${state.key}`;
+                minutesByState[state.key] = toSafeNumber(sumMetric(entry.rows, key));
+              }
+              const totalMinutes = states.reduce((sum, state) => sum + minutesByState[state.key], 0);
+              return states
+                .map((state) => {
+                  const minutes = minutesByState[state.key];
+                  const pct = totalMinutes > 0 ? (minutes / totalMinutes) * 100 : null;
+                  return `
+                    <tr>
+                      <td>${escapeHtml(state.label)}</td>
+                      <td>${formatMetricValue(minutes, 1)}</td>
+                      <td>${pct == null ? "-" : `${formatMetricValue(pct, 1)}%`}</td>
+                    </tr>
+                  `;
+                })
+                .join("");
+            })()}
+          </tbody>
+        </table>
+      </div>
+      <div class="recent-table-wrap">
+        <table class="lines-table recent-lines-table">
+          <thead>
+            <tr>
+              <th>Metric</th>
+              <th>State</th>
+              <th>Total</th>
+              <th>Per 90</th>
+              <th>Per 10</th>
+            </tr>
+          </thead>
+          <tbody>
+            ${metricCols
+              .map((metric) => {
+                return states
+                  .map((state) => {
+                    const metricKey = `${metric.metric}_${metric.direction}_${state.key}`;
+                    const minutesKey = `minutes_${state.key}`;
+                    const total = toSafeNumber(sumMetric(entry.rows, metricKey));
+                    const minutes = toSafeNumber(sumMetric(entry.rows, minutesKey));
+                    return `
+                      <tr>
+                        <td>${escapeHtml(metric.label)}</td>
+                        <td>${escapeHtml(state.label)}</td>
+                        <td>${formatMetricValue(total, 0)}</td>
+                        <td>${formatRate(total, minutes, 90)}</td>
+                        <td>${formatRate(total, minutes, 10)}</td>
+                      </tr>
+                    `;
+                  })
                   .join("");
-                return `
-                  <tr>
-                    <td><strong>${escapeHtml(entry.label)}</strong></td>
-                    ${cells}
-                  </tr>
-                `;
               })
               .join("")}
           </tbody>
         </table>
       </div>
     </section>
+  `;
+
+  return `
+    ${entries.map((entry) => renderTeamTable(entry)).join("")}
   `;
 }
 
