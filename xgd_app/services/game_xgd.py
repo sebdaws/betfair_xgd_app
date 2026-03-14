@@ -14,6 +14,244 @@ class GameXgdService:
     def _parse_historical_match_id(self, market_id: Any) -> int | None:
         return self.state.historical_data_service._parse_historical_match_id(market_id)
 
+    @staticmethod
+    def _to_float_or_none(value: Any) -> float | None:
+        try:
+            if value is None or pd.isna(value):
+                return None
+        except Exception:
+            pass
+        try:
+            out = float(value)
+        except Exception:
+            return None
+        return out if pd.notna(out) else None
+
+    @staticmethod
+    def _handicap_verdict(value: float | None) -> str:
+        if value is None:
+            return "-"
+        if value > 1e-9:
+            return "Cover"
+        if value < -1e-9:
+            return "No Cover"
+        return "Push"
+
+    def _build_team_season_handicap_rows(
+        self,
+        team_name: str,
+        season_id: Any,
+        kickoff_time: Any,
+        resolve_from_archive: bool = False,
+    ) -> list[dict[str, Any]]:
+        team = str(team_name or "").strip()
+        kickoff_ts = pd.to_datetime(kickoff_time, errors="coerce", utc=True)
+        if not team or pd.isna(kickoff_ts):
+            return []
+        if self.form_df.empty:
+            return []
+        if "team" not in self.form_df.columns or "date_time" not in self.form_df.columns:
+            return []
+
+        with self.lock:
+            historical_df = self.historical_games_df.copy()
+        historical_by_match_id: dict[int, dict[str, str]] = {}
+        if isinstance(historical_df, pd.DataFrame) and (not historical_df.empty):
+            for hist_row in historical_df.to_dict(orient="records"):
+                match_id_raw = hist_row.get("match_id")
+                if match_id_raw is None or pd.isna(match_id_raw):
+                    continue
+                try:
+                    match_id = int(match_id_raw)
+                except Exception:
+                    continue
+                historical_by_match_id[match_id] = {
+                    "mainline": str(hist_row.get("mainline", "-") or "-"),
+                    "home_price": str(hist_row.get("home_price", "-") or "-"),
+                    "away_price": str(hist_row.get("away_price", "-") or "-"),
+                }
+
+        team_df = self.form_df[self.form_df["team"].astype(str) == team].copy()
+        if team_df.empty:
+            return []
+        team_df["date_time"] = pd.to_datetime(team_df["date_time"], errors="coerce", utc=True)
+        team_df = team_df[team_df["date_time"].notna()].copy()
+        team_df = team_df[team_df["date_time"] < kickoff_ts].copy()
+        if team_df.empty:
+            return []
+
+        if season_id is not None and (not pd.isna(season_id)) and "season_id" in team_df.columns:
+            season_filtered = team_df[team_df["season_id"] == season_id].copy()
+            if not season_filtered.empty:
+                team_df = season_filtered
+
+        team_df = team_df.sort_values("date_time", ascending=False).reset_index(drop=True)
+        rows: list[dict[str, Any]] = []
+        for row in team_df.to_dict(orient="records"):
+            venue = str(row.get("venue", "")).strip().lower()
+            opponent = str(row.get("opponent", "")).strip()
+            if not opponent:
+                continue
+            is_home = venue == "home"
+            home_team = team if is_home else opponent
+            away_team = opponent if is_home else team
+
+            match_id_raw = row.get("match_id")
+            closing = None
+            if resolve_from_archive:
+                if match_id_raw is not None and (not pd.isna(match_id_raw)):
+                    try:
+                        closing = historical_by_match_id.get(int(match_id_raw))
+                    except Exception:
+                        closing = None
+                closing_mainline = str((closing or {}).get("mainline", "")).strip() if isinstance(closing, dict) else ""
+                if not closing_mainline or closing_mainline == "-":
+                    closing = self.state.historical_data_service._lookup_historical_betfair_prices(
+                        home_team=home_team,
+                        away_team=away_team,
+                        kickoff_ts=row.get("date_time"),
+                    )
+            else:
+                if match_id_raw is not None and (not pd.isna(match_id_raw)):
+                    try:
+                        closing = historical_by_match_id.get(int(match_id_raw))
+                    except Exception:
+                        closing = None
+            if not isinstance(closing, dict):
+                closing = self.state.historical_data_service._historical_default_price_snapshot()
+            home_handicap = parse_handicap_value((closing or {}).get("mainline"))
+            team_handicap = None if home_handicap is None else (float(home_handicap) if is_home else -float(home_handicap))
+
+            gf = self._to_float_or_none(row.get("GF"))
+            ga = self._to_float_or_none(row.get("GA"))
+            xg = self._to_float_or_none(row.get("xG"))
+            xga = self._to_float_or_none(row.get("xGA"))
+
+            result_margin = (gf - ga) if (gf is not None and ga is not None) else None
+            xg_margin = (xg - xga) if (xg is not None and xga is not None) else None
+            result_vs_hc = (
+                (result_margin + team_handicap)
+                if (result_margin is not None and team_handicap is not None)
+                else None
+            )
+            xg_vs_hc = (
+                (xg_margin + team_handicap)
+                if (xg_margin is not None and team_handicap is not None)
+                else None
+            )
+
+            match_ts = pd.to_datetime(row.get("date_time"), errors="coerce", utc=True)
+            rows.append(
+                {
+                    "date_time": match_ts.strftime("%Y-%m-%d %H:%M") if not pd.isna(match_ts) else to_native(row.get("date_time")),
+                    "competition_name": str(row.get("competition_name", "")).strip(),
+                    "team": team,
+                    "opponent": opponent,
+                    "venue": "home" if is_home else "away",
+                    "home_team": home_team,
+                    "away_team": away_team,
+                    "home_goals": (gf if is_home else ga),
+                    "away_goals": (ga if is_home else gf),
+                    "home_xg": (xg if is_home else xga),
+                    "away_xg": (xga if is_home else xg),
+                    "closing_mainline": str((closing or {}).get("mainline", "-") or "-"),
+                    "closing_home_price": str((closing or {}).get("home_price", "-") or "-"),
+                    "closing_away_price": str((closing or {}).get("away_price", "-") or "-"),
+                    "closing_handicap_team": team_handicap,
+                    "result_vs_hc": result_vs_hc,
+                    "xg_vs_hc": xg_vs_hc,
+                    "result_verdict": self._handicap_verdict(result_vs_hc),
+                    "xg_verdict": self._handicap_verdict(xg_vs_hc),
+                }
+            )
+        return rows
+
+    def _resolve_fixture_context_for_market(self, market_id: str) -> dict[str, Any]:
+        historical_match_id = self._parse_historical_match_id(market_id)
+        if historical_match_id is not None:
+            with self.lock:
+                historical_df = self.historical_games_df.copy()
+            row_df = historical_df[pd.to_numeric(historical_df["match_id"], errors="coerce") == int(historical_match_id)].copy()
+            if row_df.empty:
+                raise KeyError("Historical match not found")
+            row = row_df.iloc[0].to_dict()
+            return {
+                "market_id": str(row.get("market_id", "")),
+                "home_team": str(row.get("home_sofa", "")).strip(),
+                "away_team": str(row.get("away_sofa", "")).strip(),
+                "kickoff_time": pd.to_datetime(row.get("kickoff_time"), errors="coerce", utc=True),
+                "fixture_season_id": row.get("fixture_season_id"),
+                "home_label": str(row.get("home_sofa") or row.get("home_raw") or "").strip(),
+                "away_label": str(row.get("away_sofa") or row.get("away_raw") or "").strip(),
+                "is_historical": True,
+            }
+
+        self.refresh_games(force=False)
+        with self.lock:
+            games_df = self.games_df.copy()
+
+        if games_df.empty:
+            raise KeyError("No games available")
+        game_df = games_df[games_df["market_id"].astype(str) == str(market_id)].copy()
+        if game_df.empty:
+            raise KeyError("Market not found")
+
+        manual_mapping_lookup = self.get_manual_mapping_lookup_snapshot()
+        mapped_rows, _ = map_betfair_games(
+            betfair_games_df=game_df,
+            fixtures_df=self.fixtures_df,
+            team_matcher=self.team_matcher,
+            manual_mapping_lookup=manual_mapping_lookup,
+        )
+        if not mapped_rows:
+            raise KeyError("Market not found")
+        row = mapped_rows[0]
+        return {
+            "market_id": str(row.get("market_id", "")),
+            "home_team": str(row.get("home_sofa") or "").strip(),
+            "away_team": str(row.get("away_sofa") or "").strip(),
+            "kickoff_time": pd.to_datetime(row.get("kickoff_time"), errors="coerce", utc=True),
+            "fixture_season_id": row.get("fixture_season_id"),
+            "home_label": str(row.get("home_sofa") or row.get("home_raw") or "").strip(),
+            "away_label": str(row.get("away_sofa") or row.get("away_raw") or "").strip(),
+            "is_historical": False,
+        }
+
+    def get_game_hc_performance(self, market_id: str) -> dict[str, Any]:
+        context = self._resolve_fixture_context_for_market(market_id=market_id)
+        home_team = str(context.get("home_team", "")).strip()
+        away_team = str(context.get("away_team", "")).strip()
+        kickoff_time = context.get("kickoff_time")
+        fixture_season_id = context.get("fixture_season_id")
+        if not home_team or not away_team or pd.isna(kickoff_time):
+            return {
+                "market_id": str(context.get("market_id", market_id)),
+                "home_label": str(context.get("home_label", "Home team")),
+                "away_label": str(context.get("away_label", "Away team")),
+                "season_handicap_rows": {"home": [], "away": []},
+                "is_historical": bool(context.get("is_historical")),
+            }
+        return {
+            "market_id": str(context.get("market_id", market_id)),
+            "home_label": str(context.get("home_label", home_team)),
+            "away_label": str(context.get("away_label", away_team)),
+            "season_handicap_rows": {
+                "home": self._build_team_season_handicap_rows(
+                    team_name=home_team,
+                    season_id=fixture_season_id,
+                    kickoff_time=kickoff_time,
+                    resolve_from_archive=True,
+                ),
+                "away": self._build_team_season_handicap_rows(
+                    team_name=away_team,
+                    season_id=fixture_season_id,
+                    kickoff_time=kickoff_time,
+                    resolve_from_archive=True,
+                ),
+            },
+            "is_historical": bool(context.get("is_historical")),
+        }
+
     def get_game_xgd(self, market_id: str, recent_n: int = 5, venue_recent_n: int = 5) -> dict[str, Any]:
         recent_n = clamp_int(recent_n, default=5, min_value=1, max_value=20)
         venue_recent_n = clamp_int(venue_recent_n, default=5, min_value=1, max_value=20)
@@ -73,6 +311,7 @@ class GameXgdService:
                 "venue_recent_n": venue_recent_n,
                 "home_team_venue_rows": {"home": [], "away": []},
                 "away_team_venue_rows": {"home": [], "away": []},
+                "season_handicap_rows": {"home": [], "away": []},
                 "alternate_xgd_sections": [],
                 "xgd_views": [],
                 "warning": "No xGD output produced for this game.",
@@ -138,6 +377,7 @@ class GameXgdService:
         primary_mapping_row: dict[str, Any] | None = None
         primary_home_sofa: str | None = None
         primary_away_sofa: str | None = None
+        season_handicap_rows: dict[str, list[dict[str, Any]]] = {"home": [], "away": []}
         kickoff_time = game_row.get("kickoff_time")
         if not mapping_df.empty:
             mapping_row = mapping_df.iloc[0].to_dict()
@@ -198,6 +438,20 @@ class GameXgdService:
                     home_recent_rows = merge_recent_rows_by_venue(home_team_venue_rows)
                 if not away_recent_rows:
                     away_recent_rows = merge_recent_rows_by_venue(away_team_venue_rows)
+
+                fixture_season_id = mapping_row.get("fixture_season_id")
+                season_handicap_rows = {
+                    "home": self._build_team_season_handicap_rows(
+                        team_name=str(home_sofa),
+                        season_id=fixture_season_id,
+                        kickoff_time=kickoff_time,
+                    ),
+                    "away": self._build_team_season_handicap_rows(
+                        team_name=str(away_sofa),
+                        season_id=fixture_season_id,
+                        kickoff_time=kickoff_time,
+                    ),
+                }
 
                 betfair_competition = str(game_row.get("competition", "")).strip()
                 fixture_competition = str(mapping_row.get("fixture_competition", "")).strip()
@@ -450,6 +704,7 @@ class GameXgdService:
             "venue_recent_n": venue_recent_n,
             "home_team_venue_rows": home_team_venue_rows,
             "away_team_venue_rows": away_team_venue_rows,
+            "season_handicap_rows": season_handicap_rows,
             "alternate_xgd_sections": alternate_xgd_sections,
             "xgd_views": xgd_views,
             "warning": warning_message,
@@ -503,6 +758,7 @@ class GameXgdService:
                 "venue_recent_n": venue_recent_n,
                 "home_team_venue_rows": {"home": [], "away": []},
                 "away_team_venue_rows": {"home": [], "away": []},
+                "season_handicap_rows": {"home": [], "away": []},
                 "alternate_xgd_sections": [],
                 "xgd_views": [],
                 "warning": "Historical game is missing required data for xGD.",
@@ -565,6 +821,7 @@ class GameXgdService:
                 "venue_recent_n": venue_recent_n,
                 "home_team_venue_rows": {"home": [], "away": []},
                 "away_team_venue_rows": {"home": [], "away": []},
+                "season_handicap_rows": {"home": [], "away": []},
                 "alternate_xgd_sections": [],
                 "xgd_views": [],
                 "warning": "No xGD output produced for this historical game.",
@@ -590,6 +847,18 @@ class GameXgdService:
         away_recent_rows = fixture_view.get("away_recent_rows") or []
         home_team_venue_rows = fixture_view.get("home_team_venue_rows") or {"home": [], "away": []}
         away_team_venue_rows = fixture_view.get("away_team_venue_rows") or {"home": [], "away": []}
+        season_handicap_rows = {
+            "home": self._build_team_season_handicap_rows(
+                team_name=home_team,
+                season_id=fixture_season_id,
+                kickoff_time=kickoff_time,
+            ),
+            "away": self._build_team_season_handicap_rows(
+                team_name=away_team,
+                season_id=fixture_season_id,
+                kickoff_time=kickoff_time,
+            ),
+        }
 
         mapping_rows = [
             {
@@ -702,6 +971,7 @@ class GameXgdService:
             "venue_recent_n": venue_recent_n,
             "home_team_venue_rows": home_team_venue_rows,
             "away_team_venue_rows": away_team_venue_rows,
+            "season_handicap_rows": season_handicap_rows,
             "alternate_xgd_sections": [],
             "xgd_views": [fixture_view],
             "warning": warning_message,

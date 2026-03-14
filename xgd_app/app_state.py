@@ -57,6 +57,7 @@ class AppState:
 
         self.manual_mappings_path = DEFAULT_MANUAL_TEAM_MAPPINGS
         self.manual_competition_mappings_path = DEFAULT_MANUAL_COMPETITION_MAPPINGS
+        self.saved_games_path = APP_DIR / "saved_games.json"
 
         sofa_competitions = []
         if "competition_name" in self.fixtures_df.columns:
@@ -100,20 +101,132 @@ class AppState:
         self.game_xgd_service = GameXgdService(state=self)
 
         self.historical_data_dir = DEFAULT_BETFAIR_HISTORICAL_DIR
-        self._historical_event_day_index = self.historical_data_service._build_historical_event_day_index(
-            self.historical_data_dir
-        )
+        # Lazily populate day -> event-dir mappings on demand. This avoids a full
+        # startup scan across all historical archive years.
+        self._historical_event_day_index: dict[str, list[Path]] = {}
         self._historical_day_events_cache: dict[str, list[dict[str, Any]]] = {}
         self._historical_event_metadata_cache: dict[str, dict[str, Any] | None] = {}
         self._historical_event_stream_cache: dict[str, dict[str, Any]] = {}
         self._historical_event_price_cache: dict[str, dict[str, str]] = {}
         self._historical_match_price_cache: dict[tuple[str, str, str], dict[str, str]] = {}
+        self._historical_day_event_lookup_cache: dict[str, dict[str, dict[tuple[str, str], list[dict[str, Any]]]]] = {}
 
         self.games_df = pd.DataFrame()
         self.historical_games_df = pd.DataFrame()
         self.upcoming_metrics_cache: dict[str, dict[str, Any]] = {}
+        self.saved_market_ids = self._load_saved_market_ids()
         self.historical_data_service.initialize_historical_games(initial_days=7)
         self.last_refresh: dt.datetime | None = None
+
+    def _load_saved_market_ids(self) -> list[str]:
+        path = Path(self.saved_games_path)
+        if not path.exists():
+            return []
+        try:
+            payload = json.loads(path.read_text(encoding="utf-8"))
+        except Exception:
+            return []
+
+        if isinstance(payload, dict):
+            raw_ids = payload.get("saved_market_ids", [])
+        else:
+            raw_ids = payload
+        if not isinstance(raw_ids, list):
+            return []
+
+        out: list[str] = []
+        seen: set[str] = set()
+        for raw in raw_ids:
+            market_id = str(raw or "").strip()
+            if not market_id or market_id in seen:
+                continue
+            seen.add(market_id)
+            out.append(market_id)
+        return out
+
+    def _persist_saved_market_ids_locked(self) -> None:
+        path = Path(self.saved_games_path)
+        payload = {"saved_market_ids": list(self.saved_market_ids)}
+        tmp_path = path.with_suffix(f"{path.suffix}.tmp")
+        tmp_path.write_text(json.dumps(payload, indent=2), encoding="utf-8")
+        tmp_path.replace(path)
+
+    def list_saved_market_ids(self) -> list[str]:
+        with self.lock:
+            return list(self.saved_market_ids)
+
+    def save_game(self, market_id: str) -> dict[str, Any]:
+        market_id_norm = str(market_id or "").strip()
+        if not market_id_norm:
+            raise ValueError("market_id is required")
+        with self.lock:
+            if market_id_norm not in self.saved_market_ids:
+                self.saved_market_ids.append(market_id_norm)
+                self._persist_saved_market_ids_locked()
+            out_ids = list(self.saved_market_ids)
+        return {"saved": True, "saved_market_ids": out_ids, "saved_count": len(out_ids)}
+
+    def unsave_game(self, market_id: str) -> dict[str, Any]:
+        market_id_norm = str(market_id or "").strip()
+        if not market_id_norm:
+            raise ValueError("market_id is required")
+        with self.lock:
+            existed = market_id_norm in self.saved_market_ids
+            if existed:
+                self.saved_market_ids = [value for value in self.saved_market_ids if value != market_id_norm]
+                self._persist_saved_market_ids_locked()
+            out_ids = list(self.saved_market_ids)
+        return {
+            "saved": False,
+            "removed": bool(existed),
+            "saved_market_ids": out_ids,
+            "saved_count": len(out_ids),
+        }
+
+    def list_saved_games_grouped_by_day(self) -> dict[str, Any]:
+        with self.lock:
+            saved_market_ids = list(self.saved_market_ids)
+            games_df = self.games_df.copy()
+            historical_games_df = self.historical_games_df.copy()
+            last_refresh = self.last_refresh
+
+        if not saved_market_ids:
+            return self.games_service.group_games_df_by_day(
+                games_df=pd.DataFrame(),
+                mode_norm="saved",
+                fill_missing_days=False,
+                has_more_older=False,
+                added_games=0,
+                last_refresh=last_refresh,
+                saved_market_ids=[],
+            )
+
+        saved_lookup = set(saved_market_ids)
+        frames: list[pd.DataFrame] = []
+        for frame in (games_df, historical_games_df):
+            if frame.empty or "market_id" not in frame.columns:
+                continue
+            frame_local = frame.copy()
+            frame_local["market_id"] = frame_local["market_id"].astype(str)
+            frame_local = frame_local[frame_local["market_id"].isin(saved_lookup)].copy()
+            if frame_local.empty:
+                continue
+            frames.append(frame_local)
+
+        combined = pd.concat(frames, ignore_index=True) if frames else pd.DataFrame()
+        if not combined.empty and "market_id" in combined.columns:
+            combined["market_id"] = combined["market_id"].astype(str)
+            combined = combined.drop_duplicates(subset=["market_id"], keep="first")
+
+        return self.games_service.group_games_df_by_day(
+            games_df=combined,
+            mode_norm="saved",
+            fill_missing_days=False,
+            has_more_older=False,
+            added_games=0,
+            last_refresh=last_refresh,
+            saved_market_ids=saved_market_ids,
+        )
 
     def get_manual_mapping_lookup_snapshot(self) -> dict[str, str]:
         return self.mapping_service.get_manual_mapping_lookup_snapshot()
@@ -259,8 +372,14 @@ class AppState:
     def calculate_historical_day_xgd(self, day_iso: str) -> dict[str, Any]:
         return self.historical_service.calculate_day_xgd(day_iso=day_iso)
 
+    def rescan_historical_closing_prices(self) -> dict[str, Any]:
+        return self.historical_data_service.rescan_loaded_historical_closing_prices()
+
     def get_game_xgd(self, market_id: str, recent_n: int = 5, venue_recent_n: int = 5) -> dict[str, Any]:
         return self.game_xgd_service.get_game_xgd(market_id=market_id, recent_n=recent_n, venue_recent_n=venue_recent_n)
+
+    def get_game_hc_performance(self, market_id: str) -> dict[str, Any]:
+        return self.game_xgd_service.get_game_hc_performance(market_id=market_id)
 
     def _get_historical_game_xgd(self, match_id: int, recent_n: int, venue_recent_n: int) -> dict[str, Any]:
         return self.game_xgd_service._get_historical_game_xgd(match_id=match_id, recent_n=recent_n, venue_recent_n=venue_recent_n)

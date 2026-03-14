@@ -471,6 +471,131 @@ class GamesService:
             self.state.last_refresh = dt.datetime.now(dt.timezone.utc)
             self.state.upcoming_metrics_cache = metrics_cache
 
+    def _serialize_game_row(self, row: dict[str, Any]) -> dict[str, Any]:
+        kickoff_ts = row.get("kickoff_time")
+        kickoff_utc = pd.to_datetime(kickoff_ts, utc=True).strftime("%H:%M") if not pd.isna(kickoff_ts) else "-"
+        return {
+            "market_id": str(row.get("market_id", "")),
+            "event_name": str(row.get("event_name", "")),
+            "competition": str(row.get("competition", "")),
+            "tier": str(row.get("tier", self.default_league_tier) or self.default_league_tier),
+            "market_name": str(row.get("market_name", "")),
+            "kickoff_raw": str(row.get("kickoff_raw", "")),
+            "kickoff_utc": kickoff_utc,
+            "mainline": str(row.get("mainline", "-") or "-"),
+            "home_price": str(row.get("home_price", "-") or "-"),
+            "away_price": str(row.get("away_price", "-") or "-"),
+            "goal_mainline": str(row.get("goal_mainline", "-") or "-"),
+            "goal_under_price": str(row.get("goal_under_price", "-") or "-"),
+            "goal_over_price": str(row.get("goal_over_price", "-") or "-"),
+            "scoreline": str(row.get("scoreline", "")).strip(),
+            "season_xgd": self.format_float_value(row.get("season_xgd"), decimals=2),
+            "last5_xgd": self.format_float_value(row.get("last5_xgd"), decimals=2),
+            "last3_xgd": self.format_float_value(row.get("last3_xgd"), decimals=2),
+            "season_strength": self.format_float_value(row.get("season_strength"), decimals=2),
+            "last5_strength": self.format_float_value(row.get("last5_strength"), decimals=2),
+            "last3_strength": self.format_float_value(row.get("last3_strength"), decimals=2),
+            "xgd_competition_mismatch": (
+                bool(row.get("xgd_competition_mismatch"))
+                if not pd.isna(row.get("xgd_competition_mismatch"))
+                else False
+            ),
+            "season_min_xg": self.format_float_value(row.get("season_min_xg"), decimals=2),
+            "last5_min_xg": self.format_float_value(row.get("last5_min_xg"), decimals=2),
+            "last3_min_xg": self.format_float_value(row.get("last3_min_xg"), decimals=2),
+            "season_max_xg": self.format_float_value(row.get("season_max_xg"), decimals=2),
+            "last5_max_xg": self.format_float_value(row.get("last5_max_xg"), decimals=2),
+            "last3_max_xg": self.format_float_value(row.get("last3_max_xg"), decimals=2),
+            "is_historical": bool(row.get("is_historical")),
+            "home_goals": (
+                int(row.get("home_goals"))
+                if pd.notna(row.get("home_goals"))
+                else None
+            ),
+            "away_goals": (
+                int(row.get("away_goals"))
+                if pd.notna(row.get("away_goals"))
+                else None
+            ),
+            "home_xg_actual": self.format_float_value(row.get("home_xg_actual"), decimals=2),
+            "away_xg_actual": self.format_float_value(row.get("away_xg_actual"), decimals=2),
+            "home_corners_actual": self.format_float_value(row.get("home_corners_actual"), decimals=1),
+            "away_corners_actual": self.format_float_value(row.get("away_corners_actual"), decimals=1),
+            "home_cards_actual": self.format_float_value(row.get("home_cards_actual"), decimals=1),
+            "away_cards_actual": self.format_float_value(row.get("away_cards_actual"), decimals=1),
+        }
+
+    def group_games_df_by_day(
+        self,
+        *,
+        games_df: pd.DataFrame,
+        mode_norm: str,
+        fill_missing_days: bool,
+        has_more_older: bool,
+        added_games: int,
+        last_refresh: dt.datetime | None,
+        loaded_start_day: str | None = None,
+        loaded_end_day: str | None = None,
+        saved_market_ids: list[str] | None = None,
+    ) -> dict[str, Any]:
+        saved_ids = list(saved_market_ids or [])
+        if games_df.empty and not (mode_norm == "historical" and loaded_start_day and loaded_end_day):
+            return {
+                "days": [],
+                "tiers": [],
+                "total_games": 0,
+                "last_refresh_utc": last_refresh.isoformat() if last_refresh else None,
+                "mode": mode_norm,
+                "fill_missing_days": bool(fill_missing_days),
+                "has_more_older": bool(has_more_older),
+                "added_games": int(added_games),
+                "saved_market_ids": saved_ids,
+            }
+
+        if games_df.empty:
+            available_tiers: list[str] = []
+            day_values: list[str] = []
+        else:
+            games_df = games_df.copy()
+            if "tier" not in games_df.columns:
+                games_df["tier"] = self.default_league_tier
+            games_df["tier"] = games_df["tier"].fillna(self.default_league_tier).astype(str)
+            available_tiers = sorted({tier.strip() for tier in games_df["tier"].tolist() if tier.strip()})
+            games_df["day"] = games_df["kickoff_time"].dt.strftime("%Y-%m-%d")
+            day_values = sorted(games_df["day"].dropna().unique().tolist())
+
+        if mode_norm == "historical" and loaded_start_day and loaded_end_day:
+            start_ts = pd.to_datetime(loaded_start_day, errors="coerce", utc=True)
+            end_ts = pd.to_datetime(loaded_end_day, errors="coerce", utc=True)
+            if pd.notna(start_ts) and pd.notna(end_ts) and start_ts <= end_ts:
+                day_values = [
+                    (start_ts + pd.Timedelta(days=offset)).strftime("%Y-%m-%d")
+                    for offset in range((end_ts - start_ts).days + 1)
+                ]
+            elif not day_values:
+                day_values = [loaded_start_day]
+
+        days_out: list[dict[str, Any]] = []
+        for day in day_values:
+            if games_df.empty or "day" not in games_df.columns:
+                day_df = pd.DataFrame()
+            else:
+                day_df = games_df[games_df["day"] == day].sort_values(["kickoff_time", "competition", "event_name"])
+            games = [self._serialize_game_row(row) for row in day_df.to_dict(orient="records")]
+            days_out.append({"date": day, "date_label": self.format_day_label(day), "games": games})
+
+        return {
+            "days": days_out,
+            "tiers": available_tiers,
+            "total_games": int(len(games_df)),
+            "last_refresh_utc": last_refresh.isoformat() if last_refresh else None,
+            "mode": mode_norm,
+            "fill_missing_days": bool(fill_missing_days),
+            "has_more_older": bool(has_more_older),
+            "added_games": int(added_games),
+            "saved_market_ids": saved_ids,
+        }
+
     def list_grouped_by_day(self, mode: str = "upcoming", load_more_historical: bool = False) -> dict[str, Any]:
         mode_norm = str(mode or "").strip().lower()
         has_more_older = False
@@ -498,114 +623,18 @@ class GamesService:
             loaded_start_day, loaded_end_day = None, None
             fill_missing_days = True
 
-        if games_df.empty and not (mode_norm == "historical" and loaded_start_day and loaded_end_day):
-            return {
-                "days": [],
-                "tiers": [],
-                "total_games": 0,
-                "last_refresh_utc": last_refresh.isoformat() if last_refresh else None,
-                "mode": mode_norm,
-                "fill_missing_days": fill_missing_days,
-                "has_more_older": bool(has_more_older),
-                "added_games": int(added_games),
-            }
-
-        if games_df.empty:
-            available_tiers: list[str] = []
-            day_values: list[str] = []
-        else:
-            if "tier" not in games_df.columns:
-                games_df["tier"] = self.default_league_tier
-            games_df["tier"] = games_df["tier"].fillna(self.default_league_tier).astype(str)
-            available_tiers = sorted({tier.strip() for tier in games_df["tier"].tolist() if tier.strip()})
-            games_df["day"] = games_df["kickoff_time"].dt.strftime("%Y-%m-%d")
-            day_values = sorted(games_df["day"].dropna().unique().tolist())
-
-        if mode_norm == "historical" and loaded_start_day and loaded_end_day:
-            start_ts = pd.to_datetime(loaded_start_day, errors="coerce", utc=True)
-            end_ts = pd.to_datetime(loaded_end_day, errors="coerce", utc=True)
-            if pd.notna(start_ts) and pd.notna(end_ts) and start_ts <= end_ts:
-                day_values = [
-                    (start_ts + pd.Timedelta(days=offset)).strftime("%Y-%m-%d")
-                    for offset in range((end_ts - start_ts).days + 1)
-                ]
-            elif not day_values:
-                day_values = [loaded_start_day]
-
-        days_out: list[dict[str, Any]] = []
-        for day in day_values:
-            if games_df.empty or "day" not in games_df.columns:
-                day_df = pd.DataFrame()
-            else:
-                day_df = games_df[games_df["day"] == day].sort_values(["kickoff_time", "competition", "event_name"])
-            games: list[dict[str, Any]] = []
-            for row in day_df.to_dict(orient="records"):
-                kickoff_ts = row.get("kickoff_time")
-                kickoff_utc = pd.to_datetime(kickoff_ts, utc=True).strftime("%H:%M") if not pd.isna(kickoff_ts) else "-"
-                games.append(
-                    {
-                        "market_id": str(row.get("market_id", "")),
-                        "event_name": str(row.get("event_name", "")),
-                        "competition": str(row.get("competition", "")),
-                        "tier": str(row.get("tier", self.default_league_tier) or self.default_league_tier),
-                        "market_name": str(row.get("market_name", "")),
-                        "kickoff_raw": str(row.get("kickoff_raw", "")),
-                        "kickoff_utc": kickoff_utc,
-                        "mainline": str(row.get("mainline", "-") or "-"),
-                        "home_price": str(row.get("home_price", "-") or "-"),
-                        "away_price": str(row.get("away_price", "-") or "-"),
-                        "goal_mainline": str(row.get("goal_mainline", "-") or "-"),
-                        "goal_under_price": str(row.get("goal_under_price", "-") or "-"),
-                        "goal_over_price": str(row.get("goal_over_price", "-") or "-"),
-                        "scoreline": str(row.get("scoreline", "")).strip(),
-                        "season_xgd": self.format_float_value(row.get("season_xgd"), decimals=2),
-                        "last5_xgd": self.format_float_value(row.get("last5_xgd"), decimals=2),
-                        "last3_xgd": self.format_float_value(row.get("last3_xgd"), decimals=2),
-                        "season_strength": self.format_float_value(row.get("season_strength"), decimals=2),
-                        "last5_strength": self.format_float_value(row.get("last5_strength"), decimals=2),
-                        "last3_strength": self.format_float_value(row.get("last3_strength"), decimals=2),
-                        "xgd_competition_mismatch": (
-                            bool(row.get("xgd_competition_mismatch"))
-                            if not pd.isna(row.get("xgd_competition_mismatch"))
-                            else False
-                        ),
-                        "season_min_xg": self.format_float_value(row.get("season_min_xg"), decimals=2),
-                        "last5_min_xg": self.format_float_value(row.get("last5_min_xg"), decimals=2),
-                        "last3_min_xg": self.format_float_value(row.get("last3_min_xg"), decimals=2),
-                        "season_max_xg": self.format_float_value(row.get("season_max_xg"), decimals=2),
-                        "last5_max_xg": self.format_float_value(row.get("last5_max_xg"), decimals=2),
-                        "last3_max_xg": self.format_float_value(row.get("last3_max_xg"), decimals=2),
-                        "is_historical": bool(row.get("is_historical")),
-                        "home_goals": (
-                            int(row.get("home_goals"))
-                            if pd.notna(row.get("home_goals"))
-                            else None
-                        ),
-                        "away_goals": (
-                            int(row.get("away_goals"))
-                            if pd.notna(row.get("away_goals"))
-                            else None
-                        ),
-                        "home_xg_actual": self.format_float_value(row.get("home_xg_actual"), decimals=2),
-                        "away_xg_actual": self.format_float_value(row.get("away_xg_actual"), decimals=2),
-                        "home_corners_actual": self.format_float_value(row.get("home_corners_actual"), decimals=1),
-                        "away_corners_actual": self.format_float_value(row.get("away_corners_actual"), decimals=1),
-                        "home_cards_actual": self.format_float_value(row.get("home_cards_actual"), decimals=1),
-                        "away_cards_actual": self.format_float_value(row.get("away_cards_actual"), decimals=1),
-                    }
-                )
-            days_out.append({"date": day, "date_label": self.format_day_label(day), "games": games})
-
-        return {
-            "days": days_out,
-            "tiers": available_tiers,
-            "total_games": int(len(games_df)),
-            "last_refresh_utc": last_refresh.isoformat() if last_refresh else None,
-            "mode": mode_norm,
-            "fill_missing_days": fill_missing_days,
-            "has_more_older": bool(has_more_older),
-            "added_games": int(added_games),
-        }
+        saved_market_ids = self.state.list_saved_market_ids()
+        return self.group_games_df_by_day(
+            games_df=games_df,
+            mode_norm=mode_norm,
+            fill_missing_days=fill_missing_days,
+            has_more_older=has_more_older,
+            added_games=added_games,
+            last_refresh=last_refresh,
+            loaded_start_day=loaded_start_day,
+            loaded_end_day=loaded_end_day,
+            saved_market_ids=saved_market_ids,
+        )
 
     def get_game_xgd(self, market_id: str, recent_n: int = 5, venue_recent_n: int = 5) -> dict[str, Any]:
         return self.state.get_game_xgd(market_id=market_id, recent_n=recent_n, venue_recent_n=venue_recent_n)

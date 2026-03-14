@@ -12,6 +12,24 @@ class HistoricalBetfairDataService:
         return getattr(self.state, name)
 
     @staticmethod
+    def _historical_month_num_from_dir_name(value: str) -> int | None:
+        text = str(value or "").strip().lower()
+        if not text:
+            return None
+        month_num = MONTH_ABBR_TO_NUM.get(text)
+        if month_num is not None:
+            return int(month_num)
+        if len(text) >= 3:
+            month_num = MONTH_ABBR_TO_NUM.get(text[:3])
+            if month_num is not None:
+                return int(month_num)
+        if text.isdigit():
+            month_raw = int(text)
+            if 1 <= month_raw <= 12:
+                return month_raw
+        return None
+
+    @staticmethod
     def _build_historical_event_day_index(base_dir: Path) -> dict[str, list[Path]]:
         index: dict[str, list[Path]] = {}
         if not base_dir.exists():
@@ -28,7 +46,7 @@ class HistoricalBetfairDataService:
             for month_dir in sorted(year_dir.iterdir()):
                 if not month_dir.is_dir():
                     continue
-                month_num = MONTH_ABBR_TO_NUM.get(month_dir.name.strip().lower())
+                month_num = HistoricalBetfairDataService._historical_month_num_from_dir_name(month_dir.name)
                 if month_num is None:
                     continue
 
@@ -48,6 +66,75 @@ class HistoricalBetfairDataService:
                     if event_dirs:
                         index[day_iso] = event_dirs
         return index
+
+    def _historical_event_dirs_for_day(self, day_iso: str) -> list[Path]:
+        day_key = str(day_iso or "").strip()
+        if not day_key:
+            return []
+
+        day_ts = pd.to_datetime(day_key, errors="coerce", utc=True)
+        if pd.isna(day_ts):
+            return []
+
+        base_dir = Path(self.historical_data_dir)
+        if not base_dir.exists():
+            return []
+
+        year_dir = base_dir / f"{int(day_ts.year):04d}"
+        if not year_dir.is_dir():
+            return []
+
+        month_num = int(day_ts.month)
+        day_num = int(day_ts.day)
+
+        month_dirs: list[Path] = []
+        month_short = day_ts.strftime("%b")
+        month_long = day_ts.strftime("%B")
+        month_candidates = (
+            month_short.lower(),
+            month_short.title(),
+            month_short.upper(),
+            month_long.lower(),
+            month_long.title(),
+            month_long.upper(),
+            f"{month_num:02d}",
+            str(month_num),
+        )
+        seen_month_dirs: set[Path] = set()
+        for month_name in month_candidates:
+            month_dir = year_dir / month_name
+            if month_dir in seen_month_dirs:
+                continue
+            seen_month_dirs.add(month_dir)
+            if month_dir.is_dir():
+                month_dirs.append(month_dir)
+        if not month_dirs:
+            for month_dir in sorted(year_dir.iterdir()):
+                if not month_dir.is_dir():
+                    continue
+                resolved_month = self._historical_month_num_from_dir_name(month_dir.name)
+                if resolved_month == month_num:
+                    month_dirs.append(month_dir)
+
+        if not month_dirs:
+            return []
+
+        day_candidates = (str(day_num), f"{day_num:02d}")
+        out: list[Path] = []
+        seen_event_dirs: set[Path] = set()
+        for month_dir in month_dirs:
+            for day_name in day_candidates:
+                day_dir = month_dir / day_name
+                if not day_dir.is_dir():
+                    continue
+                for event_dir in sorted(day_dir.iterdir()):
+                    if not event_dir.is_dir():
+                        continue
+                    if event_dir in seen_event_dirs:
+                        continue
+                    seen_event_dirs.add(event_dir)
+                    out.append(event_dir)
+        return out
 
     @staticmethod
     def _historical_default_price_snapshot() -> dict[str, str]:
@@ -76,13 +163,23 @@ class HistoricalBetfairDataService:
         key_fallback = HistoricalBetfairDataService._stream_ltp_key(selection_id, None)
         return ltp_by_key.get(key_fallback)
 
+    @staticmethod
+    def _historical_event_stream_files(event_dir: Path) -> list[Path]:
+        event_file = event_dir / f"{event_dir.name}.bz2"
+        if event_file.exists():
+            # Fast path for archives that provide a single consolidated event stream.
+            return [event_file]
+        # Some archives (e.g. older/year-specific exports) only provide
+        # per-market streams inside the event folder.
+        return [path for path in sorted(event_dir.glob("*.bz2")) if path.is_file()]
+
     def _read_historical_event_metadata(self, event_dir: Path) -> dict[str, Any] | None:
         cache_key = str(event_dir.resolve())
         if cache_key in self._historical_event_metadata_cache:
             return self._historical_event_metadata_cache[cache_key]
 
-        event_file = event_dir / f"{event_dir.name}.bz2"
-        if not event_file.exists():
+        event_files = self._historical_event_stream_files(event_dir)
+        if not event_files:
             self._historical_event_metadata_cache[cache_key] = None
             return None
 
@@ -92,41 +189,44 @@ class HistoricalBetfairDataService:
         goal_market_ids: set[str] = set()
 
         try:
-            with bz2.open(event_file, mode="rt", encoding="utf-8", errors="replace") as f:
-                for line_no, raw_line in enumerate(f):
-                    if line_no > 25:
-                        break
-                    line = str(raw_line or "").strip()
-                    if not line:
-                        continue
-                    try:
-                        payload = json.loads(line)
-                    except Exception:
-                        continue
-                    for mc in payload.get("mc", []):
-                        if not isinstance(mc, dict):
+            for event_file in event_files:
+                with bz2.open(event_file, mode="rt", encoding="utf-8", errors="replace") as f:
+                    for line_no, raw_line in enumerate(f):
+                        if line_no > 25:
+                            break
+                        line = str(raw_line or "").strip()
+                        if not line:
                             continue
-                        market_id = str(mc.get("id", "")).strip()
-                        market_def = mc.get("marketDefinition")
-                        if not isinstance(market_def, dict):
+                        try:
+                            payload = json.loads(line)
+                        except Exception:
                             continue
-                        event_type = str(market_def.get("eventTypeId", "")).strip()
-                        if event_type and event_type != "1":
-                            continue
+                        for mc in payload.get("mc", []):
+                            if not isinstance(mc, dict):
+                                continue
+                            market_id = str(mc.get("id", "")).strip()
+                            market_def = mc.get("marketDefinition")
+                            if not isinstance(market_def, dict):
+                                continue
+                            event_type = str(market_def.get("eventTypeId", "")).strip()
+                            if event_type and event_type != "1":
+                                continue
 
-                        if not event_name:
-                            event_name = str(market_def.get("eventName", "")).strip()
-                        if pd.isna(kickoff_ts):
-                            kickoff_ts = parse_iso_utc(market_def.get("marketTime"))
+                            if not event_name:
+                                event_name = str(market_def.get("eventName", "")).strip()
+                            if pd.isna(kickoff_ts):
+                                kickoff_ts = parse_iso_utc(market_def.get("marketTime"))
 
-                        market_type = str(market_def.get("marketType", "")).strip().upper()
-                        if market_id and market_type == "ASIAN_HANDICAP":
-                            asian_market_ids.add(market_id)
-                        elif market_id and market_type == "ALT_TOTAL_GOALS":
-                            goal_market_ids.add(market_id)
+                            market_type = str(market_def.get("marketType", "")).strip().upper()
+                            if market_id and market_type == "ASIAN_HANDICAP":
+                                asian_market_ids.add(market_id)
+                            elif market_id and market_type == "ALT_TOTAL_GOALS":
+                                goal_market_ids.add(market_id)
 
-                    if event_name and not pd.isna(kickoff_ts) and asian_market_ids and goal_market_ids:
-                        break
+                        if event_name and not pd.isna(kickoff_ts) and asian_market_ids and goal_market_ids:
+                            break
+                if event_name and not pd.isna(kickoff_ts) and asian_market_ids and goal_market_ids:
+                    break
         except Exception:
             self._historical_event_metadata_cache[cache_key] = None
             return None
@@ -155,6 +255,8 @@ class HistoricalBetfairDataService:
             "kickoff_time": kickoff_ts,
             "home_raw": home_raw,
             "away_raw": away_raw,
+            "home_norm": normalize_team_name(home_raw),
+            "away_norm": normalize_team_name(away_raw),
             "home_sofa": home_sofa,
             "away_sofa": away_sofa,
             "asian_market_ids": sorted(asian_market_ids),
@@ -169,64 +271,91 @@ class HistoricalBetfairDataService:
         if cached is not None:
             return cached
 
-        event_file = event_dir / f"{event_dir.name}.bz2"
         market_defs: dict[str, dict[str, Any]] = {}
         market_defs_pre: dict[str, dict[str, Any]] = {}
         ltp_by_market: dict[str, dict[tuple[int, float | None], float]] = {}
         ltp_by_market_pre: dict[str, dict[tuple[int, float | None], float]] = {}
-        if event_file.exists():
+        event_files = self._historical_event_stream_files(event_dir)
+        if event_files:
             try:
-                with bz2.open(event_file, mode="rt", encoding="utf-8", errors="replace") as f:
-                    for raw_line in f:
-                        line = str(raw_line or "").strip()
-                        if not line:
-                            continue
-                        try:
-                            payload = json.loads(line)
-                        except Exception:
-                            continue
-                        publish_ts = pd.to_datetime(payload.get("pt"), unit="ms", utc=True, errors="coerce")
-                        for mc in payload.get("mc", []):
-                            if not isinstance(mc, dict):
+                found_asian_market = False
+                found_goal_market = False
+                latest_relevant_market_time = pd.NaT
+                cutoff_publish_ts = pd.NaT
+                for event_file in event_files:
+                    with bz2.open(event_file, mode="rt", encoding="utf-8", errors="replace") as f:
+                        for raw_line in f:
+                            line = str(raw_line or "").strip()
+                            if not line:
                                 continue
-                            market_id = str(mc.get("id", "")).strip()
-                            if not market_id:
+                            try:
+                                payload = json.loads(line)
+                            except Exception:
                                 continue
+                            publish_ts = pd.to_datetime(payload.get("pt"), unit="ms", utc=True, errors="coerce")
+                            if pd.notna(cutoff_publish_ts) and pd.notna(publish_ts) and publish_ts > cutoff_publish_ts:
+                                # We only need pre-kickoff prices; once we are safely past
+                                # kickoff for the relevant markets, stop scanning this stream.
+                                break
+                            for mc in payload.get("mc", []):
+                                if not isinstance(mc, dict):
+                                    continue
+                                market_id = str(mc.get("id", "")).strip()
+                                if not market_id:
+                                    continue
 
-                            market_def = mc.get("marketDefinition")
-                            if isinstance(market_def, dict):
-                                market_defs[market_id] = market_def
-                            current_market_def = market_defs.get(market_id, {})
-                            market_time_ts = parse_iso_utc(current_market_def.get("marketTime"))
-                            market_status = str(current_market_def.get("status", "")).strip().upper()
-                            in_play = bool(current_market_def.get("inPlay", False))
-                            is_pre_kickoff_open = (
-                                isinstance(current_market_def, dict)
-                                and market_status == "OPEN"
-                                and (not in_play)
-                                and (pd.isna(market_time_ts) or (not pd.isna(publish_ts) and publish_ts <= market_time_ts))
-                            )
-                            if is_pre_kickoff_open:
-                                market_defs_pre[market_id] = dict(current_market_def)
-
-                            rc_rows = mc.get("rc", [])
-                            if not isinstance(rc_rows, list):
-                                continue
-                            ltp_rows = ltp_by_market.setdefault(market_id, {})
-                            pre_ltp_rows = ltp_by_market_pre.setdefault(market_id, {})
-                            for rc in rc_rows:
-                                if not isinstance(rc, dict):
-                                    continue
-                                ltp_value = rc.get("ltp")
-                                selection_raw = rc.get("id")
-                                if not isinstance(ltp_value, (int, float)):
-                                    continue
-                                if not isinstance(selection_raw, int):
-                                    continue
-                                handicap_value = parse_handicap_value(rc.get("hc"))
-                                ltp_rows[self._stream_ltp_key(int(selection_raw), handicap_value)] = float(ltp_value)
+                                market_def = mc.get("marketDefinition")
+                                if isinstance(market_def, dict):
+                                    market_defs[market_id] = market_def
+                                    market_type = str(market_def.get("marketType", "")).strip().upper()
+                                    market_time_ts = parse_iso_utc(market_def.get("marketTime"))
+                                    if market_type == "ASIAN_HANDICAP":
+                                        found_asian_market = True
+                                        if not pd.isna(market_time_ts):
+                                            if pd.isna(latest_relevant_market_time) or market_time_ts > latest_relevant_market_time:
+                                                latest_relevant_market_time = market_time_ts
+                                    elif market_type == "ALT_TOTAL_GOALS":
+                                        found_goal_market = True
+                                        if not pd.isna(market_time_ts):
+                                            if pd.isna(latest_relevant_market_time) or market_time_ts > latest_relevant_market_time:
+                                                latest_relevant_market_time = market_time_ts
+                                current_market_def = market_defs.get(market_id, {})
+                                market_time_ts = parse_iso_utc(current_market_def.get("marketTime"))
+                                market_status = str(current_market_def.get("status", "")).strip().upper()
+                                in_play = bool(current_market_def.get("inPlay", False))
+                                is_pre_kickoff_open = (
+                                    isinstance(current_market_def, dict)
+                                    and market_status == "OPEN"
+                                    and (not in_play)
+                                    and (pd.isna(market_time_ts) or (not pd.isna(publish_ts) and publish_ts <= market_time_ts))
+                                )
                                 if is_pre_kickoff_open:
-                                    pre_ltp_rows[self._stream_ltp_key(int(selection_raw), handicap_value)] = float(ltp_value)
+                                    market_defs_pre[market_id] = dict(current_market_def)
+
+                                rc_rows = mc.get("rc", [])
+                                if not isinstance(rc_rows, list):
+                                    continue
+                                ltp_rows = ltp_by_market.setdefault(market_id, {})
+                                pre_ltp_rows = ltp_by_market_pre.setdefault(market_id, {})
+                                for rc in rc_rows:
+                                    if not isinstance(rc, dict):
+                                        continue
+                                    ltp_value = rc.get("ltp")
+                                    selection_raw = rc.get("id")
+                                    if not isinstance(ltp_value, (int, float)):
+                                        continue
+                                    if not isinstance(selection_raw, int):
+                                        continue
+                                    handicap_value = parse_handicap_value(rc.get("hc"))
+                                    ltp_rows[self._stream_ltp_key(int(selection_raw), handicap_value)] = float(ltp_value)
+                                    if is_pre_kickoff_open:
+                                        pre_ltp_rows[self._stream_ltp_key(int(selection_raw), handicap_value)] = float(ltp_value)
+                            if (
+                                found_asian_market
+                                and found_goal_market
+                                and pd.notna(latest_relevant_market_time)
+                            ):
+                                cutoff_publish_ts = latest_relevant_market_time + pd.Timedelta(minutes=10)
             except Exception:
                 pass
 
@@ -247,7 +376,11 @@ class HistoricalBetfairDataService:
         if cached is not None:
             return cached
 
-        event_dirs = self._historical_event_day_index.get(day_key, [])
+        if day_key in self._historical_event_day_index:
+            event_dirs = self._historical_event_day_index.get(day_key, [])
+        else:
+            event_dirs = self._historical_event_dirs_for_day(day_key)
+            self._historical_event_day_index[day_key] = list(event_dirs)
         out: list[dict[str, Any]] = []
         for event_dir in event_dirs:
             metadata = self._read_historical_event_metadata(event_dir)
@@ -263,6 +396,35 @@ class HistoricalBetfairDataService:
             ),
         )
         self._historical_day_events_cache[day_key] = out
+        return out
+
+    def _load_historical_day_event_lookup(
+        self,
+        day_iso: str,
+    ) -> dict[str, dict[tuple[str, str], list[dict[str, Any]]]]:
+        day_key = str(day_iso or "").strip()
+        if not day_key:
+            return {"by_sofa": {}, "by_raw_norm": {}}
+
+        cached = self._historical_day_event_lookup_cache.get(day_key)
+        if cached is not None:
+            return cached
+
+        by_sofa: dict[tuple[str, str], list[dict[str, Any]]] = {}
+        by_raw_norm: dict[tuple[str, str], list[dict[str, Any]]] = {}
+        for event_meta in self._load_historical_day_events(day_key):
+            home_sofa = str(event_meta.get("home_sofa", "")).strip()
+            away_sofa = str(event_meta.get("away_sofa", "")).strip()
+            if home_sofa and away_sofa:
+                by_sofa.setdefault((home_sofa, away_sofa), []).append(event_meta)
+
+            home_norm = str(event_meta.get("home_norm", "")).strip() or normalize_team_name(event_meta.get("home_raw"))
+            away_norm = str(event_meta.get("away_norm", "")).strip() or normalize_team_name(event_meta.get("away_raw"))
+            if home_norm and away_norm:
+                by_raw_norm.setdefault((home_norm, away_norm), []).append(event_meta)
+
+        out = {"by_sofa": by_sofa, "by_raw_norm": by_raw_norm}
+        self._historical_day_event_lookup_cache[day_key] = out
         return out
 
     def _historical_market_mainline_snapshot_from_stream(
@@ -538,15 +700,24 @@ class HistoricalBetfairDataService:
 
         for day_ts in day_candidates:
             day_iso = pd.to_datetime(day_ts, utc=True).strftime("%Y-%m-%d")
-            for event_meta in self._load_historical_day_events(day_iso):
+            day_lookup = self._load_historical_day_event_lookup(day_iso)
+            candidates = list(day_lookup.get("by_sofa", {}).get((home_team, away_team), []))
+            if not candidates:
+                candidates = list(day_lookup.get("by_raw_norm", {}).get((home_norm, away_norm), []))
+            # Fallback for any naming edge-cases not covered by the keyed lookups.
+            if not candidates:
+                candidates = self._load_historical_day_events(day_iso)
+
+            for event_meta in candidates:
                 event_home_sofa = str(event_meta.get("home_sofa", "")).strip()
                 event_away_sofa = str(event_meta.get("away_sofa", "")).strip()
+                event_home_norm = str(event_meta.get("home_norm", "")).strip() or normalize_team_name(event_meta.get("home_raw"))
+                event_away_norm = str(event_meta.get("away_norm", "")).strip() or normalize_team_name(event_meta.get("away_raw"))
                 if event_home_sofa and event_away_sofa:
                     if event_home_sofa != home_team or event_away_sofa != away_team:
-                        continue
+                        if event_home_norm != home_norm or event_away_norm != away_norm:
+                            continue
                 else:
-                    event_home_norm = normalize_team_name(event_meta.get("home_raw"))
-                    event_away_norm = normalize_team_name(event_meta.get("away_raw"))
                     if event_home_norm != home_norm or event_away_norm != away_norm:
                         continue
                 event_kickoff = pd.to_datetime(event_meta.get("kickoff_time"), errors="coerce", utc=True)
@@ -556,6 +727,8 @@ class HistoricalBetfairDataService:
                 if delta_minutes < best_delta_minutes:
                     best_delta_minutes = delta_minutes
                     best_event = event_meta
+            if best_event is not None and best_delta_minutes <= 180 and day_iso == kickoff_time.strftime("%Y-%m-%d"):
+                break
 
         if best_event is None or best_delta_minutes > (24 * 60):
             out = self._historical_default_price_snapshot()
@@ -947,6 +1120,79 @@ class HistoricalBetfairDataService:
         # Compatibility helper retained for callers expecting a full build.
         home_rows = self._prepare_historical_home_rows()
         return self._build_historical_games_chunk(home_rows)
+
+    def rescan_loaded_historical_closing_prices(self) -> dict[str, Any]:
+        with self.lock:
+            historical_df = self.state.historical_games_df.copy()
+
+        if historical_df.empty:
+            return {"updated_games": 0, "changed_games": 0, "total_games": 0}
+
+        required_cols = ("home_raw", "away_raw", "kickoff_time")
+        missing = [col for col in required_cols if col not in historical_df.columns]
+        if missing:
+            return {
+                "updated_games": 0,
+                "changed_games": 0,
+                "total_games": int(len(historical_df)),
+                "warning": f"Missing required columns: {', '.join(missing)}",
+            }
+
+        # Force fresh archive reads for price extraction.
+        with self.lock:
+            self._historical_event_day_index = {}
+            self._historical_day_events_cache = {}
+            self._historical_day_event_lookup_cache = {}
+            self._historical_event_metadata_cache = {}
+            self._historical_event_stream_cache = {}
+            self._historical_event_price_cache = {}
+            self._historical_match_price_cache = {}
+
+        updated_df = historical_df.copy()
+        changed_games = 0
+        updated_games = 0
+        price_cols = (
+            "mainline",
+            "home_price",
+            "away_price",
+            "goal_mainline",
+            "goal_under_price",
+            "goal_over_price",
+        )
+        for idx, row in updated_df.iterrows():
+            kickoff_ts = row.get("kickoff_time")
+            home_team = str(row.get("home_raw", "")).strip()
+            away_team = str(row.get("away_raw", "")).strip()
+            if not home_team or not away_team or pd.isna(kickoff_ts):
+                continue
+
+            closing = self._lookup_historical_betfair_prices(
+                home_team=home_team,
+                away_team=away_team,
+                kickoff_ts=kickoff_ts,
+            )
+            new_values = {
+                "mainline": str(closing.get("mainline", "-") or "-"),
+                "home_price": str(closing.get("home_price", "-") or "-"),
+                "away_price": str(closing.get("away_price", "-") or "-"),
+                "goal_mainline": str(closing.get("goal_mainline", "-") or "-"),
+                "goal_under_price": str(closing.get("goal_under_price", "-") or "-"),
+                "goal_over_price": str(closing.get("goal_over_price", "-") or "-"),
+            }
+            updated_games += 1
+            if any(str(row.get(col, "-") or "-") != new_values[col] for col in price_cols):
+                changed_games += 1
+            for col, value in new_values.items():
+                updated_df.at[idx, col] = value
+
+        with self.lock:
+            self.state.historical_games_df = updated_df
+
+        return {
+            "updated_games": int(updated_games),
+            "changed_games": int(changed_games),
+            "total_games": int(len(updated_df)),
+        }
 
 
 __all__ = ["HistoricalBetfairDataService"]

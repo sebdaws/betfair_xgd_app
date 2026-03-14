@@ -8,10 +8,14 @@ const tierFilter = document.getElementById("tierFilter");
 const tierFilterBtn = document.getElementById("tierFilterBtn");
 const tierFilterMenu = document.getElementById("tierFilterMenu");
 const sortModeBtn = document.getElementById("sortModeBtn");
+const teamSearchInput = document.getElementById("teamSearchInput");
 const tableControls = document.querySelector(".table-controls");
 const gamesTabBtn = document.getElementById("gamesTabBtn");
+const savedGamesTabBtn = document.getElementById("savedGamesTabBtn");
 const manualMappingTabBtn = document.getElementById("manualMappingTabBtn");
 const gamesTabPane = document.getElementById("gamesTabPane");
+const savedGamesTabPane = document.getElementById("savedGamesTabPane");
+const savedGamesView = document.getElementById("savedGamesView");
 const manualMappingTabPane = document.getElementById("manualMappingTabPane");
 const mappingRefreshBtn = document.getElementById("mappingRefreshBtn");
 const mappingStatus = document.getElementById("mappingStatus");
@@ -25,6 +29,7 @@ const teamMappingsPane = document.getElementById("teamMappingsPane");
 const competitionMappingsPane = document.getElementById("competitionMappingsPane");
 const detailsPanel = document.getElementById("detailsPanel");
 const closeDetails = document.getElementById("closeDetails");
+const saveGameBtn = document.getElementById("saveGameBtn");
 const recalcBtn = document.getElementById("recalcBtn");
 const detailsTitle = document.getElementById("detailsTitle");
 const detailsMeta = document.getElementById("detailsMeta");
@@ -50,6 +55,7 @@ let selectedLeagues = new Set();
 let selectedTiers = new Set();
 let sortMode = "kickoff";
 let leagueFilterSearch = "";
+let teamSearchQuery = "";
 let gamesShownCount = 0;
 let gamesShownAuto = true;
 let rollingWindowCount = 3;
@@ -58,10 +64,20 @@ let recentTeamView = "home";
 let statsGamesShownCount = 0;
 let statsGamesShownAuto = true;
 let statsTeamView = "home";
+let hcPerfTeamView = "home";
+const hcPerfPayloadByMarket = new Map();
+let hcPerfLoadingMarketId = null;
+let hcPerfRescanInFlight = false;
 let lastXgdPayload = null;
 let activeXgdViewId = null;
 let detailsMainTab = "xgd";
 let activeTab = "games";
+let savedDays = [];
+let savedGamesLoaded = false;
+let savedGamesLoading = false;
+let savedGamesErrorText = "";
+let savedGamesCount = 0;
+let savedMarketIds = new Set();
 let mappingSubTab = "teams";
 let lastManualMappingPayload = null;
 let teamMappingSearchBetfair = "";
@@ -92,15 +108,38 @@ async function parseApiResponse(res) {
 }
 
 function setActiveTab(tabName) {
-  activeTab = tabName === "mapping" ? "mapping" : "games";
+  const tabRaw = String(tabName || "").trim().toLowerCase();
+  if (tabRaw === "saved") {
+    activeTab = "saved";
+  } else if (tabRaw === "mapping") {
+    activeTab = "mapping";
+  } else {
+    activeTab = "games";
+  }
   const gamesActive = activeTab === "games";
+  const savedActive = activeTab === "saved";
+  const mappingActive = activeTab === "mapping";
   gamesTabBtn.classList.toggle("active", gamesActive);
-  manualMappingTabBtn.classList.toggle("active", !gamesActive);
+  if (savedGamesTabBtn) {
+    savedGamesTabBtn.classList.toggle("active", savedActive);
+  }
+  manualMappingTabBtn.classList.toggle("active", mappingActive);
   gamesTabPane.classList.toggle("hidden", !gamesActive);
-  manualMappingTabPane.classList.toggle("hidden", gamesActive);
-  if (!gamesActive) {
+  if (savedGamesTabPane) {
+    savedGamesTabPane.classList.toggle("hidden", !savedActive);
+  }
+  manualMappingTabPane.classList.toggle("hidden", !mappingActive);
+  if (activeTab !== "games") {
     detailsPanel.classList.add("hidden");
+  }
+  if (mappingActive) {
     setMappingSubTab(mappingSubTab);
+  }
+  if (gamesActive) {
+    renderCurrentDay();
+  }
+  if (savedActive && !savedGamesLoading) {
+    loadSavedGames({ silent: savedGamesLoaded });
   }
 }
 
@@ -1573,6 +1612,336 @@ function buildCardsCornersMatchesTableHtml(teamLabel, rows, sampleSize = null, t
   `;
 }
 
+function formatSignedMetricValue(value, decimals = 2) {
+  const num = Number(value);
+  if (!Number.isFinite(num)) return "-";
+  const fixed = num.toFixed(decimals);
+  return num > 0 ? `+${fixed}` : fixed;
+}
+
+function toFiniteNumberOrNull(value) {
+  if (value == null) return null;
+  if (typeof value === "string") {
+    const text = value.trim();
+    if (!text || text === "-") return null;
+  }
+  const out = Number(value);
+  return Number.isFinite(out) ? out : null;
+}
+
+function classifyDelta(delta, pushThreshold = 0) {
+  if (!Number.isFinite(delta)) return null;
+  const threshold = Number.isFinite(pushThreshold) ? Math.max(0, pushThreshold) : 0;
+  if (delta > threshold) return "win";
+  if (delta < -threshold) return "loss";
+  return "push";
+}
+
+function emptyHcPerfCounts() {
+  return { win: 0, half_win: 0, half_loss: 0, loss: 0, push: 0, total: 0 };
+}
+
+function incrementHcPerfCounts(target, verdict) {
+  if (!target || !verdict) return;
+  if (
+    verdict === "win"
+    || verdict === "half_win"
+    || verdict === "half_loss"
+    || verdict === "loss"
+    || verdict === "push"
+  ) {
+    target[verdict] += 1;
+    target.total += 1;
+  }
+}
+
+function classifyResultHandicapDelta(delta) {
+  if (!Number.isFinite(delta)) return null;
+  if (Math.abs(delta) <= 1e-9) return "push";
+  const absDelta = Math.abs(delta);
+  const isHalf = Math.abs(absDelta - 0.25) <= 1e-6;
+  if (delta > 0) return isHalf ? "half_win" : "win";
+  return isHalf ? "half_loss" : "loss";
+}
+
+function computeTeamDeltaVsHandicap(row, metric = "result", relevantTeam = "") {
+  const data = row && typeof row === "object" ? row : {};
+  const isXgMetric = metric === "xg";
+  const preset = toFiniteNumberOrNull(isXgMetric ? data.xg_vs_hc : data.result_vs_hc);
+  if (preset != null) return preset;
+
+  const relevantNorm = String(relevantTeam || "").trim().toLowerCase();
+  const homeTeamNorm = String(data.home_team || "").trim().toLowerCase();
+  const awayTeamNorm = String(data.away_team || "").trim().toLowerCase();
+  let isHome = Boolean(relevantNorm && homeTeamNorm && relevantNorm === homeTeamNorm);
+  let isAway = Boolean(relevantNorm && awayTeamNorm && relevantNorm === awayTeamNorm);
+  if (!isHome && !isAway) {
+    const venue = String(data.venue || "").trim().toLowerCase();
+    isHome = venue === "home";
+    isAway = venue === "away";
+  }
+  if (!isHome && !isAway) return null;
+
+  const homeHandicap = toFiniteNumberOrNull(data.closing_mainline);
+  const homeValue = toFiniteNumberOrNull(isXgMetric ? data.home_xg : data.home_goals);
+  const awayValue = toFiniteNumberOrNull(isXgMetric ? data.away_xg : data.away_goals);
+  if (homeHandicap == null || homeValue == null || awayValue == null) return null;
+
+  const teamHandicap = isHome ? homeHandicap : -homeHandicap;
+  const teamMetric = isHome ? homeValue : awayValue;
+  const oppMetric = isHome ? awayValue : homeValue;
+  return (teamMetric + teamHandicap) - oppMetric;
+}
+
+function computeHcPerfSummary(rows, relevantTeam = "") {
+  const safeRows = Array.isArray(rows) ? rows : [];
+  const summary = {
+    result: {
+      home: emptyHcPerfCounts(),
+      away: emptyHcPerfCounts(),
+      overall: emptyHcPerfCounts(),
+    },
+    xg: {
+      home: emptyHcPerfCounts(),
+      away: emptyHcPerfCounts(),
+      overall: emptyHcPerfCounts(),
+    },
+  };
+  for (const row of safeRows) {
+    const venue = String(row?.venue || "").trim().toLowerCase();
+    const venueKey = venue === "home" || venue === "away" ? venue : null;
+
+    const resultDelta = computeTeamDeltaVsHandicap(row, "result", relevantTeam);
+    const resultVerdict = classifyResultHandicapDelta(resultDelta);
+    if (resultVerdict) {
+      incrementHcPerfCounts(summary.result.overall, resultVerdict);
+      if (venueKey) incrementHcPerfCounts(summary.result[venueKey], resultVerdict);
+    }
+
+    const xgDelta = computeTeamDeltaVsHandicap(row, "xg", relevantTeam);
+    const xgVerdict = classifyDelta(xgDelta, 0.1);
+    if (xgVerdict) {
+      incrementHcPerfCounts(summary.xg.overall, xgVerdict);
+      if (venueKey) incrementHcPerfCounts(summary.xg[venueKey], xgVerdict);
+    }
+  }
+  return summary;
+}
+
+function formatHcPerfSummaryCell(counts) {
+  const safe = counts && typeof counts === "object" ? counts : emptyHcPerfCounts();
+  const weightedWin = safe.win + (safe.half_win * 0.5);
+  const weightedLoss = safe.loss + (safe.half_loss * 0.5);
+  const weightedPush = safe.push + (safe.half_win * 0.5) + (safe.half_loss * 0.5);
+  const formatWeighted = (value) => {
+    const num = Number(value);
+    if (!Number.isFinite(num)) return "0";
+    return Math.abs(num - Math.round(num)) < 1e-9 ? String(Math.round(num)) : num.toFixed(1);
+  };
+  return `
+    <span class="hcperf-summary-pill hcperf-summary-pill-win">W ${formatWeighted(weightedWin)}</span>
+    <span class="hcperf-summary-pill hcperf-summary-pill-loss">L ${formatWeighted(weightedLoss)}</span>
+    <span class="hcperf-summary-pill hcperf-summary-pill-push">P ${formatWeighted(weightedPush)}</span>
+  `;
+}
+
+function formatHcPerfSummaryCellBasic(counts) {
+  const safe = counts && typeof counts === "object" ? counts : emptyHcPerfCounts();
+  return `
+    <span class="hcperf-summary-pill hcperf-summary-pill-win">W ${safe.win}</span>
+    <span class="hcperf-summary-pill hcperf-summary-pill-loss">L ${safe.loss}</span>
+    <span class="hcperf-summary-pill hcperf-summary-pill-push">P ${safe.push}</span>
+  `;
+}
+
+function buildHcPerfSummaryTableHtml(teamLabel, rows, options = {}) {
+  const safeTeamLabel = String(teamLabel || "Team");
+  const focusVenue = String(options?.focusVenue || "").trim().toLowerCase();
+  const focusHome = focusVenue === "home";
+  const focusAway = focusVenue === "away";
+  const homeHeaderClass = focusHome ? ' class="hcperf-summary-focus hcperf-summary-focus-top"' : "";
+  const awayHeaderClass = focusAway ? ' class="hcperf-summary-focus hcperf-summary-focus-top"' : "";
+  const homeCellClassMid = `hcperf-summary-cell${focusHome ? " hcperf-summary-focus" : ""}`;
+  const awayCellClassMid = `hcperf-summary-cell${focusAway ? " hcperf-summary-focus" : ""}`;
+  const homeCellClassBottom = `hcperf-summary-cell${focusHome ? " hcperf-summary-focus hcperf-summary-focus-bottom" : ""}`;
+  const awayCellClassBottom = `hcperf-summary-cell${focusAway ? " hcperf-summary-focus hcperf-summary-focus-bottom" : ""}`;
+  const summary = computeHcPerfSummary(rows, safeTeamLabel);
+  return `
+    <section class="recent-team-block">
+      <h4>${escapeHtml(safeTeamLabel)} - Summary</h4>
+      <div class="recent-table-wrap">
+        <table class="lines-table recent-lines-table hcperf-summary-table">
+          <thead>
+            <tr>
+              <th>Metric</th>
+              <th${homeHeaderClass}>Home</th>
+              <th${awayHeaderClass}>Away</th>
+              <th>Overall</th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr>
+              <td class="hcperf-summary-metric">Result</td>
+              <td class="${homeCellClassMid}">${formatHcPerfSummaryCell(summary.result.home)}</td>
+              <td class="${awayCellClassMid}">${formatHcPerfSummaryCell(summary.result.away)}</td>
+              <td class="hcperf-summary-cell">${formatHcPerfSummaryCell(summary.result.overall)}</td>
+            </tr>
+            <tr>
+              <td class="hcperf-summary-metric">xG (threshold = 0.10)</td>
+              <td class="${homeCellClassBottom}">${formatHcPerfSummaryCellBasic(summary.xg.home)}</td>
+              <td class="${awayCellClassBottom}">${formatHcPerfSummaryCellBasic(summary.xg.away)}</td>
+              <td class="hcperf-summary-cell">${formatHcPerfSummaryCellBasic(summary.xg.overall)}</td>
+            </tr>
+          </tbody>
+        </table>
+      </div>
+    </section>
+  `;
+}
+
+function buildSeasonHandicapPerformanceTableHtml(teamLabel, rows, options = {}) {
+  const titleOverride = String(options?.title || "").trim();
+  const relevantTeam = String(options?.relevantTeam || teamLabel || "").trim();
+  const safeRows = Array.isArray(rows) ? [...rows] : [];
+  safeRows.sort((a, b) => String(b?.date_time || "").localeCompare(String(a?.date_time || "")));
+  const title = titleOverride || `${escapeHtml(teamLabel || "Team")} - Season Previous Games`;
+  if (!safeRows.length) {
+    return `
+      <section class="recent-team-block">
+        <h4>${title}</h4>
+        <p class="recent-empty">No previous games found for this season.</p>
+      </section>
+    `;
+  }
+  return `
+    <section class="recent-team-block">
+      <h4>${title}</h4>
+      <div class="recent-table-wrap">
+        <table class="lines-table recent-lines-table">
+          <thead>
+            <tr>
+              <th>Date</th>
+              <th>Competition</th>
+              <th>Home</th>
+              <th>Away</th>
+              <th>HG</th>
+              <th>AG</th>
+              <th>xG H</th>
+              <th>xG A</th>
+              <th>xGD</th>
+              <th class="hcperf-odds-col hcperf-odds-col-start">H Px</th>
+              <th class="hcperf-odds-line-col">HC</th>
+              <th class="hcperf-odds-col hcperf-odds-col-end">A Px</th>
+              <th>Result pick</th>
+              <th>xG pick</th>
+            </tr>
+          </thead>
+          <tbody>
+            ${safeRows
+              .map(
+                (row) => {
+                  const homeTeam = String(row?.home_team || "-");
+                  const awayTeam = String(row?.away_team || "-");
+                  const homeIsRelevant = relevantTeam && homeTeam === relevantTeam;
+                  const awayIsRelevant = relevantTeam && awayTeam === relevantTeam;
+                  const homeCell = homeIsRelevant ? `<strong>${escapeHtml(homeTeam)}</strong>` : escapeHtml(homeTeam);
+                  const awayCell = awayIsRelevant ? `<strong>${escapeHtml(awayTeam)}</strong>` : escapeHtml(awayTeam);
+                  const homeGoalsNum = Number(row?.home_goals);
+                  const awayGoalsNum = Number(row?.away_goals);
+                  const homeXgNum = Number(row?.home_xg);
+                  const awayXgNum = Number(row?.away_xg);
+                  const homeHcNum = Number(row?.closing_mainline);
+                  const xgd = Number.isFinite(homeXgNum) && Number.isFinite(awayXgNum)
+                    ? (homeXgNum - awayXgNum)
+                    : null;
+                  const resultDelta = (
+                    Number.isFinite(homeGoalsNum)
+                    && Number.isFinite(awayGoalsNum)
+                    && Number.isFinite(homeHcNum)
+                  )
+                    ? ((homeGoalsNum + homeHcNum) - awayGoalsNum)
+                    : null;
+                  const resultPickSide = Number.isFinite(resultDelta)
+                    ? (resultDelta > 1e-9 ? "home" : (resultDelta < -1e-9 ? "away" : "push"))
+                    : "none";
+                  const resultOutcome = classifyResultHandicapDelta(resultDelta);
+                  const resultIsHalf = resultOutcome === "half_win" || resultOutcome === "half_loss";
+                  const resultPickText = (() => {
+                    if (resultPickSide === "home") {
+                      return `Home (${formatSignedMetricValue(resultDelta, 2)})`;
+                    }
+                    if (resultPickSide === "away") {
+                      return `Away (${formatSignedMetricValue(resultDelta, 2)})`;
+                    }
+                    if (resultPickSide === "push") return "Push (0.00)";
+                    return "-";
+                  })();
+                  const resultPickClass = (() => {
+                    if (resultPickSide === "home") {
+                      if (resultIsHalf) return homeIsRelevant ? "hcperf-pick-relevant-half" : "hcperf-pick-other-half";
+                      return homeIsRelevant ? "hcperf-pick-relevant" : "hcperf-pick-other";
+                    }
+                    if (resultPickSide === "away") {
+                      if (resultIsHalf) return awayIsRelevant ? "hcperf-pick-relevant-half" : "hcperf-pick-other-half";
+                      return awayIsRelevant ? "hcperf-pick-relevant" : "hcperf-pick-other";
+                    }
+                    return "hcperf-pick-neutral";
+                  })();
+                  const xgDelta = (
+                    Number.isFinite(homeXgNum)
+                    && Number.isFinite(awayXgNum)
+                    && Number.isFinite(homeHcNum)
+                  )
+                    ? ((homeXgNum + homeHcNum) - awayXgNum)
+                    : null;
+                  const xgNoBet = Number.isFinite(xgDelta) && Math.abs(xgDelta) < 0.2;
+                  const xgPickSide = Number.isFinite(xgDelta)
+                    ? (
+                      xgNoBet
+                        ? "no_bet"
+                        : (xgDelta > 1e-9 ? "home" : (xgDelta < -1e-9 ? "away" : "push"))
+                    )
+                    : "none";
+                  const xgPickText = (() => {
+                    if (xgPickSide === "no_bet") return `No bet (${formatSignedMetricValue(xgDelta, 2)})`;
+                    if (xgPickSide === "home") return `Home (${formatSignedMetricValue(xgDelta, 2)})`;
+                    if (xgPickSide === "away") return `Away (${formatSignedMetricValue(xgDelta, 2)})`;
+                    if (xgPickSide === "push") return "Push (0.00)";
+                    return "-";
+                  })();
+                  const xgPickClass = (() => {
+                    if (xgPickSide === "home") return homeIsRelevant ? "hcperf-pick-relevant" : "hcperf-pick-other";
+                    if (xgPickSide === "away") return awayIsRelevant ? "hcperf-pick-relevant" : "hcperf-pick-other";
+                    return "hcperf-pick-neutral";
+                  })();
+                  return `
+              <tr>
+                <td>${escapeHtml(row?.date_time || "-")}</td>
+                <td>${escapeHtml(row?.competition_name || "-")}</td>
+                <td>${homeCell}</td>
+                <td>${awayCell}</td>
+                <td>${formatMetricValue(row?.home_goals, 0)}</td>
+                <td>${formatMetricValue(row?.away_goals, 0)}</td>
+                <td>${formatMetricValue(row?.home_xg, 2)}</td>
+                <td>${formatMetricValue(row?.away_xg, 2)}</td>
+                <td>${formatSignedMetricValue(xgd, 2)}</td>
+                <td class="hcperf-odds-col hcperf-odds-col-start">${escapeHtml(row?.closing_home_price || "-")}</td>
+                <td class="hcperf-odds-line-col">${escapeHtml(row?.closing_mainline || "-")}</td>
+                <td class="hcperf-odds-col hcperf-odds-col-end">${escapeHtml(row?.closing_away_price || "-")}</td>
+                <td><span class="${resultPickClass}">${escapeHtml(resultPickText)}</span></td>
+                <td><span class="${xgPickClass}">${escapeHtml(xgPickText)}</span></td>
+              </tr>
+            `;
+                }
+              )
+              .join("")}
+          </tbody>
+        </table>
+      </div>
+    </section>
+  `;
+}
+
 function buildRecentSwitchHtml(homeLabel, awayLabel) {
   const homeActive = recentTeamView !== "away";
   const awayActive = recentTeamView === "away";
@@ -1618,6 +1987,33 @@ function buildStatsSwitchHtml(homeLabel, awayLabel) {
         type="button"
         class="recent-switch-btn stats-switch-btn${awayActive ? " active" : ""}"
         data-stats-team-view="away"
+        role="tab"
+        aria-selected="${awayActive ? "true" : "false"}"
+      >
+        Away: ${escapeHtml(awayLabel)}
+      </button>
+    </div>
+  `;
+}
+
+function buildHcPerfSwitchHtml(homeLabel, awayLabel) {
+  const homeActive = hcPerfTeamView !== "away";
+  const awayActive = hcPerfTeamView === "away";
+  return `
+    <div class="recent-switch" role="tablist" aria-label="HC performance team view">
+      <button
+        type="button"
+        class="recent-switch-btn hcperf-switch-btn${homeActive ? " active" : ""}"
+        data-hcperf-team-view="home"
+        role="tab"
+        aria-selected="${homeActive ? "true" : "false"}"
+      >
+        Home: ${escapeHtml(homeLabel)}
+      </button>
+      <button
+        type="button"
+        class="recent-switch-btn hcperf-switch-btn${awayActive ? " active" : ""}"
+        data-hcperf-team-view="away"
         role="tab"
         aria-selected="${awayActive ? "true" : "false"}"
       >
@@ -1839,6 +2235,7 @@ function applyGameFilters() {
     allDays[currentDayIndex] && allDays[currentDayIndex].date
       ? String(allDays[currentDayIndex].date)
       : null;
+  const normalizedTeamQuery = teamSearchQuery.trim().toLowerCase();
   const filteredDays = rawDays
     .map((day) => ({
       ...day,
@@ -1847,7 +2244,15 @@ function applyGameFilters() {
         const tierName = String(game.tier || "").trim();
         const leaguePass = !selectedLeagues.size || selectedLeagues.has(leagueName);
         const tierPass = !selectedTiers.size || selectedTiers.has(tierName);
-        return leaguePass && tierPass;
+        const teamText = [
+          String(game.home_team || ""),
+          String(game.away_team || ""),
+          String(game.event_name || ""),
+        ]
+          .join(" ")
+          .toLowerCase();
+        const teamPass = !normalizedTeamQuery || teamText.includes(normalizedTeamQuery);
+        return leaguePass && tierPass && teamPass;
       }),
     }))
     .sort((a, b) => String(a.date || "").localeCompare(String(b.date || "")));
@@ -2032,6 +2437,9 @@ async function loadGames(options = {}) {
     const payload = await parseApiResponse(res);
     if (!res.ok) throw new Error(payload.error || "Failed to load games");
     rawDays = payload.days || [];
+    if (Array.isArray(payload?.saved_market_ids)) {
+      setSavedMarketIds(payload.saved_market_ids);
+    }
     fillMissingDays = payload.fill_missing_days !== false;
     historicalHasMoreOlder = gamesMode === "historical" ? Boolean(payload.has_more_older) : false;
     updateLeagueFilterOptions();
@@ -2053,6 +2461,8 @@ async function loadGames(options = {}) {
     }
     if (activeTab === "mapping") {
       loadManualMappings();
+    } else if (activeTab === "saved" && savedGamesLoaded) {
+      loadSavedGames({ silent: true });
     }
 
     if (selectedMarketId && !gamesById.has(selectedMarketId)) {
@@ -2063,6 +2473,351 @@ async function loadGames(options = {}) {
   } catch (err) {
     statusText.textContent = String(err.message || err);
     return false;
+  }
+}
+
+async function rescanClosingPrices(triggerButton = null) {
+  if (hcPerfRescanInFlight) return;
+  const previousText = statusText.textContent;
+  const buttonToDisable = triggerButton instanceof HTMLButtonElement ? triggerButton : null;
+  hcPerfRescanInFlight = true;
+  if (detailsMainTab === "hcperf" && lastXgdPayload) {
+    renderXgd(lastXgdPayload);
+  }
+  if (buttonToDisable) buttonToDisable.disabled = true;
+  statusText.textContent = "Rescanning historical closing prices...";
+  try {
+    const res = await fetch("/api/rescan-closing-prices", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: "{}",
+    });
+    const payload = await parseApiResponse(res);
+    if (!res.ok) throw new Error(payload.error || "Failed to rescan closing prices");
+    hcPerfPayloadByMarket.clear();
+    await loadGames();
+    if (selectedMarketId) {
+      await loadGameHcPerf(selectedMarketId, true);
+    }
+    const updated = Number(payload?.updated_games) || 0;
+    const changed = Number(payload?.changed_games) || 0;
+    statusText.textContent = `Rescanned closing prices for ${updated} games (${changed} changed)`;
+  } catch (err) {
+    statusText.textContent = String(err.message || err || previousText || "Failed to rescan closing prices");
+  } finally {
+    hcPerfRescanInFlight = false;
+    if (detailsMainTab === "hcperf" && lastXgdPayload) {
+      renderXgd(lastXgdPayload);
+    }
+    if (buttonToDisable) buttonToDisable.disabled = false;
+  }
+}
+
+function updateSavedTabLabel() {
+  if (!(savedGamesTabBtn instanceof HTMLButtonElement)) return;
+  savedGamesTabBtn.textContent = savedGamesCount > 0 ? `Saved Games (${savedGamesCount})` : "Saved Games";
+}
+
+function setSavedMarketIds(rawIds) {
+  const next = new Set();
+  if (Array.isArray(rawIds)) {
+    for (const raw of rawIds) {
+      const marketId = String(raw || "").trim();
+      if (marketId) next.add(marketId);
+    }
+  }
+  savedMarketIds = next;
+  savedGamesCount = savedMarketIds.size;
+  updateSavedTabLabel();
+  updateDetailsSaveButton();
+}
+
+function updateDetailsSaveButton() {
+  if (!(saveGameBtn instanceof HTMLButtonElement)) return;
+  const marketIdText = String(selectedMarketId || "").trim();
+  if (!marketIdText) {
+    saveGameBtn.disabled = true;
+    saveGameBtn.classList.remove("is-saved");
+    saveGameBtn.textContent = "Save";
+    saveGameBtn.title = "Open a game to save it";
+    return;
+  }
+  const isSaved = savedMarketIds.has(marketIdText);
+  saveGameBtn.disabled = false;
+  saveGameBtn.classList.toggle("is-saved", isSaved);
+  saveGameBtn.textContent = isSaved ? "Saved" : "Save";
+  saveGameBtn.title = isSaved ? "Remove from Saved Games" : "Add to Saved Games";
+}
+
+async function setGameSavedState(marketId, shouldSave) {
+  const marketIdText = String(marketId || "").trim();
+  if (!marketIdText) return false;
+  const endpoint = shouldSave ? "/api/saved-games" : "/api/saved-games/delete";
+  const res = await fetch(endpoint, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ market_id: marketIdText }),
+  });
+  const payload = await parseApiResponse(res);
+  if (!res.ok) throw new Error(payload.error || "Failed to update saved game");
+  if (Array.isArray(payload?.saved_market_ids)) {
+    setSavedMarketIds(payload.saved_market_ids);
+  } else if (shouldSave) {
+    savedMarketIds.add(marketIdText);
+    savedGamesCount = savedMarketIds.size;
+    updateSavedTabLabel();
+  } else {
+    savedMarketIds.delete(marketIdText);
+    savedGamesCount = savedMarketIds.size;
+    updateSavedTabLabel();
+  }
+  savedGamesLoaded = false;
+  updateDetailsSaveButton();
+  return true;
+}
+
+async function toggleSelectedGameSaved() {
+  const marketId = String(selectedMarketId || "").trim();
+  if (!marketId) return;
+  const targetSavedState = !savedMarketIds.has(marketId);
+  const previousStatus = statusText.textContent;
+  statusText.textContent = targetSavedState ? "Saving game..." : "Removing saved game...";
+  try {
+    await setGameSavedState(marketId, targetSavedState);
+    statusText.textContent = targetSavedState ? "Game saved" : "Game removed from saved";
+    if (activeTab === "saved") {
+      await loadSavedGames({ silent: true });
+      renderSavedGames();
+    } else if (activeTab === "games") {
+      renderCurrentDay();
+    }
+  } catch (err) {
+    statusText.textContent = String(err.message || err || previousStatus || "Failed to update saved game");
+  }
+}
+
+function createGamesTable(sortedGames, isHistorical, options = {}) {
+  const emptyMessage = String(options?.emptyMessage || "No games");
+  const table = document.createElement("table");
+  table.className = "games-table";
+  if (isHistorical) {
+    table.innerHTML = `
+      <thead>
+        <tr>
+          <th>Kickoff (UTC)</th>
+          <th>League</th>
+          <th>Game</th>
+          <th class="home-price-col">Home</th>
+          <th class="line-col handicap-line-col">HC</th>
+          <th class="away-price-col">Away</th>
+          <th class="goal-under-price-col">Under</th>
+          <th class="goal-line-col">Goals</th>
+          <th class="goal-over-price-col">Over</th>
+          <th class="xg-home-col">xG H</th>
+          <th class="line-col score-col">Score</th>
+          <th class="xg-away-col">xG A</th>
+          <th>xGD</th>
+          <th>xGD Perf</th>
+          <th>Min</th>
+          <th>Max</th>
+        </tr>
+      </thead>
+      <tbody></tbody>
+    `;
+  } else {
+    table.innerHTML = `
+      <thead>
+        <tr>
+          <th>Kickoff (UTC)</th>
+          <th>League</th>
+          <th>Game</th>
+          <th class="home-price-col">Home</th>
+          <th class="line-col handicap-line-col">HC</th>
+          <th class="away-price-col">Away</th>
+          <th>xGD</th>
+          <th>xGD Perf</th>
+          <th class="goal-under-price-col">Under</th>
+          <th class="goal-line-col">Goals</th>
+          <th class="goal-over-price-col">Over</th>
+          <th>Min</th>
+          <th>Max</th>
+        </tr>
+      </thead>
+      <tbody></tbody>
+    `;
+  }
+
+  const tbody = table.querySelector("tbody");
+  if (!sortedGames.length) {
+    const row = document.createElement("tr");
+    row.innerHTML = `<td class="no-games-row" colspan="${isHistorical ? "16" : "13"}">${escapeHtml(emptyMessage)}</td>`;
+    tbody.appendChild(row);
+    return table;
+  }
+
+  for (const game of sortedGames) {
+    gamesById.set(game.market_id, game);
+    const row = document.createElement("tr");
+    row.dataset.marketId = game.market_id;
+    if (selectedMarketId === game.market_id) row.classList.add("selected");
+    const tierClass = tierRowClass(game.tier);
+    if (tierClass) row.classList.add(tierClass);
+
+    const xgdMismatch = Boolean(game.xgd_competition_mismatch);
+    const noXgMetrics = hasNoXgMetricSignal(game);
+    const baseMetricCellClasses = ["metric-stack-cell"];
+    const baseMetricCellNotes = [];
+    if (xgdMismatch) {
+      baseMetricCellClasses.push("xgd-mismatch-cell");
+      baseMetricCellNotes.push("xGD derived from a different competition than this fixture.");
+    }
+    if (noXgMetrics) {
+      baseMetricCellClasses.push("no-xg-cell");
+      baseMetricCellNotes.push("No xG data available for this league; xGD/xGD Perf shown as -.");
+    }
+    const seasonStrengthValue = noXgMetrics ? "-" : game.season_strength;
+    const last5StrengthValue = noXgMetrics ? "-" : game.last5_strength;
+    const last3StrengthValue = noXgMetrics ? "-" : game.last3_strength;
+    const seasonXgdValue = noXgMetrics ? "-" : game.season_xgd;
+    const last5XgdValue = noXgMetrics ? "-" : game.last5_xgd;
+    const last3XgdValue = noXgMetrics ? "-" : game.last3_xgd;
+    const xgdCellClasses = [...baseMetricCellClasses];
+    const xgdCellNotes = [...baseMetricCellNotes];
+    const hcXgdConsensusDirection = noXgMetrics ? null : getHcXgdConsensusDirection(game);
+    if (hcXgdConsensusDirection === "positive") {
+      xgdCellClasses.push("hc-xgd-consensus-positive");
+      xgdCellNotes.push("HC + xGD is > 0.1 for S/5/3.");
+    } else if (hcXgdConsensusDirection === "negative") {
+      xgdCellClasses.push("hc-xgd-consensus-negative");
+      xgdCellNotes.push("HC + xGD is < -0.1 for S/5/3.");
+    }
+    const xgdCellClass = xgdCellClasses.join(" ");
+    const xgdCellTitleAttr = xgdCellNotes.length ? ` title="${escapeHtml(xgdCellNotes.join(" | "))}"` : "";
+
+    const xgdPerfCellClasses = [...baseMetricCellClasses];
+    const xgdPerfCellNotes = [...baseMetricCellNotes];
+    const hcXgdPerfConsensusDirection = noXgMetrics ? null : getHcXgdPerfConsensusDirection(game);
+    if (hcXgdPerfConsensusDirection === "positive") {
+      xgdPerfCellClasses.push("hc-xgd-consensus-positive");
+      xgdPerfCellNotes.push("HC + xGD Perf is > 0.1 for S/5/3.");
+    } else if (hcXgdPerfConsensusDirection === "negative") {
+      xgdPerfCellClasses.push("hc-xgd-consensus-negative");
+      xgdPerfCellNotes.push("HC + xGD Perf is < -0.1 for S/5/3.");
+    }
+    const xgdPerfCellClass = xgdPerfCellClasses.join(" ");
+    const xgdPerfCellTitleAttr = xgdPerfCellNotes.length ? ` title="${escapeHtml(xgdPerfCellNotes.join(" | "))}"` : "";
+
+    if (isHistorical) {
+      row.innerHTML = `
+        <td>${escapeHtml(game.kickoff_utc)}</td>
+        <td>${escapeHtml(game.competition)}</td>
+        <td>${escapeHtml(game.event_name)}</td>
+        <td class="home-price-col">${escapeHtml(game.home_price || "-")}</td>
+        <td class="line-col handicap-line-col">${escapeHtml(game.mainline || "-")}</td>
+        <td class="away-price-col">${escapeHtml(game.away_price || "-")}</td>
+        <td class="goal-under-price-col">${escapeHtml(game.goal_under_price || "-")}</td>
+        <td class="goal-line-col">${escapeHtml(game.goal_mainline || "-")}</td>
+        <td class="goal-over-price-col">${escapeHtml(game.goal_over_price || "-")}</td>
+        <td class="xg-home-col">${escapeHtml(game.home_xg_actual || "-")}</td>
+        <td class="line-col score-col">${escapeHtml(game.scoreline || "-")}</td>
+        <td class="xg-away-col">${escapeHtml(game.away_xg_actual || "-")}</td>
+        <td class="${xgdCellClass}"${xgdCellTitleAttr}>${buildPeriodMetricStackCell(seasonStrengthValue, last5StrengthValue, last3StrengthValue, xgdMismatch)}</td>
+        <td class="${xgdPerfCellClass}"${xgdPerfCellTitleAttr}>${buildPeriodMetricStackCell(seasonXgdValue, last5XgdValue, last3XgdValue, xgdMismatch)}</td>
+        <td class="metric-stack-cell"${xgdMismatch ? ` title="xGD derived from a different competition than this fixture."` : ""}>${buildPeriodMetricStackCell(game.season_min_xg, game.last5_min_xg, game.last3_min_xg, xgdMismatch)}</td>
+        <td class="metric-stack-cell"${xgdMismatch ? ` title="xGD derived from a different competition than this fixture."` : ""}>${buildPeriodMetricStackCell(game.season_max_xg, game.last5_max_xg, game.last3_max_xg, xgdMismatch)}</td>
+      `;
+    } else {
+      row.innerHTML = `
+        <td>${escapeHtml(game.kickoff_utc)}</td>
+        <td>${escapeHtml(game.competition)}</td>
+        <td>${escapeHtml(game.event_name)}</td>
+        <td class="home-price-col">${escapeHtml(game.home_price || "-")}</td>
+        <td class="line-col handicap-line-col">${escapeHtml(game.mainline || "-")}</td>
+        <td class="away-price-col">${escapeHtml(game.away_price || "-")}</td>
+        <td class="${xgdCellClass}"${xgdCellTitleAttr}>${buildPeriodMetricStackCell(seasonStrengthValue, last5StrengthValue, last3StrengthValue, xgdMismatch)}</td>
+        <td class="${xgdPerfCellClass}"${xgdPerfCellTitleAttr}>${buildPeriodMetricStackCell(seasonXgdValue, last5XgdValue, last3XgdValue, xgdMismatch)}</td>
+        <td class="goal-under-price-col">${escapeHtml(game.goal_under_price || "-")}</td>
+        <td class="goal-line-col">${escapeHtml(game.goal_mainline || "-")}</td>
+        <td class="goal-over-price-col">${escapeHtml(game.goal_over_price || "-")}</td>
+        <td class="metric-stack-cell"${xgdMismatch ? ` title="xGD derived from a different competition than this fixture."` : ""}>${buildPeriodMetricStackCell(game.season_min_xg, game.last5_min_xg, game.last3_min_xg, xgdMismatch)}</td>
+        <td class="metric-stack-cell"${xgdMismatch ? ` title="xGD derived from a different competition than this fixture."` : ""}>${buildPeriodMetricStackCell(game.season_max_xg, game.last5_max_xg, game.last3_max_xg, xgdMismatch)}</td>
+      `;
+    }
+    row.addEventListener("click", () => loadGameXgd(game.market_id));
+    tbody.appendChild(row);
+  }
+  return table;
+}
+
+function renderSavedGames() {
+  if (!savedGamesView) return;
+  savedGamesView.innerHTML = "";
+
+  if (savedGamesLoading) {
+    savedGamesView.innerHTML = "<p>Loading saved games...</p>";
+    return;
+  }
+  if (savedGamesErrorText) {
+    savedGamesView.innerHTML = `<p>${escapeHtml(savedGamesErrorText)}</p>`;
+    return;
+  }
+  if (!savedDays.length) {
+    savedGamesView.innerHTML = "<p>No saved games yet.</p>";
+    return;
+  }
+
+  gamesById = new Map();
+  for (const day of savedDays) {
+    const dayGames = Array.isArray(day?.games) ? day.games : [];
+    const sortedDayGames = sortGamesForDay(dayGames);
+    const useHistoricalLayout = sortedDayGames.some((game) => Boolean(game?.is_historical));
+
+    const block = document.createElement("section");
+    block.className = "day-block";
+    const header = document.createElement("div");
+    header.className = "day-header";
+    const heading = document.createElement("h2");
+    heading.className = "day-header-title";
+    heading.textContent = `${String(day?.date_label || day?.date || "Saved")} (${sortedDayGames.length})`;
+    header.appendChild(heading);
+
+    const table = createGamesTable(sortedDayGames, useHistoricalLayout, { emptyMessage: "No saved games" });
+    block.appendChild(header);
+    block.appendChild(table);
+    savedGamesView.appendChild(block);
+  }
+}
+
+async function loadSavedGames(options = {}) {
+  if (savedGamesLoading) return false;
+  const silent = Boolean(options?.silent);
+  savedGamesLoading = true;
+  if (!silent) {
+    statusText.textContent = "Loading saved games...";
+  }
+  renderSavedGames();
+  try {
+    const res = await fetch("/api/saved-games");
+    const payload = await parseApiResponse(res);
+    if (!res.ok) throw new Error(payload.error || "Failed to load saved games");
+    savedDays = Array.isArray(payload?.days) ? payload.days : [];
+    savedGamesLoaded = true;
+    savedGamesErrorText = "";
+    setSavedMarketIds(payload?.saved_market_ids || []);
+    if (activeTab === "saved" && !silent) {
+      statusText.textContent = `Loaded ${Number(payload?.total_games) || 0} saved games`;
+    }
+    renderSavedGames();
+    return true;
+  } catch (err) {
+    savedGamesErrorText = String(err.message || err);
+    if (!silent) {
+      statusText.textContent = savedGamesErrorText;
+    }
+    return false;
+  } finally {
+    savedGamesLoading = false;
+    renderSavedGames();
   }
 }
 
@@ -2132,156 +2887,7 @@ function renderCurrentDay() {
     header.appendChild(headerActions);
   }
 
-  const table = document.createElement("table");
-  table.className = "games-table";
-  if (isHistorical) {
-    table.innerHTML = `
-      <thead>
-        <tr>
-          <th>Kickoff (UTC)</th>
-          <th>League</th>
-          <th>Game</th>
-          <th class="home-price-col">Home</th>
-          <th class="line-col handicap-line-col">HC</th>
-          <th class="away-price-col">Away</th>
-          <th class="goal-under-price-col">Under</th>
-          <th class="goal-line-col">Goals</th>
-          <th class="goal-over-price-col">Over</th>
-          <th class="xg-home-col">xG H</th>
-          <th class="line-col score-col">Score</th>
-          <th class="xg-away-col">xG A</th>
-          <th>xGD</th>
-          <th>xGD Perf</th>
-          <th>Min</th>
-          <th>Max</th>
-        </tr>
-      </thead>
-      <tbody></tbody>
-    `;
-  } else {
-    table.innerHTML = `
-      <thead>
-        <tr>
-          <th>Kickoff (UTC)</th>
-          <th>League</th>
-          <th>Game</th>
-          <th class="home-price-col">Home</th>
-          <th class="line-col handicap-line-col">HC</th>
-          <th class="away-price-col">Away</th>
-          <th>xGD</th>
-          <th>xGD Perf</th>
-          <th class="goal-under-price-col">Under</th>
-          <th class="goal-line-col">Goals</th>
-          <th class="goal-over-price-col">Over</th>
-          <th>Min</th>
-          <th>Max</th>
-        </tr>
-      </thead>
-      <tbody></tbody>
-    `;
-  }
-
-  const tbody = table.querySelector("tbody");
-  if (!sortedDayGames.length) {
-    const row = document.createElement("tr");
-    row.innerHTML = `<td class="no-games-row" colspan="${isHistorical ? "16" : "13"}">No games</td>`;
-    tbody.appendChild(row);
-  } else {
-    for (const game of sortedDayGames) {
-      gamesById.set(game.market_id, game);
-      const row = document.createElement("tr");
-      row.dataset.marketId = game.market_id;
-      if (selectedMarketId === game.market_id) row.classList.add("selected");
-      const tierClass = tierRowClass(game.tier);
-      if (tierClass) row.classList.add(tierClass);
-      const xgdMismatch = Boolean(game.xgd_competition_mismatch);
-      const noXgMetrics = hasNoXgMetricSignal(game);
-      const baseMetricCellClasses = ["metric-stack-cell"];
-      const baseMetricCellNotes = [];
-      if (xgdMismatch) {
-        baseMetricCellClasses.push("xgd-mismatch-cell");
-        baseMetricCellNotes.push("xGD derived from a different competition than this fixture.");
-      }
-      if (noXgMetrics) {
-        baseMetricCellClasses.push("no-xg-cell");
-        baseMetricCellNotes.push("No xG data available for this league; xGD/xGD Perf shown as -.");
-      }
-      const seasonStrengthValue = noXgMetrics ? "-" : game.season_strength;
-      const last5StrengthValue = noXgMetrics ? "-" : game.last5_strength;
-      const last3StrengthValue = noXgMetrics ? "-" : game.last3_strength;
-      const seasonXgdValue = noXgMetrics ? "-" : game.season_xgd;
-      const last5XgdValue = noXgMetrics ? "-" : game.last5_xgd;
-      const last3XgdValue = noXgMetrics ? "-" : game.last3_xgd;
-      const xgdCellClasses = [...baseMetricCellClasses];
-      const xgdCellNotes = [...baseMetricCellNotes];
-      const hcXgdConsensusDirection = noXgMetrics ? null : getHcXgdConsensusDirection(game);
-      if (hcXgdConsensusDirection === "positive") {
-        xgdCellClasses.push("hc-xgd-consensus-positive");
-        xgdCellNotes.push("HC + xGD is > 0.1 for S/5/3.");
-      } else if (hcXgdConsensusDirection === "negative") {
-        xgdCellClasses.push("hc-xgd-consensus-negative");
-        xgdCellNotes.push("HC + xGD is < -0.1 for S/5/3.");
-      }
-      const xgdCellClass = xgdCellClasses.join(" ");
-      const xgdCellTitleAttr = xgdCellNotes.length
-        ? ` title="${escapeHtml(xgdCellNotes.join(" | "))}"`
-        : "";
-
-      const xgdPerfCellClasses = [...baseMetricCellClasses];
-      const xgdPerfCellNotes = [...baseMetricCellNotes];
-      const hcXgdPerfConsensusDirection = noXgMetrics ? null : getHcXgdPerfConsensusDirection(game);
-      if (hcXgdPerfConsensusDirection === "positive") {
-        xgdPerfCellClasses.push("hc-xgd-consensus-positive");
-        xgdPerfCellNotes.push("HC + xGD Perf is > 0.1 for S/5/3.");
-      } else if (hcXgdPerfConsensusDirection === "negative") {
-        xgdPerfCellClasses.push("hc-xgd-consensus-negative");
-        xgdPerfCellNotes.push("HC + xGD Perf is < -0.1 for S/5/3.");
-      }
-      const xgdPerfCellClass = xgdPerfCellClasses.join(" ");
-      const xgdPerfCellTitleAttr = xgdPerfCellNotes.length
-        ? ` title="${escapeHtml(xgdPerfCellNotes.join(" | "))}"`
-        : "";
-      if (isHistorical) {
-        row.innerHTML = `
-          <td>${escapeHtml(game.kickoff_utc)}</td>
-          <td>${escapeHtml(game.competition)}</td>
-          <td>${escapeHtml(game.event_name)}</td>
-          <td class="home-price-col">${escapeHtml(game.home_price || "-")}</td>
-          <td class="line-col handicap-line-col">${escapeHtml(game.mainline || "-")}</td>
-          <td class="away-price-col">${escapeHtml(game.away_price || "-")}</td>
-          <td class="goal-under-price-col">${escapeHtml(game.goal_under_price || "-")}</td>
-          <td class="goal-line-col">${escapeHtml(game.goal_mainline || "-")}</td>
-          <td class="goal-over-price-col">${escapeHtml(game.goal_over_price || "-")}</td>
-          <td class="xg-home-col">${escapeHtml(game.home_xg_actual || "-")}</td>
-          <td class="line-col score-col">${escapeHtml(game.scoreline || "-")}</td>
-          <td class="xg-away-col">${escapeHtml(game.away_xg_actual || "-")}</td>
-          <td class="${xgdCellClass}"${xgdCellTitleAttr}>${buildPeriodMetricStackCell(seasonStrengthValue, last5StrengthValue, last3StrengthValue, xgdMismatch)}</td>
-          <td class="${xgdPerfCellClass}"${xgdPerfCellTitleAttr}>${buildPeriodMetricStackCell(seasonXgdValue, last5XgdValue, last3XgdValue, xgdMismatch)}</td>
-          <td class="metric-stack-cell"${xgdMismatch ? ` title="xGD derived from a different competition than this fixture."` : ""}>${buildPeriodMetricStackCell(game.season_min_xg, game.last5_min_xg, game.last3_min_xg, xgdMismatch)}</td>
-          <td class="metric-stack-cell"${xgdMismatch ? ` title="xGD derived from a different competition than this fixture."` : ""}>${buildPeriodMetricStackCell(game.season_max_xg, game.last5_max_xg, game.last3_max_xg, xgdMismatch)}</td>
-        `;
-      } else {
-        row.innerHTML = `
-          <td>${escapeHtml(game.kickoff_utc)}</td>
-          <td>${escapeHtml(game.competition)}</td>
-          <td>${escapeHtml(game.event_name)}</td>
-          <td class="home-price-col">${escapeHtml(game.home_price || "-")}</td>
-          <td class="line-col handicap-line-col">${escapeHtml(game.mainline || "-")}</td>
-          <td class="away-price-col">${escapeHtml(game.away_price || "-")}</td>
-          <td class="${xgdCellClass}"${xgdCellTitleAttr}>${buildPeriodMetricStackCell(seasonStrengthValue, last5StrengthValue, last3StrengthValue, xgdMismatch)}</td>
-          <td class="${xgdPerfCellClass}"${xgdPerfCellTitleAttr}>${buildPeriodMetricStackCell(seasonXgdValue, last5XgdValue, last3XgdValue, xgdMismatch)}</td>
-          <td class="goal-under-price-col">${escapeHtml(game.goal_under_price || "-")}</td>
-          <td class="goal-line-col">${escapeHtml(game.goal_mainline || "-")}</td>
-          <td class="goal-over-price-col">${escapeHtml(game.goal_over_price || "-")}</td>
-          <td class="metric-stack-cell"${xgdMismatch ? ` title="xGD derived from a different competition than this fixture."` : ""}>${buildPeriodMetricStackCell(game.season_min_xg, game.last5_min_xg, game.last3_min_xg, xgdMismatch)}</td>
-          <td class="metric-stack-cell"${xgdMismatch ? ` title="xGD derived from a different competition than this fixture."` : ""}>${buildPeriodMetricStackCell(game.season_max_xg, game.last5_max_xg, game.last3_max_xg, xgdMismatch)}</td>
-        `;
-      }
-      row.addEventListener("click", () => loadGameXgd(game.market_id));
-      tbody.appendChild(row);
-    }
-  }
-
+  const table = createGamesTable(sortedDayGames, isHistorical, { emptyMessage: "No games" });
   block.appendChild(header);
   block.appendChild(table);
   calendarView.appendChild(block);
@@ -2300,6 +2906,10 @@ function renderXgd(payload) {
     payload.away_team_venue_rows && typeof payload.away_team_venue_rows === "object"
       ? payload.away_team_venue_rows
       : { home: [], away: [] };
+  const payloadSeasonHandicapRows =
+    payload.season_handicap_rows && typeof payload.season_handicap_rows === "object"
+      ? payload.season_handicap_rows
+      : { home: [], away: [] };
   const fallbackView = {
     id: "fixture",
     label: "Fixture",
@@ -2310,6 +2920,7 @@ function renderXgd(payload) {
     away_recent_rows: payloadAwayRecentRows,
     home_team_venue_rows: payloadHomeVenueRows,
     away_team_venue_rows: payloadAwayVenueRows,
+    season_handicap_rows: payloadSeasonHandicapRows,
   };
 
   const providedViews = Array.isArray(payload.xgd_views) ? payload.xgd_views : [];
@@ -2329,6 +2940,10 @@ function renderXgd(payload) {
     away_team_venue_rows:
       view?.away_team_venue_rows && typeof view.away_team_venue_rows === "object"
         ? view.away_team_venue_rows
+        : { home: [], away: [] },
+    season_handicap_rows:
+      view?.season_handicap_rows && typeof view.season_handicap_rows === "object"
+        ? view.season_handicap_rows
         : { home: [], away: [] },
   }));
 
@@ -2422,6 +3037,10 @@ function renderXgd(payload) {
     home: Array.isArray(rowsObj?.home) ? rowsObj.home : [],
     away: Array.isArray(rowsObj?.away) ? rowsObj.away : [],
   });
+  const normalizeSeasonHandicapRows = (rowsObj) => ({
+    home: Array.isArray(rowsObj?.home) ? rowsObj.home : [],
+    away: Array.isArray(rowsObj?.away) ? rowsObj.away : [],
+  });
   const hasAnyVenueRows = (rowsObj) => rowsObj.home.length > 0 || rowsObj.away.length > 0;
   const homeRecentRowsRaw = Array.isArray(activeView.home_recent_rows) ? activeView.home_recent_rows : [];
   const awayRecentRowsRaw = Array.isArray(activeView.away_recent_rows) ? activeView.away_recent_rows : [];
@@ -2435,9 +3054,29 @@ function renderXgd(payload) {
   const awayTeamVenueRows = hasAnyVenueRows(awayTeamVenueRowsRaw) ? awayTeamVenueRowsRaw : fallbackAwayTeamVenueRows;
   const homeFixtureVenueRows = Array.isArray(homeTeamVenueRows.home) ? homeTeamVenueRows.home : [];
   const awayFixtureVenueRows = Array.isArray(awayTeamVenueRows.away) ? awayTeamVenueRows.away : [];
+  const cachedHcPerfPayload = selectedMarketId ? hcPerfPayloadByMarket.get(selectedMarketId) : null;
+  const cachedHcPerfRows = normalizeSeasonHandicapRows(cachedHcPerfPayload?.season_handicap_rows);
+  const activeSeasonRowsRaw = normalizeSeasonHandicapRows(activeView.season_handicap_rows);
+  const fallbackSeasonRows = normalizeSeasonHandicapRows(payloadSeasonHandicapRows);
+  const seasonHandicapRows = (cachedHcPerfRows.home.length || cachedHcPerfRows.away.length)
+    ? cachedHcPerfRows
+    : ((activeSeasonRowsRaw.home.length || activeSeasonRowsRaw.away.length)
+    ? activeSeasonRowsRaw
+    : fallbackSeasonRows);
   const mappingHead = mappingRows[0] || {};
-  const homeLabel = mappingHead.home_sofa || mappingHead.home_raw || "Home team";
-  const awayLabel = mappingHead.away_sofa || mappingHead.away_raw || "Away team";
+  const homeLabel = String(cachedHcPerfPayload?.home_label || mappingHead.home_sofa || mappingHead.home_raw || "Home team");
+  const awayLabel = String(cachedHcPerfPayload?.away_label || mappingHead.away_sofa || mappingHead.away_raw || "Away team");
+  const homeSeasonHandicapRows = seasonHandicapRows.home;
+  const awaySeasonHandicapRows = seasonHandicapRows.away;
+  const hcPerfIsAway = hcPerfTeamView === "away";
+  const hcPerfLabel = hcPerfIsAway ? awayLabel : homeLabel;
+  const hcPerfRows = hcPerfIsAway ? awaySeasonHandicapRows : homeSeasonHandicapRows;
+  const hcPerfVenueKey = hcPerfIsAway ? "away" : "home";
+  const hcPerfVenueRows = hcPerfRows.filter((row) => String(row?.venue || "").trim().toLowerCase() === hcPerfVenueKey);
+  const hcPerfLoading = Boolean(selectedMarketId) && hcPerfLoadingMarketId === selectedMarketId;
+  const hcPerfRescanLoading = hcPerfRescanInFlight;
+  const hcPerfBusy = hcPerfLoading || hcPerfRescanLoading;
+  const hcPerfErrorText = String(cachedHcPerfPayload?.error || "").trim();
   const activeIsAway = recentTeamView === "away";
   const activeLabel = activeIsAway ? awayLabel : homeLabel;
   const activeRows = activeIsAway ? awayRecentRows : homeRecentRows;
@@ -2499,24 +3138,60 @@ function renderXgd(payload) {
     <h3 class="section-title">${escapeHtml(statsActiveLabel)}: Home & Away Matches</h3>
     ${buildCardsCornersMatchesTableHtml(statsActiveLabel, statsAllVenueRows, statsGamesShownCount, "All matches")}
   `;
-  if (detailsMainTab !== "cards") {
+  const hcPerfTabContent = `
+    <h3 class="section-title">Season Handicap Performance</h3>
+    ${hcPerfBusy ? `
+      <div class="hcperf-loading">
+        <span class="hcperf-loading-dot" aria-hidden="true"></span>
+        <span>Loading historical closing prices...</span>
+      </div>
+    ` : ""}
+    ${hcPerfErrorText ? `<div class="warning">${escapeHtml(hcPerfErrorText)}</div>` : ""}
+    <div class="hcperf-controls">
+      <button type="button" class="hcperf-rescan-btn" ${hcPerfBusy ? "disabled" : ""}>
+        ${hcPerfRescanLoading ? "Rescanning..." : "Rescan Closing Prices"}
+      </button>
+    </div>
+    ${buildHcPerfSwitchHtml(homeLabel, awayLabel)}
+    ${buildHcPerfSummaryTableHtml(hcPerfLabel, hcPerfRows, { focusVenue: hcPerfVenueKey })}
+    ${buildSeasonHandicapPerformanceTableHtml(hcPerfLabel, hcPerfVenueRows, {
+      title: `${hcPerfLabel} - Venue Only Games`,
+      relevantTeam: hcPerfLabel,
+    })}
+    ${buildSeasonHandicapPerformanceTableHtml(hcPerfLabel, hcPerfRows, {
+      title: `${hcPerfLabel} - All Games`,
+      relevantTeam: hcPerfLabel,
+    })}
+  `;
+  if (detailsMainTab !== "cards" && detailsMainTab !== "hcperf") {
     detailsMainTab = "xgd";
   }
   const detailsTabNav = `
     <section class="page-tabs details-main-tabs">
       <button type="button" class="tab-btn details-main-tab ${detailsMainTab === "xgd" ? "active" : ""}" data-details-tab="xgd">xGD</button>
       <button type="button" class="tab-btn details-main-tab ${detailsMainTab === "cards" ? "active" : ""}" data-details-tab="cards">Stats</button>
+      <button type="button" class="tab-btn details-main-tab ${detailsMainTab === "hcperf" ? "active" : ""}" data-details-tab="hcperf">HC Perf</button>
     </section>
   `;
-  const activeTabContent = detailsMainTab === "cards" ? cardsTabContent : xgdTabContent;
+  const activeTabContent = detailsMainTab === "cards"
+    ? cardsTabContent
+    : (detailsMainTab === "hcperf" ? hcPerfTabContent : xgdTabContent);
   linesContainer.innerHTML = `${detailsTabNav}${viewTabsHtml}${activeTabContent}`;
+
+  if (detailsMainTab === "hcperf" && selectedMarketId && !cachedHcPerfPayload && hcPerfLoadingMarketId !== selectedMarketId) {
+    loadGameHcPerf(selectedMarketId);
+  }
 
   const detailsTabButtons = linesContainer.querySelectorAll(".details-main-tab");
   for (const button of detailsTabButtons) {
     button.addEventListener("click", () => {
-      const targetTab = button.dataset.detailsTab === "cards" ? "cards" : "xgd";
+      const rawTargetTab = String(button.dataset.detailsTab || "").trim().toLowerCase();
+      const targetTab = rawTargetTab === "cards" || rawTargetTab === "hcperf" ? rawTargetTab : "xgd";
       if (targetTab === detailsMainTab) return;
       detailsMainTab = targetTab;
+      if (targetTab === "hcperf" && selectedMarketId) {
+        loadGameHcPerf(selectedMarketId);
+      }
       if (lastXgdPayload) renderXgd(lastXgdPayload);
     });
   }
@@ -2548,6 +3223,23 @@ function renderXgd(payload) {
       if (targetView === statsTeamView) return;
       statsTeamView = targetView;
       if (lastXgdPayload) renderXgd(lastXgdPayload);
+    });
+  }
+
+  const hcPerfSwitchButtons = linesContainer.querySelectorAll(".hcperf-switch-btn");
+  for (const button of hcPerfSwitchButtons) {
+    button.addEventListener("click", () => {
+      const targetView = button.dataset.hcperfTeamView === "away" ? "away" : "home";
+      if (targetView === hcPerfTeamView) return;
+      hcPerfTeamView = targetView;
+      if (lastXgdPayload) renderXgd(lastXgdPayload);
+    });
+  }
+
+  const hcPerfRescanButton = linesContainer.querySelector(".hcperf-rescan-btn");
+  if (hcPerfRescanButton instanceof HTMLButtonElement) {
+    hcPerfRescanButton.addEventListener("click", () => {
+      rescanClosingPrices(hcPerfRescanButton);
     });
   }
 
@@ -2586,12 +3278,47 @@ function renderXgd(payload) {
   }
 }
 
+async function loadGameHcPerf(marketId, force = false) {
+  const key = String(marketId || "").trim();
+  if (!key) return;
+  if (!force && hcPerfPayloadByMarket.has(key)) return;
+  if (hcPerfLoadingMarketId === key) return;
+
+  hcPerfLoadingMarketId = key;
+  if (selectedMarketId === key && detailsMainTab === "hcperf" && lastXgdPayload) {
+    renderXgd(lastXgdPayload);
+  }
+  try {
+    const res = await fetch(`/api/game-hcperf?market_id=${encodeURIComponent(key)}`);
+    const payload = await parseApiResponse(res);
+    if (!res.ok) throw new Error(payload.error || "Failed to load HC performance");
+    hcPerfPayloadByMarket.set(key, payload || {});
+  } catch (err) {
+    hcPerfPayloadByMarket.set(key, {
+      season_handicap_rows: { home: [], away: [] },
+      error: String(err.message || err),
+    });
+  } finally {
+    if (hcPerfLoadingMarketId === key) {
+      hcPerfLoadingMarketId = null;
+    }
+    if (selectedMarketId === key && detailsMainTab === "hcperf" && lastXgdPayload) {
+      renderXgd(lastXgdPayload);
+    }
+  }
+}
+
 async function loadGameXgd(marketId) {
-  const game = gamesById.get(marketId);
+  const game = findGameByMarketId(marketId);
   if (!game) return;
 
   selectedMarketId = marketId;
-  renderCurrentDay();
+  if (activeTab === "saved") {
+    renderSavedGames();
+  } else {
+    renderCurrentDay();
+  }
+  updateDetailsSaveButton();
 
   detailsPanel.classList.remove("hidden");
   detailsTitle.textContent = game.event_name;
@@ -2604,8 +3331,10 @@ async function loadGameXgd(marketId) {
   statsGamesShownCount = 0;
   statsGamesShownAuto = true;
   statsTeamView = "home";
+  hcPerfTeamView = "home";
   activeXgdViewId = null;
   lastXgdPayload = null;
+  hcPerfLoadingMarketId = null;
   const scoreMeta = game.is_historical ? ` | FT ${String(game.scoreline || "-")}` : "";
   detailsMeta.textContent = `${game.competition} | ${game.kickoff_raw}${scoreMeta}`;
   linesContainer.innerHTML = "<p>Calculating xGD...</p>";
@@ -2620,10 +3349,41 @@ async function loadGameXgd(marketId) {
   }
 }
 
+function findGameByMarketId(marketId) {
+  const key = String(marketId || "").trim();
+  if (!key) return null;
+  const cached = gamesById.get(key);
+  if (cached) return cached;
+
+  const findInDays = (days) => {
+    if (!Array.isArray(days)) return null;
+    for (const day of days) {
+      const dayGames = Array.isArray(day?.games) ? day.games : [];
+      for (const game of dayGames) {
+        if (String(game?.market_id || "").trim() === key) {
+          return game;
+        }
+      }
+    }
+    return null;
+  };
+
+  const found = findInDays(allDays) || findInDays(savedDays) || findInDays(rawDays);
+  if (found) {
+    gamesById.set(key, found);
+  }
+  return found;
+}
+
 refreshBtn.addEventListener("click", () => loadGames());
 gamesTabBtn.addEventListener("click", () => {
   setActiveTab("games");
 });
+if (savedGamesTabBtn instanceof HTMLButtonElement) {
+  savedGamesTabBtn.addEventListener("click", () => {
+    setActiveTab("saved");
+  });
+}
 manualMappingTabBtn.addEventListener("click", () => {
   setActiveTab("mapping");
   loadManualMappings();
@@ -2725,6 +3485,25 @@ sortModeBtn.addEventListener("change", () => {
   updateSortButtonLabel();
   renderCurrentDay();
 });
+if (teamSearchInput instanceof HTMLInputElement) {
+  teamSearchInput.addEventListener("input", (event) => {
+    const inputEl = event.currentTarget instanceof HTMLInputElement ? event.currentTarget : teamSearchInput;
+    const caretStart = inputEl.selectionStart;
+    const caretEnd = inputEl.selectionEnd;
+    teamSearchQuery = String(inputEl.value || "");
+    applyGameFilters();
+    renderCurrentDay();
+    if (document.activeElement !== inputEl) {
+      inputEl.focus({ preventScroll: true });
+    }
+    if (caretStart != null && caretEnd != null) {
+      const valueLength = String(inputEl.value || "").length;
+      const nextStart = Math.max(0, Math.min(caretStart, valueLength));
+      const nextEnd = Math.max(0, Math.min(caretEnd, valueLength));
+      inputEl.setSelectionRange(nextStart, nextEnd);
+    }
+  });
+}
 prevDayBtn.addEventListener("click", async () => {
   if (gamesMode !== "historical") {
     currentDayIndex = clampDayIndex(currentDayIndex - 1);
@@ -2770,10 +3549,17 @@ closeDetails.addEventListener("click", () => {
 recalcBtn.addEventListener("click", () => {
   if (selectedMarketId) loadGameXgd(selectedMarketId);
 });
+if (saveGameBtn instanceof HTMLButtonElement) {
+  saveGameBtn.addEventListener("click", () => {
+    toggleSelectedGameSaved();
+  });
+}
 
 updateSortButtonLabel();
 updateLeagueFilterButtonLabel();
 updateTierFilterButtonLabel();
+updateSavedTabLabel();
+updateDetailsSaveButton();
 setMappingSubTab("teams");
 setActiveTab("games");
 setGamesMode("upcoming", false);

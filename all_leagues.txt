@@ -1,32 +1,33 @@
 # Auto-generated from Betfair listCompetitions
 # Format: competition_id|competition_name
 12276605|AFC Ladies Asian Cup
-4431442|Algerian Ligue 1
+11627247|Albanian Superliga
+12185871|Argentinian Cup
 67387|Argentinian Primera Division
 803237|Argentinian Primera Nacional
+2888729|Armenian Premier League
 12117172|Australian A-League Men
 12108847|Australian A-League Women
 10479956|Austrian Bundesliga
 9|Austrian Erste Liga
-4517491|Azerbaijan 1st Division
 895129|Azerbaijan Premier League
-12206014|Bahraini Premier
 12185789|Bangladesh Premier League
 11717188|Belgian Challenger Pro League
 89979|Belgian Pro League
-89219|Brazilian Cup
+3127357|Bosnian Premier League
+7422970|Brazilian Paulista Serie A3
 13|Brazilian Serie A
 321319|Brazilian Serie B
 15|Bulgarian A League
 12292686|Bulgarian B League
 987643|CAF Champions League
+9251272|Cambodian Premier League
 857992|Chilean Primera B
 744098|Chilean Primera Division
+11380680|Chinese League 1
 879931|Chinese Super League
 844197|Colombian Primera A
-194961|CONCACAF Champions League
-12147796|CONMEBOL Copa Libertadores
-3039445|Costa Rican Liga de Ascenso
+856134|Colombian Primera B
 2079376|Costa Rican Primera Division
 17|Croatian HNL
 3992967|Croatian Prva NL
@@ -39,8 +40,6 @@
 9404054|Dutch Eredivisie
 803690|Ecuadorian Serie A
 9882094|EFL Trophy
-4643366|Egyptian 2nd Division
-802004|Egyptian Cup
 30558|English FA Cup
 2134|English Football League Cup
 11086347|English National League
@@ -51,19 +50,13 @@
 7129730|English Sky Bet Championship
 35|English Sky Bet League 1
 37|English Sky Bet League 2
-12511339|English U21 Pro Development League
 12202273|English WSL
+873203|Estonian Esiliiga
 12216175|Estonian Premier League
-11869656|Ethiopian Premier League
-12232258|Faroe 1 Deild
-11804597|Faroe Premier League
 12469077|FIFA World Cup
 12209560|French Cup
 55|French Ligue 1
 57|French Ligue 2
-1081960|French National
-12005859|Friendly Matches
-2273834|Georgian Umaglesi Liga
 11591693|German 3 Liga
 59|German Bundesliga
 61|German Bundesliga 2
@@ -75,41 +68,40 @@
 12202271|Honduras Liga Nacional
 833990|Hong Kong Premier League
 1842928|Hungarian NB I
-12213874|Icelandic League Cup B
-12199393|Indian I-League
 6251219|Indian Super League
 822951|Indonesian Super League
-12005855|Irish Division 1
 12203971|Irish Premier Division
+12201574|Italian Campionato Primavera
 12214429|Italian Coppa Italia
 81|Italian Serie A
 12199689|Italian Serie B
 12199513|Italian Serie C
 12782082|Japanese J. League 100 Year Vision
-12200652|Jordanian Premier League
+12782313|Japanese J. League 2/3 100 Year Vision
+7616742|Kenyan Premier League
+12111762|Kosovan Superliga
 12216976|Latvian Virsliga
-1587980|Lithuanian 1 Lyga
 879221|Lithuanian A Lyga
 840886|Malaysian Super League
+12760886|Mexican Liga de Ascenso
 5627174|Mexican Liga MX
 11687921|Mexican Liga MX Femenil
 8770515|Mexican Liga Premier
+12214445|Montenegrin 2nd League
+6569630|Moroccan Botola 2
+11730241|Nigerian Premier League
 11068551|Norwegian Eliteserien
-11635923|Omani Professional League
 3972877|Panamanian Premier League
 839575|Paraguayan Primera Division
 8594603|Peruvian Primera Division
-11838780|Polish 2 Liga
 97|Polish Ekstraklasa
 403085|Polish I Liga
 12218844|Portuguese Cup
 99|Portuguese Primeira Liga
 9513|Portuguese Segunda Liga
-842258|Qatari Stars League
 4905|Romanian Liga I
 862579|Romanian Liga II
 12009363|Salvadoran Primera Division
-2315454|Saudi 1st Division
 12209405|Saudi Professional League
 107|Scottish Championship
 109|Scottish League One
@@ -117,39 +109,33 @@
 105|Scottish Premiership
 12212459|Serbian First League
 103|Serbian Super League
+848322|Singapore Premier League
 12215677|Slovakian 2 Liga
 12013300|Slovakian Super League
-12228139|Slovenian Cup
+8995647|Slovenian 2 SNL
 115|Slovenian Premier League
 10699940|South African Premier Division
 12395639|South Korean K1 League
 12395641|South Korean K2 League
-12290625|South Korean K3 League
 117|Spanish La Liga
 12204313|Spanish Segunda Division
-12714473|Spanish U19 Cup
 2608550|Specials
 18099|Swedish Cup
+8964557|Swiss 1 Liga Promotion
 135|Swiss Challenge League
 133|Swiss Super League
-11891653|Tanzanian Premier League
 12209388|Thai League 1
 4608858|Thai League 2
 175680|Turkish 1 Lig
 833222|Turkish 2 Lig
 194215|Turkish Super League
-12016770|Turkish U19
-11641480|UAE Arabian Gulf League
-12710780|UAE U23
 228|UEFA Champions League
 12375833|UEFA Europa Conference League
 2005|UEFA Europa League
-7247362|Ugandan Premier League
 139|Ukrainian Premier League
 843454|Uruguayan Primera Division
 6104087|Uruguayan Segunda Division
 141|US MLS
 1065530|Venezuelan Primera Division
 12209059|Vietnamese V-League
-12223731|Vietnamese V-League 2
 252549|Welsh Premiership

@@ -4,3 +4,4 @@ betfair_credentials.py
 .DS_Store
 .vscode/
 historical_data/
+saved_games.json

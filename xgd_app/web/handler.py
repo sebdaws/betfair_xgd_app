@@ -67,8 +67,14 @@ class AppHandler(BaseHTTPRequestHandler):
             venue_recent_n_raw = (query.get("venue_recent_n") or ["5"])[0]
             venue_recent_n = _clamp_int(venue_recent_n_raw, default=5, min_value=1, max_value=20)
             return self._serve_game_xgd(market_id, recent_n, venue_recent_n)
+        if path == "/api/game-hcperf":
+            query = parse_qs(parsed.query)
+            market_id = (query.get("market_id") or [""])[0]
+            return self._serve_game_hc_performance(market_id)
         if path == "/api/manual-mappings":
             return self._serve_manual_mappings()
+        if path == "/api/saved-games":
+            return self._serve_saved_games()
 
         self._json({"error": "Not found"}, status=HTTPStatus.NOT_FOUND)
 
@@ -78,6 +84,8 @@ class AppHandler(BaseHTTPRequestHandler):
 
         if path == "/api/historical-day-xgd":
             return self._serve_historical_day_xgd()
+        if path == "/api/rescan-closing-prices":
+            return self._serve_rescan_closing_prices()
         if path == "/api/manual-mappings":
             return self._upsert_manual_mapping()
         if path == "/api/manual-mappings/delete":
@@ -86,6 +94,10 @@ class AppHandler(BaseHTTPRequestHandler):
             return self._upsert_manual_competition_mapping()
         if path == "/api/manual-competition-mappings/delete":
             return self._delete_manual_competition_mapping()
+        if path == "/api/saved-games":
+            return self._save_game()
+        if path == "/api/saved-games/delete":
+            return self._unsave_game()
 
         self._json({"error": "Not found"}, status=HTTPStatus.NOT_FOUND)
 
@@ -111,6 +123,18 @@ class AppHandler(BaseHTTPRequestHandler):
         except Exception as exc:
             self._json({"error": str(exc)}, status=HTTPStatus.INTERNAL_SERVER_ERROR)
 
+    def _serve_game_hc_performance(self, market_id: str) -> None:
+        if not market_id:
+            self._json({"error": "market_id is required"}, status=HTTPStatus.BAD_REQUEST)
+            return
+        try:
+            payload = self.state.get_game_hc_performance(market_id)
+            self._json(payload)
+        except KeyError:
+            self._json({"error": "Market not found"}, status=HTTPStatus.NOT_FOUND)
+        except Exception as exc:
+            self._json({"error": str(exc)}, status=HTTPStatus.INTERNAL_SERVER_ERROR)
+
     def _serve_historical_day_xgd(self) -> None:
         payload = self._read_json_body()
         day_iso = str(payload.get("date", "")).strip()
@@ -125,10 +149,46 @@ class AppHandler(BaseHTTPRequestHandler):
         except Exception as exc:
             self._json({"error": str(exc)}, status=HTTPStatus.INTERNAL_SERVER_ERROR)
 
+    def _serve_rescan_closing_prices(self) -> None:
+        try:
+            out = self.state.rescan_historical_closing_prices()
+            self._json({"ok": True, **out})
+        except Exception as exc:
+            self._json({"error": str(exc)}, status=HTTPStatus.INTERNAL_SERVER_ERROR)
+
     def _serve_manual_mappings(self) -> None:
         try:
             payload = self.state.list_manual_team_mappings()
             self._json(payload)
+        except Exception as exc:
+            self._json({"error": str(exc)}, status=HTTPStatus.INTERNAL_SERVER_ERROR)
+
+    def _serve_saved_games(self) -> None:
+        try:
+            payload = self.state.list_saved_games_grouped_by_day()
+            self._json(payload)
+        except Exception as exc:
+            self._json({"error": str(exc)}, status=HTTPStatus.INTERNAL_SERVER_ERROR)
+
+    def _save_game(self) -> None:
+        payload = self._read_json_body()
+        market_id = str(payload.get("market_id", "")).strip()
+        try:
+            out = self.state.save_game(market_id=market_id)
+            self._json({"ok": True, **out})
+        except ValueError as exc:
+            self._json({"error": str(exc)}, status=HTTPStatus.BAD_REQUEST)
+        except Exception as exc:
+            self._json({"error": str(exc)}, status=HTTPStatus.INTERNAL_SERVER_ERROR)
+
+    def _unsave_game(self) -> None:
+        payload = self._read_json_body()
+        market_id = str(payload.get("market_id", "")).strip()
+        try:
+            out = self.state.unsave_game(market_id=market_id)
+            self._json({"ok": True, **out})
+        except ValueError as exc:
+            self._json({"error": str(exc)}, status=HTTPStatus.BAD_REQUEST)
         except Exception as exc:
             self._json({"error": str(exc)}, status=HTTPStatus.INTERNAL_SERVER_ERROR)
 

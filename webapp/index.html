@@ -18,6 +18,7 @@
   <main>
     <section class="page-tabs">
       <button id="gamesTabBtn" class="tab-btn active" type="button">Games</button>
+      <button id="savedGamesTabBtn" class="tab-btn" type="button">Saved Games</button>
       <button id="manualMappingTabBtn" class="tab-btn" type="button">Mapping</button>
     </section>
 
@@ -51,8 +52,21 @@
           <option value="league">League</option>
           <option value="tier">Tier</option>
         </select>
+        <label for="teamSearchInput" class="control-label">Team</label>
+        <input
+          id="teamSearchInput"
+          class="team-search-input"
+          type="search"
+          aria-label="Search teams"
+          placeholder="Search team..."
+          autocomplete="off"
+        />
       </section>
       <section id="calendarView" class="calendar-view"></section>
+    </section>
+
+    <section id="savedGamesTabPane" class="tab-pane hidden">
+      <section id="savedGamesView" class="calendar-view"></section>
     </section>
 
     <section id="manualMappingTabPane" class="tab-pane hidden">
@@ -97,6 +111,7 @@
     <div class="details-header">
       <h2 id="detailsTitle">Game</h2>
       <div class="details-actions">
+        <button id="saveGameBtn" type="button">Save</button>
         <button id="recalcBtn" type="button">Recalculate xGD</button>
         <button id="closeDetails" type="button">Close</button>
       </div>
