@@ -1,19 +1,21 @@
 # Auto-generated from Betfair listCompetitions
 # Format: competition_id|competition_name
 12276605|AFC Ladies Asian Cup
+4431442|Algerian Ligue 1
 12185871|Argentinian Cup
 67387|Argentinian Primera Division
 803237|Argentinian Primera Nacional
-2888729|Armenian Premier League
 12117172|Australian A-League Men
 12108847|Australian A-League Women
 10479956|Austrian Bundesliga
 12204202|Austrian Cup
 89979|Belgian Pro League
+3021702|Bosnian Cup
 89219|Brazilian Cup
 13|Brazilian Serie A
 321319|Brazilian Serie B
 15|Bulgarian A League
+8825958|Cameroonese Elite One
 857992|Chilean Primera B
 744098|Chilean Primera Division
 844197|Colombian Primera A
@@ -21,6 +23,7 @@
 194961|CONCACAF Champions League
 3039445|Costa Rican Liga de Ascenso
 2079376|Costa Rican Primera Division
+17|Croatian HNL
 19|Cypriot 1st Division
 862638|Czech 2 Liga
 23|Danish Superliga
@@ -28,10 +31,12 @@
 9404054|Dutch Eredivisie
 803690|Ecuadorian Serie A
 9882094|EFL Trophy
+802004|Egyptian Cup
 801976|Egyptian Premier
 30558|English FA Cup
 2134|English Football League Cup
 11086347|English National League
+12703238|English National League Cup
 41|English National League North
 43|English National League South
 10932509|English Premier League
@@ -42,6 +47,7 @@
 12511339|English U21 Pro Development League
 12202273|English WSL
 873203|Estonian Esiliiga
+12216175|Estonian Premier League
 12469077|FIFA World Cup
 12209560|French Cup
 55|French Ligue 1
@@ -55,45 +61,44 @@
 67|Greek Super League
 6566654|Guatemalan Liga Nacional
 4556576|Hungarian NB II
-6251219|Indian Super League
+849220|Icelandic League Cup
+12199393|Indian I-League
 12203971|Irish Premier Division
 12201574|Italian Campionato Primavera
 12214429|Italian Coppa Italia
 81|Italian Serie A
 12199689|Italian Serie B
 12199513|Italian Serie C
+3796898|Jamaican Premier League
 12782082|Japanese J. League 100 Year Vision
 12200652|Jordanian Premier League
 12216489|Kazakhstan Premier League
+12111762|Kosovan Superliga
 6908995|Kuwaiti Premier League
+1587980|Lithuanian 1 Lyga
 879221|Lithuanian A Lyga
 12760886|Mexican Liga de Ascenso
 5627174|Mexican Liga MX
 11687921|Mexican Liga MX Femenil
-7836682|Myanmar National League
-11730241|Nigerian Premier League
 4051|Norwegian Cup
 11068551|Norwegian Eliteserien
 11635923|Omani Professional League
 3972877|Panamanian Premier League
 839575|Paraguayan Primera Division
-11993322|Paraguayan Reserves
+11838780|Polish 2 Liga
 97|Polish Ekstraklasa
 12218844|Portuguese Cup
 99|Portuguese Primeira Liga
 9513|Portuguese Segunda Liga
 12209621|Portuguese U23
 842258|Qatari Stars League
-12698195|Republic of North Macedonian Soccer
 4905|Romanian Liga I
 12209355|Rwandan National Football League
 109|Scottish League One
 111|Scottish League Two
 105|Scottish Premiership
 103|Serbian Super League
-848322|Singapore Premier League
 97855|Slovakian Cup
-8995647|Slovenian 2 SNL
 115|Slovenian Premier League
 10699940|South African Premier Division
 12395639|South Korean K1 League
@@ -101,18 +106,22 @@
 117|Spanish La Liga
 12204313|Spanish Segunda Division
 2608550|Specials
+129|Swedish Allsvenskan
 133|Swiss Super League
 12209388|Thai League 1
 175680|Turkish 1 Lig
-833222|Turkish 2 Lig
 194215|Turkish Super League
 11641480|UAE Arabian Gulf League
 228|UEFA Champions League
 12375833|UEFA Europa Conference League
 2005|UEFA Europa League
+3784863|UEFA Youth League
+7683742|Ugandan Cup
 300965|Ukrainian Cup
+139|Ukrainian Premier League
 843454|Uruguayan Primera Division
 6104087|Uruguayan Segunda Division
+12232895|US Lamar Hunt U.S Open Cup
 141|US MLS
 12216637|US United Soccer League
 1065530|Venezuelan Primera Division

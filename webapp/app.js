@@ -110,6 +110,10 @@ let teamMappingSearchSavedTeams = "";
 const historicalDayCalcInFlight = new Set();
 let teamHcPerfDetailLoadingKey = "";
 const AUTO_REFRESH_MS = 2 * 60 * 1000;
+const MAPPING_UNMATCHED_TEAM_RENDER_LIMIT = 250;
+const MAPPING_SAVED_TEAM_RENDER_LIMIT = 400;
+const MAPPING_UNMATCHED_COMPETITION_RENDER_LIMIT = 200;
+const MAPPING_SAVED_COMPETITION_RENDER_LIMIT = 400;
 
 function escapeHtml(value) {
   return String(value || "")
@@ -256,6 +260,34 @@ function rerenderManualMappingsPreserveSearchFocus(selectionStart = null, select
   }
 }
 
+function rerenderManualMappingsPreserveSavedSearchFocus(selectionStart = null, selectionEnd = null) {
+  if (!lastManualMappingPayload) return;
+  renderManualMappingSections(lastManualMappingPayload);
+  const input = savedMappingsContainer.querySelector(
+    'input.mapping-search-input[data-search="saved-team-mappings"]'
+  );
+  if (!(input instanceof HTMLInputElement)) return;
+  input.focus();
+  if (selectionStart == null || selectionEnd == null) return;
+  const maxLen = input.value.length;
+  const start = Math.max(0, Math.min(selectionStart, maxLen));
+  const end = Math.max(start, Math.min(selectionEnd, maxLen));
+  try {
+    input.setSelectionRange(start, end);
+  } catch (_err) {
+    // Ignore browsers/inputs that do not support explicit selection ranges.
+  }
+}
+
+function appendMappingLimitNotice(container, shown, total, label) {
+  if (!(container instanceof HTMLElement)) return;
+  if (!Number.isFinite(shown) || !Number.isFinite(total) || shown >= total) return;
+  const note = document.createElement("p");
+  note.className = "mapping-empty";
+  note.textContent = `Showing ${shown} of ${total} ${label}. Refine your search to narrow results.`;
+  container.appendChild(note);
+}
+
 function renderManualMappingSections(payload) {
   lastManualMappingPayload = payload;
   const teamMappings = Array.isArray(payload?.mappings) ? payload.mappings : [];
@@ -267,19 +299,40 @@ function renderManualMappingSections(payload) {
   const autoCountRaw = Number(payload?.auto_count);
   const manualCount = Number.isFinite(manualCountRaw) ? manualCountRaw : manualMappings.length;
   const autoCount = Number.isFinite(autoCountRaw) ? autoCountRaw : autoMappings.length;
+  const teamMappingsByRawName = new Map();
+  for (const row of teamMappings) {
+    const key = String(row?.raw_name || "").trim();
+    if (!key || teamMappingsByRawName.has(key)) continue;
+    teamMappingsByRawName.set(key, row);
+  }
   const mappedSofaNames = new Set(
     teamMappings
       .map((row) => String(row?.sofa_name || "").trim())
       .filter((name) => !!name)
   );
-  const availableSofaTeams = sofaTeams
+  const normalizedSofaTeams = sofaTeams
+    .map((team) => String(team || "").trim())
+    .filter((team) => !!team);
+  const sofaTeamLookup = new Map(
+    normalizedSofaTeams.map((team) => [team.toLowerCase(), team])
+  );
+  const availableSofaTeams = normalizedSofaTeams
     .map((team) => String(team || "").trim())
     .filter((team) => !!team && !mappedSofaNames.has(team));
+  const availableSofaTeamLookup = new Map(
+    availableSofaTeams.map((team) => [team.toLowerCase(), team])
+  );
   const competitionMappings = Array.isArray(payload?.competition_mappings) ? payload.competition_mappings : [];
   const unmatchedCompetitions = Array.isArray(payload?.unmatched_competitions)
     ? payload.unmatched_competitions
     : [];
   const sofaCompetitions = Array.isArray(payload?.sofa_competitions) ? payload.sofa_competitions : [];
+  const competitionMappingsByRawName = new Map();
+  for (const row of competitionMappings) {
+    const key = String(row?.raw_name || "").trim();
+    if (!key || competitionMappingsByRawName.has(key)) continue;
+    competitionMappingsByRawName.set(key, row);
+  }
   const manualCompetitionMappings = competitionMappings.filter((row) => row?.is_manual !== false);
   const autoCompetitionMappings = competitionMappings.filter((row) => row?.is_manual === false);
   const manualCompetitionCountRaw = Number(payload?.manual_competition_count);
@@ -295,17 +348,31 @@ function renderManualMappingSections(payload) {
       .map((row) => String(row?.sofa_name || "").trim())
       .filter((name) => !!name)
   );
-  const availableSofaCompetitions = sofaCompetitions
+  const normalizedSofaCompetitions = sofaCompetitions
+    .map((competition) => String(competition || "").trim())
+    .filter((competition) => !!competition);
+  const availableSofaCompetitions = normalizedSofaCompetitions
     .map((competition) => String(competition || "").trim())
     .filter((competition) => !!competition && !mappedSofaCompetitionNames.has(competition));
+  const availableSofaCompetitionLookup = new Map(
+    availableSofaCompetitions.map((competition) => [competition.toLowerCase(), competition])
+  );
   const sofascoreDbPath = String(payload?.sofascore_db_path || "").trim();
   const sofascoreDbLabel = sofascoreDbPath
     ? sofascoreDbPath.split("/").filter(Boolean).slice(-2).join("/")
     : "";
+  const unmatchedTeamsTotalRaw = Number(payload?.unmatched_total);
+  const unmatchedTeamsTotal = Number.isFinite(unmatchedTeamsTotalRaw)
+    ? unmatchedTeamsTotalRaw
+    : unmatchedTeams.length;
+  const unmatchedCompetitionsTotalRaw = Number(payload?.unmatched_competitions_total);
+  const unmatchedCompetitionsTotal = Number.isFinite(unmatchedCompetitionsTotalRaw)
+    ? unmatchedCompetitionsTotalRaw
+    : unmatchedCompetitions.length;
 
   mappingStatus.textContent =
-    `${unmatchedTeams.length} unmatched teams | ${manualCount} manual, ${autoCount} auto teams | ` +
-    `${unmatchedCompetitions.length} unmatched competitions | ` +
+    `${unmatchedTeamsTotal} unmatched teams | ${manualCount} manual, ${autoCount} auto teams | ` +
+    `${unmatchedCompetitionsTotal} unmatched competitions | ` +
     `${manualCompetitionCount} manual, ${autoCompetitionCount} auto competitions` +
     (sofascoreDbLabel ? ` | DB: ${sofascoreDbLabel}` : "");
 
@@ -341,6 +408,7 @@ function renderManualMappingSections(payload) {
         const league = String(row.competition || "").toLowerCase();
         return raw.includes(betfairQuery) || event.includes(betfairQuery) || league.includes(betfairQuery);
       });
+  const visibleUnmatchedTeams = filteredUnmatchedTeams.slice(0, MAPPING_UNMATCHED_TEAM_RENDER_LIMIT);
 
   if (!unmatchedTeams.length) {
     const empty = document.createElement("p");
@@ -351,6 +419,11 @@ function renderManualMappingSections(payload) {
     const empty = document.createElement("p");
     empty.className = "mapping-empty";
     empty.textContent = "No unmatched teams match this filter.";
+    unmatchedTeamsContainer.appendChild(empty);
+  } else if (!visibleUnmatchedTeams.length) {
+    const empty = document.createElement("p");
+    empty.className = "mapping-empty";
+    empty.textContent = "No unmatched teams available to render.";
     unmatchedTeamsContainer.appendChild(empty);
   } else {
     const table = document.createElement("table");
@@ -371,26 +444,22 @@ function renderManualMappingSections(payload) {
     `;
     const tbody = table.querySelector("tbody");
 
-    for (const row of filteredUnmatchedTeams) {
+    for (const row of visibleUnmatchedTeams) {
       const tr = document.createElement("tr");
       const rawName = String(row.raw_name || "");
-      const existing = teamMappings.find((m) => String(m.raw_name || "") === rawName);
-      const rowOptions = [...availableSofaTeams];
+      const existing = teamMappingsByRawName.get(rawName);
       const existingSofaName = String(existing?.sofa_name || "").trim();
-      if (existingSofaName && !rowOptions.includes(existingSofaName)) {
-        rowOptions.unshift(existingSofaName);
-      }
-      const uniqueRowOptions = [];
-      const seenOptions = new Set();
-      for (const team of rowOptions) {
-        const normalized = String(team || "").trim();
-        if (!normalized) continue;
-        const key = normalized.toLowerCase();
-        if (seenOptions.has(key)) continue;
-        seenOptions.add(key);
-        uniqueRowOptions.push(normalized);
-      }
-      const rowOptionLookup = new Map(uniqueRowOptions.map((team) => [team.toLowerCase(), team]));
+      const existingSofaNameLower = existingSofaName.toLowerCase();
+      const resolveSofaTeam = (inputValue) => {
+        const normalized = String(inputValue || "").trim();
+        if (!normalized) return "";
+        const fromAvailable = availableSofaTeamLookup.get(normalized.toLowerCase());
+        if (fromAvailable) return fromAvailable;
+        if (existingSofaName && normalized.toLowerCase() === existingSofaNameLower) {
+          return existingSofaName;
+        }
+        return "";
+      };
       tr.innerHTML = `
         <td>${escapeHtml(String(row.event_name || "-"))}</td>
         <td>${escapeHtml(String(row.competition || "-"))}</td>
@@ -410,9 +479,13 @@ function renderManualMappingSections(payload) {
       const renderDropdownOptions = (query = "") => {
         if (!dropdown) return;
         const q = String(query || "").trim().toLowerCase();
-        const options = !q
-          ? uniqueRowOptions
-          : uniqueRowOptions.filter((team) => team.toLowerCase().includes(q));
+        const baseOptions = !q
+          ? availableSofaTeams
+          : availableSofaTeams.filter((team) => team.toLowerCase().includes(q));
+        const existingMatches = existingSofaName && (!q || existingSofaNameLower.includes(q));
+        const options = existingMatches && !baseOptions.some((team) => team.toLowerCase() === existingSofaNameLower)
+          ? [existingSofaName, ...baseOptions]
+          : baseOptions;
         if (!options.length) {
           dropdown.innerHTML = `<div class="mapping-team-option-empty">No matching teams</div>`;
           return;
@@ -465,7 +538,7 @@ function renderManualMappingSections(payload) {
       if (saveBtn && input) {
         saveBtn.addEventListener("click", async () => {
           const inputValue = String(input.value || "").trim();
-          const sofaName = rowOptionLookup.get(inputValue.toLowerCase()) || "";
+          const sofaName = resolveSofaTeam(inputValue);
           if (!sofaName) {
             mappingStatus.textContent = "Pick a SofaScore team from the dropdown suggestions before saving.";
             return;
@@ -476,12 +549,28 @@ function renderManualMappingSections(payload) {
       tbody.appendChild(tr);
     }
     unmatchedTeamsContainer.appendChild(table);
+    appendMappingLimitNotice(
+      unmatchedTeamsContainer,
+      visibleUnmatchedTeams.length,
+      filteredUnmatchedTeams.length,
+      "unmatched teams"
+    );
   }
 
   savedMappingsContainer.innerHTML = "";
   if (!teamMappings.length) {
     savedMappingsContainer.innerHTML = `<p class="mapping-empty">No mappings available yet.</p>`;
   } else {
+    const savedQuery = teamMappingSearchSavedTeams.trim().toLowerCase();
+    const filteredTeamMappings = !savedQuery
+      ? teamMappings
+      : teamMappings.filter((row) => {
+          const raw = String(row?.raw_name || "").toLowerCase();
+          const sofa = String(row?.sofa_name || "").toLowerCase();
+          return raw.includes(savedQuery) || sofa.includes(savedQuery);
+        });
+    const visibleTeamMappings = filteredTeamMappings.slice(0, MAPPING_SAVED_TEAM_RENDER_LIMIT);
+
     const savedSearchControls = document.createElement("div");
     savedSearchControls.className = "mapping-search-row";
     savedSearchControls.innerHTML = `
@@ -497,98 +586,118 @@ function renderManualMappingSections(payload) {
       savedSearchInput.value = teamMappingSearchSavedTeams;
       savedSearchInput.addEventListener("input", () => {
         teamMappingSearchSavedTeams = String(savedSearchInput.value || "");
-        const query = teamMappingSearchSavedTeams.trim().toLowerCase();
-        const rows = savedMappingsContainer.querySelectorAll("table.mapping-table tbody tr");
-        for (const row of rows) {
-          const betfairTeam = String(row.getAttribute("data-betfair-team") || "").toLowerCase();
-          const sofaTeam = String(row.getAttribute("data-sofa-team") || "").toLowerCase();
-          const show = !query || betfairTeam.includes(query) || sofaTeam.includes(query);
-          row.classList.toggle("hidden", !show);
-        }
+        rerenderManualMappingsPreserveSavedSearchFocus(
+          savedSearchInput.selectionStart,
+          savedSearchInput.selectionEnd
+        );
       });
     }
     savedMappingsContainer.appendChild(savedSearchControls);
 
-    const table = document.createElement("table");
-    table.className = "mapping-table";
-    table.innerHTML = `
-      <thead>
-        <tr>
-          <th>Betfair Team</th>
-          <th>SofaScore Team</th>
-          <th>Type</th>
-          <th>Action</th>
-        </tr>
-      </thead>
-      <tbody></tbody>
-    `;
-    const tbody = table.querySelector("tbody");
-    for (const row of teamMappings) {
-      const tr = document.createElement("tr");
-      const rawName = String(row.raw_name || "");
-      const sofaName = String(row.sofa_name || "");
-      tr.setAttribute("data-betfair-team", rawName);
-      tr.setAttribute("data-sofa-team", sofaName);
-      const isManual = row?.is_manual !== false;
-      const method = String(row.match_method || "").trim().toLowerCase();
-      const methodLabel = method ? `${method.charAt(0).toUpperCase()}${method.slice(1)}` : "Auto";
-      const typeLabel = isManual ? "Manual" : `Auto (${methodLabel})`;
-      const rowOptions = [...sofaTeams];
-      if (sofaName && !rowOptions.includes(sofaName)) {
-        rowOptions.unshift(sofaName);
-      }
-      const optionsHtml = rowOptions
-        .map((teamName) => `<option value="${escapeHtml(teamName)}">${escapeHtml(teamName)}</option>`)
+    if (!filteredTeamMappings.length) {
+      const empty = document.createElement("p");
+      empty.className = "mapping-empty";
+      empty.textContent = "No saved mappings match this filter.";
+      savedMappingsContainer.appendChild(empty);
+    } else if (!visibleTeamMappings.length) {
+      const empty = document.createElement("p");
+      empty.className = "mapping-empty";
+      empty.textContent = "No saved mappings available to render.";
+      savedMappingsContainer.appendChild(empty);
+    } else {
+      const teamDatalistId = "mappingSofaTeamOptions";
+      const teamDatalist = document.createElement("datalist");
+      teamDatalist.id = teamDatalistId;
+      teamDatalist.innerHTML = normalizedSofaTeams
+        .map((teamName) => `<option value="${escapeHtml(teamName)}"></option>`)
         .join("");
-      const actionHtml = isManual
-        ? `
-            <button type="button" class="mapping-save-btn">Save</button>
-            <button type="button" class="mapping-delete-btn">Delete</button>
-          `
-        : `<button type="button" class="mapping-save-btn">Override</button>`;
-      tr.innerHTML = `
-        <td>${escapeHtml(rawName)}</td>
-        <td>
-          <select class="mapping-select">
-            ${optionsHtml}
-          </select>
-        </td>
-        <td>${escapeHtml(typeLabel)}</td>
-        <td>${actionHtml}</td>
+      savedMappingsContainer.appendChild(teamDatalist);
+
+      const table = document.createElement("table");
+      table.className = "mapping-table";
+      table.innerHTML = `
+        <thead>
+          <tr>
+            <th>Betfair Team</th>
+            <th>SofaScore Team</th>
+            <th>Type</th>
+            <th>Action</th>
+          </tr>
+        </thead>
+        <tbody></tbody>
       `;
-      const select = tr.querySelector(".mapping-select");
-      if (select && sofaName) {
-        select.value = sofaName;
+      const tbody = table.querySelector("tbody");
+      for (const row of visibleTeamMappings) {
+        const tr = document.createElement("tr");
+        const rawName = String(row.raw_name || "");
+        const sofaName = String(row.sofa_name || "");
+        const sofaNameLower = sofaName.toLowerCase();
+        const isManual = row?.is_manual !== false;
+        const method = String(row.match_method || "").trim().toLowerCase();
+        const methodLabel = method ? `${method.charAt(0).toUpperCase()}${method.slice(1)}` : "Auto";
+        const typeLabel = isManual ? "Manual" : `Auto (${methodLabel})`;
+        const actionHtml = isManual
+          ? `
+              <button type="button" class="mapping-save-btn">Save</button>
+              <button type="button" class="mapping-delete-btn">Delete</button>
+            `
+          : `<button type="button" class="mapping-save-btn">Override</button>`;
+        tr.innerHTML = `
+          <td>${escapeHtml(rawName)}</td>
+          <td>
+            <input type="text" class="mapping-team-input" list="${teamDatalistId}" value="${escapeHtml(sofaName)}" />
+          </td>
+          <td>${escapeHtml(typeLabel)}</td>
+          <td>${actionHtml}</td>
+        `;
+        const teamInput = tr.querySelector(".mapping-team-input");
+        const saveBtn = tr.querySelector(".mapping-save-btn");
+        if (saveBtn && teamInput) {
+          saveBtn.addEventListener("click", async () => {
+            const selectedRaw = String(teamInput.value || "").trim();
+            const selectedLower = selectedRaw.toLowerCase();
+            const selectedSofaName = sofaTeamLookup.get(selectedLower)
+              || (selectedLower && selectedLower === sofaNameLower ? sofaName : "");
+            if (!selectedSofaName) {
+              mappingStatus.textContent = "Select a valid SofaScore team before saving.";
+              return;
+            }
+            await upsertManualTeamMapping(rawName, selectedSofaName);
+          });
+        }
+        const deleteBtn = tr.querySelector(".mapping-delete-btn");
+        if (deleteBtn && isManual) {
+          deleteBtn.addEventListener("click", async () => {
+            await deleteManualTeamMapping(rawName);
+          });
+        }
+        tbody.appendChild(tr);
       }
-      const saveBtn = tr.querySelector(".mapping-save-btn");
-      if (saveBtn && select) {
-        saveBtn.addEventListener("click", async () => {
-          const selectedSofaName = String(select.value || "").trim();
-          if (!selectedSofaName) {
-            mappingStatus.textContent = "Select a SofaScore team before saving.";
-            return;
-          }
-          await upsertManualTeamMapping(rawName, selectedSofaName);
-        });
-      }
-      const deleteBtn = tr.querySelector(".mapping-delete-btn");
-      if (deleteBtn && isManual) {
-        deleteBtn.addEventListener("click", async () => {
-          await deleteManualTeamMapping(rawName);
-        });
-      }
-      tbody.appendChild(tr);
-    }
-    savedMappingsContainer.appendChild(table);
-    if (savedSearchInput && teamMappingSearchSavedTeams.trim()) {
-      savedSearchInput.dispatchEvent(new Event("input"));
+      savedMappingsContainer.appendChild(table);
+      appendMappingLimitNotice(
+        savedMappingsContainer,
+        visibleTeamMappings.length,
+        filteredTeamMappings.length,
+        "saved team mappings"
+      );
     }
   }
 
   unmatchedCompetitionsContainer.innerHTML = "";
+  const visibleUnmatchedCompetitions = unmatchedCompetitions.slice(0, MAPPING_UNMATCHED_COMPETITION_RENDER_LIMIT);
   if (!unmatchedCompetitions.length) {
     unmatchedCompetitionsContainer.innerHTML = `<p class="mapping-empty">No unmatched competitions in current games.</p>`;
+  } else if (!visibleUnmatchedCompetitions.length) {
+    unmatchedCompetitionsContainer.innerHTML = `<p class="mapping-empty">No unmatched competitions available to render.</p>`;
   } else {
+    const competitionDatalistId = "mappingSofaCompetitionOptions";
+    const competitionDatalist = document.createElement("datalist");
+    competitionDatalist.id = competitionDatalistId;
+    competitionDatalist.innerHTML = availableSofaCompetitions
+      .map((competition) => `<option value="${escapeHtml(competition)}"></option>`)
+      .join("");
+    unmatchedCompetitionsContainer.appendChild(competitionDatalist);
+
     const table = document.createElement("table");
     table.className = "mapping-table";
     table.innerHTML = `
@@ -604,37 +713,35 @@ function renderManualMappingSections(payload) {
       <tbody></tbody>
     `;
     const tbody = table.querySelector("tbody");
-    for (const row of unmatchedCompetitions) {
+    for (const row of visibleUnmatchedCompetitions) {
       const tr = document.createElement("tr");
       const rawName = String(row.raw_name || "");
-      const existing = competitionMappings.find((m) => String(m.raw_name || "") === rawName);
-      const rowOptions = [...availableSofaCompetitions];
+      const existing = competitionMappingsByRawName.get(rawName);
       const existingSofaName = String(existing?.sofa_name || "").trim();
-      if (existingSofaName && !rowOptions.includes(existingSofaName)) {
-        rowOptions.unshift(existingSofaName);
-      }
-      const optionsHtml =
-        `<option value="">Select competition...</option>` +
-        rowOptions.map((competition) => `<option value="${escapeHtml(competition)}">${escapeHtml(competition)}</option>`).join("");
+      const existingSofaNameLower = existingSofaName.toLowerCase();
       tr.innerHTML = `
         <td>${escapeHtml(rawName)}</td>
         <td>${escapeHtml(String(row.games_count ?? "-"))}</td>
         <td>${escapeHtml(String(row.next_kickoff || "-"))}</td>
         <td>
-          <select class="mapping-select">
-            ${optionsHtml}
-          </select>
+          <input
+            type="text"
+            class="mapping-team-input"
+            list="${competitionDatalistId}"
+            value="${escapeHtml(existingSofaName)}"
+            placeholder="Type competition..."
+          />
         </td>
         <td><button type="button" class="mapping-save-btn">Save</button></td>
       `;
-      const select = tr.querySelector(".mapping-select");
-      if (select && existing?.sofa_name) {
-        select.value = String(existing.sofa_name);
-      }
+      const input = tr.querySelector(".mapping-team-input");
       const saveBtn = tr.querySelector(".mapping-save-btn");
-      if (saveBtn && select) {
+      if (saveBtn && input) {
         saveBtn.addEventListener("click", async () => {
-          const sofaName = String(select.value || "").trim();
+          const inputValue = String(input.value || "").trim();
+          const inputValueLower = inputValue.toLowerCase();
+          const sofaName = availableSofaCompetitionLookup.get(inputValueLower)
+            || (inputValueLower && inputValueLower === existingSofaNameLower ? existingSofaName : "");
           if (!sofaName) {
             mappingStatus.textContent = "Select a SofaScore competition before saving.";
             return;
@@ -645,12 +752,19 @@ function renderManualMappingSections(payload) {
       tbody.appendChild(tr);
     }
     unmatchedCompetitionsContainer.appendChild(table);
+    appendMappingLimitNotice(
+      unmatchedCompetitionsContainer,
+      visibleUnmatchedCompetitions.length,
+      unmatchedCompetitions.length,
+      "unmatched competitions"
+    );
   }
 
   savedCompetitionMappingsContainer.innerHTML = "";
   if (!competitionMappings.length) {
     savedCompetitionMappingsContainer.innerHTML = `<p class="mapping-empty">No competition mappings available yet.</p>`;
   } else {
+    const visibleCompetitionMappings = competitionMappings.slice(0, MAPPING_SAVED_COMPETITION_RENDER_LIMIT);
     const table = document.createElement("table");
     table.className = "mapping-table";
     table.innerHTML = `
@@ -665,7 +779,7 @@ function renderManualMappingSections(payload) {
       <tbody></tbody>
     `;
     const tbody = table.querySelector("tbody");
-    for (const row of competitionMappings) {
+    for (const row of visibleCompetitionMappings) {
       const tr = document.createElement("tr");
       const rawName = String(row.raw_name || "");
       const isManual = row?.is_manual !== false;
@@ -690,6 +804,12 @@ function renderManualMappingSections(payload) {
       tbody.appendChild(tr);
     }
     savedCompetitionMappingsContainer.appendChild(table);
+    appendMappingLimitNotice(
+      savedCompetitionMappingsContainer,
+      visibleCompetitionMappings.length,
+      competitionMappings.length,
+      "saved competition mappings"
+    );
   }
 }
 
@@ -1515,6 +1635,10 @@ function buildGamestateTableHtml(homeRows, awayRows, homeLabel, awayLabel, sampl
     if (!Number.isFinite(total) || !Number.isFinite(minutes) || minutes <= 0) return "-";
     return formatMetricValue((total / minutes) * factor, 2);
   };
+  const formatMinutesPerStat = (total, minutes) => {
+    if (!Number.isFinite(total) || !Number.isFinite(minutes) || total <= 0 || minutes <= 0) return "-";
+    return formatMetricValue(minutes / total, 2);
+  };
 
   const renderTeamTable = (entry) => `
     <section class="recent-team-block">
@@ -1561,7 +1685,7 @@ function buildGamestateTableHtml(homeRows, awayRows, homeLabel, awayLabel, sampl
               <th>State</th>
               <th>Total</th>
               <th>Per 90</th>
-              <th>Per 10</th>
+              <th>Mins/Stat</th>
             </tr>
           </thead>
           <tbody>
@@ -1579,7 +1703,7 @@ function buildGamestateTableHtml(homeRows, awayRows, homeLabel, awayLabel, sampl
                         <td>${escapeHtml(state.label)}</td>
                         <td>${formatMetricValue(total, 0)}</td>
                         <td>${formatRate(total, minutes, 90)}</td>
-                        <td>${formatRate(total, minutes, 10)}</td>
+                        <td>${formatMinutesPerStat(total, minutes)}</td>
                       </tr>
                     `;
                   })
@@ -2891,6 +3015,50 @@ function getRankingSortPnl(row) {
   return Number.isFinite(pnlNum) ? pnlNum : Number.NEGATIVE_INFINITY;
 }
 
+function getRankingSortPnlAgainst(row) {
+  const venueKey = teamHcRankingsVenueMode === "home" || teamHcRankingsVenueMode === "away"
+    ? teamHcRankingsVenueMode
+    : "overall";
+  const pnlRaw = row && typeof row === "object" && row.pnl_against && typeof row.pnl_against === "object"
+    ? row.pnl_against[venueKey]
+    : null;
+  const pnlNum = Number(pnlRaw);
+  return Number.isFinite(pnlNum) ? pnlNum : Number.NEGATIVE_INFINITY;
+}
+
+function getRankingPnlAgainst(row, venueKey) {
+  const pnlRaw = row && typeof row === "object" && row.pnl_against && typeof row.pnl_against === "object"
+    ? row.pnl_against[venueKey]
+    : null;
+  const pnlNum = Number(pnlRaw);
+  return Number.isFinite(pnlNum) ? pnlNum : null;
+}
+
+function getRankingGamesPlayed(row, venueKey) {
+  const raw = row && typeof row === "object" && row.games_played && typeof row.games_played === "object"
+    ? row.games_played[venueKey]
+    : null;
+  const value = Number(raw);
+  return Number.isFinite(value) ? Math.max(0, Math.trunc(value)) : 0;
+}
+
+function getRankingGamesWithHandicap(row, venueKey) {
+  const fromPayload = row && typeof row === "object" && row.games_with_handicap && typeof row.games_with_handicap === "object"
+    ? row.games_with_handicap[venueKey]
+    : null;
+  const fromPayloadNum = Number(fromPayload);
+  if (Number.isFinite(fromPayloadNum)) {
+    return Math.max(0, Math.trunc(fromPayloadNum));
+  }
+  const fromResultTotal = row && typeof row === "object"
+    && row.result && typeof row.result === "object"
+    && row.result[venueKey] && typeof row.result[venueKey] === "object"
+    ? row.result[venueKey].total
+    : null;
+  const fromResultTotalNum = Number(fromResultTotal);
+  return Number.isFinite(fromResultTotalNum) ? Math.max(0, Math.trunc(fromResultTotalNum)) : 0;
+}
+
 function setSelectedTeamHcRankingsLeague(competitionName) {
   const next = String(competitionName || "").trim();
   selectedTeamHcRankingsLeague = next;
@@ -2974,6 +3142,11 @@ function sortTeamHcRankingRows(rows) {
     if (teamHcRankingsSortMetric === "pnl") {
       const pnlDiff = getRankingSortPnl(b) - getRankingSortPnl(a);
       if (Math.abs(pnlDiff) > 1e-12) return pnlDiff;
+      return String(a?.team || "").localeCompare(String(b?.team || ""));
+    }
+    if (teamHcRankingsSortMetric === "pnl_against") {
+      const pnlAgainstDiff = getRankingSortPnlAgainst(b) - getRankingSortPnlAgainst(a);
+      if (Math.abs(pnlAgainstDiff) > 1e-12) return pnlAgainstDiff;
       return String(a?.team || "").localeCompare(String(b?.team || ""));
     }
     const aCounts = getRankingSortCounts(a);
@@ -3080,6 +3253,11 @@ function renderTeamHcRankings() {
     ? teamHcRankingsVenueMode
     : "overall";
   const venueLabel = venueKey === "overall" ? "General" : (venueKey === "home" ? "Home" : "Away");
+  const showGamesMissingColumn = sortedRows.some((row) => {
+    const gamesPlayed = getRankingGamesPlayed(row, venueKey);
+    const gamesWithHandicap = getRankingGamesWithHandicap(row, venueKey);
+    return gamesWithHandicap !== gamesPlayed;
+  });
 
   const table = document.createElement("table");
   table.className = "games-table recent-lines-table";
@@ -3088,7 +3266,7 @@ function renderTeamHcRankings() {
       <tr>
         <th>#</th>
         <th>Team</th>
-        <th>Tier</th>
+        <th>Games Played (${venueLabel})</th>
         <th>
           <button
             type="button"
@@ -3113,9 +3291,19 @@ function renderTeamHcRankings() {
             class="team-hc-sort-head-btn ${teamHcRankingsSortMetric === "pnl" ? "active" : ""}"
             data-rank-sort="pnl"
           >
-            PnL (${venueLabel})
+            PnL (For)
           </button>
         </th>
+        <th>
+          <button
+            type="button"
+            class="team-hc-sort-head-btn ${teamHcRankingsSortMetric === "pnl_against" ? "active" : ""}"
+            data-rank-sort="pnl_against"
+          >
+            PnL (Against)
+          </button>
+        </th>
+        ${showGamesMissingColumn ? "<th>Games Missing</th>" : ""}
       </tr>
     </thead>
     <tbody></tbody>
@@ -3127,13 +3315,19 @@ function renderTeamHcRankings() {
     if (tierClass) tr.classList.add(tierClass);
     const teamToken = encodeURIComponent(String(row?.team || ""));
     const leagueToken = encodeURIComponent(String(row?.competition || ""));
+    const gamesPlayed = getRankingGamesPlayed(row, venueKey);
+    const gamesWithHandicap = getRankingGamesWithHandicap(row, venueKey);
+    const gamesMissing = Math.max(0, gamesPlayed - gamesWithHandicap);
+    const pnlAgainst = getRankingPnlAgainst(row, venueKey);
     tr.innerHTML = `
       <td>${idx + 1}</td>
       <td><button type="button" class="team-hc-rank-team-btn" data-team="${teamToken}" data-league="${leagueToken}">${escapeHtml(String(row?.team || "-"))}</button></td>
-      <td>${escapeHtml(String(row?.tier || "-"))}</td>
+      <td>${gamesPlayed}</td>
       <td class="hcperf-summary-cell">${formatHcPerfSummaryCell(row?.result?.[venueKey])}</td>
       <td class="hcperf-summary-cell">${formatHcPerfSummaryCellBasic(row?.xg?.[venueKey])}</td>
       <td>${formatSignedMetricValue(row?.pnl?.[venueKey], 2)}</td>
+      <td>${formatSignedMetricValue(pnlAgainst, 2)}</td>
+      ${showGamesMissingColumn ? `<td>${gamesMissing}</td>` : ""}
     `;
     const teamBtn = tr.querySelector(".team-hc-rank-team-btn");
     if (teamBtn instanceof HTMLButtonElement) {
@@ -3150,7 +3344,7 @@ function renderTeamHcRankings() {
     if (!(button instanceof HTMLButtonElement)) continue;
     button.addEventListener("click", () => {
       const mode = String(button.dataset.rankSort || "").trim().toLowerCase();
-      const nextMetric = mode === "xg" || mode === "pnl" ? mode : "result";
+      const nextMetric = mode === "xg" || mode === "pnl" || mode === "pnl_against" ? mode : "result";
       if (nextMetric === teamHcRankingsSortMetric) return;
       teamHcRankingsSortMetric = nextMetric;
       if (teamHcRankingsSortSelect instanceof HTMLSelectElement) {
@@ -3847,7 +4041,7 @@ if (teamHcRankingsAwayTabBtn instanceof HTMLButtonElement) {
 if (teamHcRankingsSortSelect instanceof HTMLSelectElement) {
   teamHcRankingsSortSelect.addEventListener("change", () => {
     const mode = String(teamHcRankingsSortSelect.value || "").trim();
-    if (mode === "xg" || mode === "pnl") {
+    if (mode === "xg" || mode === "pnl" || mode === "pnl_against") {
       teamHcRankingsSortMetric = mode;
     } else {
       teamHcRankingsSortMetric = "result";

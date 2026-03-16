@@ -11,6 +11,7 @@ class GameXgdService:
     def __init__(self, state: Any) -> None:
         self.state = state
         self._verbose_timing = False
+        self._betfair_commission_rate = 0.02
 
     def __getattr__(self, name: str) -> Any:
         return getattr(self.state, name)
@@ -138,8 +139,7 @@ class GameXgdService:
             "total": int(counts.get("total", 0) or 0),
         }
 
-    @staticmethod
-    def _result_pnl_from_verdict_and_price(verdict: str | None, price: float | None) -> float:
+    def _result_pnl_from_verdict_and_price(self, verdict: str | None, price: float | None) -> float:
         if not verdict:
             return 0.0
         try:
@@ -148,11 +148,14 @@ class GameXgdService:
             odds = float("nan")
         if not math.isfinite(odds) or odds <= 1.0:
             return 0.0
+        commission = float(getattr(self, "_betfair_commission_rate", 0.0) or 0.0)
+        commission = min(1.0, max(0.0, commission))
+        net_factor = 1.0 - commission
         verdict_text = str(verdict).strip().lower()
         if verdict_text == "win":
-            return odds - 1.0
+            return (odds - 1.0) * net_factor
         if verdict_text == "half_win":
-            return (odds - 1.0) * 0.5
+            return (odds - 1.0) * 0.5 * net_factor
         if verdict_text == "loss":
             return -1.0
         if verdict_text == "half_loss":
@@ -255,7 +258,7 @@ class GameXgdService:
                 "rows": [],
                 "total_leagues": 0,
                 "total_teams": 0,
-                "sort_options": ["result", "xg", "pnl"],
+                "sort_options": ["result", "xg", "pnl", "pnl_against"],
                 "venue_options": ["overall", "home", "away"],
             }
 
@@ -269,6 +272,16 @@ class GameXgdService:
             if team_text not in league_bucket:
                 league_bucket[team_text] = {
                     "team": team_text,
+                    "games_played": {
+                        "home": 0,
+                        "away": 0,
+                        "overall": 0,
+                    },
+                    "games_with_handicap": {
+                        "home": 0,
+                        "away": 0,
+                        "overall": 0,
+                    },
                     "result": {
                         "home": self._empty_hc_rank_counts(),
                         "away": self._empty_hc_rank_counts(),
@@ -280,6 +293,11 @@ class GameXgdService:
                         "overall": self._empty_hc_rank_counts(),
                     },
                     "pnl": {
+                        "home": 0.0,
+                        "away": 0.0,
+                        "overall": 0.0,
+                    },
+                    "pnl_against": {
                         "home": 0.0,
                         "away": 0.0,
                         "overall": 0.0,
@@ -298,6 +316,23 @@ class GameXgdService:
             tier = str(row.get("tier", "")).strip()
             match_id = historical_service._normalize_game_id_value(row.get("match_id"))
             prices = prices_by_match_id.get(match_id, {}) if match_id else {}
+
+            home_bucket = get_team_bucket(competition, home_team)
+            away_bucket = get_team_bucket(competition, away_team)
+
+            home_games_played = home_bucket["games_played"]
+            away_games_played = away_bucket["games_played"]
+            home_games_played["home"] = int(home_games_played.get("home", 0)) + 1
+            home_games_played["overall"] = int(home_games_played.get("overall", 0)) + 1
+            away_games_played["away"] = int(away_games_played.get("away", 0)) + 1
+            away_games_played["overall"] = int(away_games_played.get("overall", 0)) + 1
+
+            if tier:
+                home_tier_counts = home_bucket["tier_counts"]
+                away_tier_counts = away_bucket["tier_counts"]
+                home_tier_counts[tier] = int(home_tier_counts.get(tier, 0)) + 1
+                away_tier_counts[tier] = int(away_tier_counts.get(tier, 0)) + 1
+
             home_handicap = parse_handicap_value((prices or {}).get("mainline"))
             if home_handicap is None:
                 continue
@@ -322,13 +357,12 @@ class GameXgdService:
                 xg_delta_home = (float(home_xg) - float(away_xg)) + home_handicap
                 xg_delta_away = -xg_delta_home
 
-            home_bucket = get_team_bucket(competition, home_team)
-            away_bucket = get_team_bucket(competition, away_team)
-            if tier:
-                home_tier_counts = home_bucket["tier_counts"]
-                away_tier_counts = away_bucket["tier_counts"]
-                home_tier_counts[tier] = int(home_tier_counts.get(tier, 0)) + 1
-                away_tier_counts[tier] = int(away_tier_counts.get(tier, 0)) + 1
+            home_games_with_handicap = home_bucket["games_with_handicap"]
+            away_games_with_handicap = away_bucket["games_with_handicap"]
+            home_games_with_handicap["home"] = int(home_games_with_handicap.get("home", 0)) + 1
+            home_games_with_handicap["overall"] = int(home_games_with_handicap.get("overall", 0)) + 1
+            away_games_with_handicap["away"] = int(away_games_with_handicap.get("away", 0)) + 1
+            away_games_with_handicap["overall"] = int(away_games_with_handicap.get("overall", 0)) + 1
 
             home_result_verdict = self._classify_result_handicap_delta(result_delta_home)
             away_result_verdict = self._classify_result_handicap_delta(result_delta_away)
@@ -342,6 +376,18 @@ class GameXgdService:
             home_bucket["pnl"]["overall"] = float(home_bucket["pnl"].get("overall", 0.0)) + float(home_result_pnl)
             away_bucket["pnl"]["away"] = float(away_bucket["pnl"].get("away", 0.0)) + float(away_result_pnl)
             away_bucket["pnl"]["overall"] = float(away_bucket["pnl"].get("overall", 0.0)) + float(away_result_pnl)
+            home_bucket["pnl_against"]["home"] = (
+                float(home_bucket["pnl_against"].get("home", 0.0)) + float(away_result_pnl)
+            )
+            home_bucket["pnl_against"]["overall"] = (
+                float(home_bucket["pnl_against"].get("overall", 0.0)) + float(away_result_pnl)
+            )
+            away_bucket["pnl_against"]["away"] = (
+                float(away_bucket["pnl_against"].get("away", 0.0)) + float(home_result_pnl)
+            )
+            away_bucket["pnl_against"]["overall"] = (
+                float(away_bucket["pnl_against"].get("overall", 0.0)) + float(home_result_pnl)
+            )
 
             home_xg_verdict = self._classify_xg_handicap_delta(xg_delta_home, push_threshold=0.1)
             away_xg_verdict = self._classify_xg_handicap_delta(xg_delta_away, push_threshold=0.1)
@@ -372,11 +418,29 @@ class GameXgdService:
                 xg_home = self._to_serializable_int_counts(bucket["xg"]["home"])
                 xg_away = self._to_serializable_int_counts(bucket["xg"]["away"])
                 xg_overall = self._to_serializable_int_counts(bucket["xg"]["overall"])
+                games_played = {
+                    "home": int(bucket.get("games_played", {}).get("home", 0) or 0),
+                    "away": int(bucket.get("games_played", {}).get("away", 0) or 0),
+                    "overall": int(bucket.get("games_played", {}).get("overall", 0) or 0),
+                }
+                games_with_handicap = {
+                    "home": int(bucket.get("games_with_handicap", {}).get("home", 0) or 0),
+                    "away": int(bucket.get("games_with_handicap", {}).get("away", 0) or 0),
+                    "overall": int(bucket.get("games_with_handicap", {}).get("overall", 0) or 0),
+                }
+                games_missing = {
+                    "home": max(0, games_played["home"] - games_with_handicap["home"]),
+                    "away": max(0, games_played["away"] - games_with_handicap["away"]),
+                    "overall": max(0, games_played["overall"] - games_with_handicap["overall"]),
+                }
 
                 row_out = {
                     "team": team_name,
                     "competition": competition_name,
                     "tier": tier,
+                    "games_played": games_played,
+                    "games_with_handicap": games_with_handicap,
+                    "games_missing": games_missing,
                     "result": {
                         "home": result_home,
                         "away": result_away,
@@ -400,6 +464,11 @@ class GameXgdService:
                         "away": round(float(bucket.get("pnl", {}).get("away", 0.0) or 0.0), 4),
                         "overall": round(float(bucket.get("pnl", {}).get("overall", 0.0) or 0.0), 4),
                     },
+                    "pnl_against": {
+                        "home": round(float(bucket.get("pnl_against", {}).get("home", 0.0) or 0.0), 4),
+                        "away": round(float(bucket.get("pnl_against", {}).get("away", 0.0) or 0.0), 4),
+                        "overall": round(float(bucket.get("pnl_against", {}).get("overall", 0.0) or 0.0), 4),
+                    },
                 }
                 competition_rows.append(row_out)
                 rows.append(row_out)
@@ -417,7 +486,7 @@ class GameXgdService:
             "rows": rows,
             "total_leagues": len(leagues),
             "total_teams": len(rows),
-            "sort_options": ["result", "xg", "pnl"],
+            "sort_options": ["result", "xg", "pnl", "pnl_against"],
             "venue_options": ["overall", "home", "away"],
         }
 

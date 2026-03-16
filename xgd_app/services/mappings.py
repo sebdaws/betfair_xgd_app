@@ -14,6 +14,9 @@ NormalizeCompetitionKeyFn = Callable[[str], str]
 MapBetfairGamesFn = Callable[..., tuple[list[dict[str, Any]], Any]]
 MatchCompetitionNameFn = Callable[..., tuple[str | None, float | None, str]]
 
+MAX_UNMATCHED_TEAM_ROWS_PAYLOAD = 1200
+MAX_UNMATCHED_COMPETITION_ROWS_PAYLOAD = 600
+
 
 class MappingService:
     """Owns loading, persistence, and listing for manual mappings."""
@@ -297,6 +300,49 @@ class MappingService:
             )
         return out
 
+    def _collapse_unmatched_team_rows(self, rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
+        collapsed: dict[str, dict[str, Any]] = {}
+        for row in rows:
+            raw_name = str(row.get("raw_name", "")).strip()
+            if not raw_name:
+                continue
+            raw_norm = self.normalize_team_name(raw_name) or raw_name.casefold()
+            if not raw_norm:
+                continue
+
+            side = str(row.get("side", "")).strip() or "Any"
+            event_name = str(row.get("event_name", "")).strip()
+            competition = str(row.get("competition", "")).strip()
+            kickoff_raw = str(row.get("kickoff_raw", "")).strip()
+
+            existing = collapsed.get(raw_norm)
+            if existing is None:
+                collapsed[raw_norm] = {
+                    "raw_name": raw_name,
+                    "side": side,
+                    "event_name": event_name,
+                    "competition": competition,
+                    "kickoff_raw": kickoff_raw,
+                    "occurrences": 1,
+                }
+                continue
+
+            existing["occurrences"] = int(existing.get("occurrences", 1)) + 1
+            existing_side = str(existing.get("side", "")).strip() or "Any"
+            if existing_side != side:
+                existing["side"] = "Any"
+
+            current_kickoff = str(existing.get("kickoff_raw", "")).strip()
+            should_replace_sample = False
+            if kickoff_raw and (not current_kickoff or kickoff_raw < current_kickoff):
+                should_replace_sample = True
+            if should_replace_sample:
+                existing["event_name"] = event_name
+                existing["competition"] = competition
+                existing["kickoff_raw"] = kickoff_raw
+
+        return list(collapsed.values())
+
     def list_manual_mappings(self) -> dict[str, Any]:
         return self.list_manual_team_mappings()
 
@@ -534,6 +580,7 @@ class MappingService:
                 and self.normalize_team_name(str(row.get("raw_name", "")).strip()) not in manual_raw_norms
             )
         ]
+        unmatched_rows = self._collapse_unmatched_team_rows(unmatched_rows)
         historical_unmatched_rows = self._load_historical_db_unmatched_team_rows(
             allowed_competitions=selected_betfair_competitions
         )
@@ -564,6 +611,9 @@ class MappingService:
                 str(row.get("raw_name", "")).strip().lower(),
             ),
         )
+        unmatched_total_count = len(unmatched_rows)
+        if unmatched_total_count > MAX_UNMATCHED_TEAM_ROWS_PAYLOAD:
+            unmatched_rows = unmatched_rows[:MAX_UNMATCHED_TEAM_ROWS_PAYLOAD]
 
         competition_manual_norms = {
             self.normalize_competition_key(raw_name)
@@ -686,16 +736,21 @@ class MappingService:
                 str(row.get("raw_name", "")).strip().lower(),
             ),
         )
+        unmatched_competitions_total_count = len(unmatched_competitions)
+        if unmatched_competitions_total_count > MAX_UNMATCHED_COMPETITION_ROWS_PAYLOAD:
+            unmatched_competitions = unmatched_competitions[:MAX_UNMATCHED_COMPETITION_ROWS_PAYLOAD]
 
         return {
             "mappings": mapping_rows,
             "unmatched": unmatched_rows,
+            "unmatched_total": unmatched_total_count,
             "sofa_teams": sofa_teams,
             "sofascore_db_path": str(self.state.sofascore_db_path),
             "manual_count": len(mappings),
             "auto_count": len(auto_mapping_rows),
             "competition_mappings": competition_mapping_rows,
             "unmatched_competitions": unmatched_competitions,
+            "unmatched_competitions_total": unmatched_competitions_total_count,
             "sofa_competitions": sofa_competitions,
             "manual_competition_count": len(competition_mappings),
             "auto_competition_count": len(auto_competition_rows),

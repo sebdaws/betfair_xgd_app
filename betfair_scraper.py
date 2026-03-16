@@ -29,7 +29,7 @@ import urllib.request
 from dataclasses import dataclass
 from typing import Any
 
-IDENTITY_URL = "https://identitysso-cert.betfair.com/api/certlogin"
+IDENTITY_CERT_LOGIN_URL = "https://identitysso-cert.betfair.com/api/certlogin"
 BETTING_API_URL = "https://api.betfair.com/exchange/betting/json-rpc/v1"
 FOOTBALL_EVENT_TYPE_ID = "1"
 DEFAULT_MAIN_LEAGUES = [
@@ -70,16 +70,49 @@ class BetfairClient:
         self.config = config
         self.session_token: str | None = None
 
-    def login(self) -> None:
-        if self.config.session_token:
+    @staticmethod
+    def _is_invalid_session_error(error: Any) -> bool:
+        text = str(error)
+        return (
+            "INVALID_SESSION_INFORMATION" in text
+            or "ANGX-0003" in text
+            or "invalid session" in text.lower()
+        )
+
+    def _has_username_password(self) -> bool:
+        return bool(self.config.username and self.config.password)
+
+    def _has_cert_bundle(self) -> bool:
+        return bool(self.config.cert_file and self.config.key_file)
+
+    def _can_reauthenticate(self) -> bool:
+        return self._has_username_password() and self._has_cert_bundle()
+
+    def login(self, force_reauth: bool = False) -> None:
+        if self.config.session_token and not force_reauth:
             self.session_token = self.config.session_token
             return
 
-        if not self.config.username or not self.config.password:
+        if force_reauth and self.config.session_token and not self._has_cert_bundle():
+            # No cert login path available on this machine; keep using static token.
+            self.session_token = self.config.session_token
+            return
+
+        if not self._has_username_password():
+            if force_reauth:
+                raise RuntimeError(
+                    "Session is invalid/expired and cannot be refreshed automatically because "
+                    "username/password credentials are missing."
+                )
             raise RuntimeError(
-                "No session token provided, and username/password are missing for cert login."
+                "No session token provided, and username/password are missing for Betfair login."
             )
-        if not self.config.cert_file or not self.config.key_file:
+        if not self._has_cert_bundle():
+            if force_reauth:
+                raise RuntimeError(
+                    "Session is invalid/expired and cannot be refreshed automatically because "
+                    "certificate credentials are missing."
+                )
             raise RuntimeError(
                 "No session token provided, and certificate credentials are missing."
             )
@@ -93,7 +126,7 @@ class BetfairClient:
         ).encode("utf-8")
 
         payload = self._post_json(
-            IDENTITY_URL,
+            IDENTITY_CERT_LOGIN_URL,
             headers=headers,
             data=data,
             cert_file=self.config.cert_file,
@@ -131,7 +164,29 @@ class BetfairClient:
             data=json.dumps(body).encode("utf-8"),
         )
 
+        retried_after_reauth = False
+        if "error" in payload and self._is_invalid_session_error(payload["error"]) and self._can_reauthenticate():
+            self.login(force_reauth=True)
+            headers["X-Authentication"] = str(self.session_token or "")
+            payload = self._post_json(
+                BETTING_API_URL,
+                headers=headers,
+                data=json.dumps(body).encode("utf-8"),
+            )
+            retried_after_reauth = True
+
         if "error" in payload:
+            if self._is_invalid_session_error(payload["error"]) and not self._can_reauthenticate():
+                raise RuntimeError(
+                    f"Betfair API error ({method}): {payload['error']}. "
+                    "Session is invalid/expired and cannot be refreshed automatically because "
+                    "certificate credentials are missing. Provide a fresh session token "
+                    "or configure cert login credentials."
+                )
+            if retried_after_reauth:
+                raise RuntimeError(
+                    f"Betfair API error ({method}) after re-authentication retry: {payload['error']}"
+                )
             raise RuntimeError(f"Betfair API error ({method}): {payload['error']}")
 
         return payload.get("result")
