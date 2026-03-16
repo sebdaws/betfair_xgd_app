@@ -986,6 +986,34 @@ main {
   background: #e2e8f0;
 }
 
+.team-hc-rank-team-btn {
+  border: 0;
+  background: transparent;
+  color: #0f766e;
+  font-weight: 700;
+  text-decoration: underline;
+  padding: 0;
+}
+
+.team-hc-rank-team-btn:hover {
+  color: #115e59;
+}
+
+.team-hc-sort-head-btn {
+  border: 0;
+  background: transparent;
+  padding: 0;
+  color: inherit;
+  font: inherit;
+  font-weight: 700;
+  cursor: pointer;
+}
+
+.team-hc-sort-head-btn.active {
+  color: #0f766e;
+  text-decoration: underline;
+}
+
 .recent-empty {
   margin: 0;
   color: #64748b;

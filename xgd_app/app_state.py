@@ -381,6 +381,12 @@ class AppState:
     def get_game_hc_performance(self, market_id: str, verbose: bool = False) -> dict[str, Any]:
         return self.game_xgd_service.get_game_hc_performance(market_id=market_id, verbose=bool(verbose))
 
+    def get_team_hc_rankings(self) -> dict[str, Any]:
+        return self.game_xgd_service.get_team_hc_rankings()
+
+    def get_team_hc_ranking_details(self, team_name: str, competition_name: str | None = None) -> dict[str, Any]:
+        return self.game_xgd_service.get_team_hc_ranking_details(team_name=team_name, competition_name=competition_name)
+
     def _get_historical_game_xgd(self, match_id: int, recent_n: int, venue_recent_n: int) -> dict[str, Any]:
         return self.game_xgd_service._get_historical_game_xgd(match_id=match_id, recent_n=recent_n, venue_recent_n=venue_recent_n)
 

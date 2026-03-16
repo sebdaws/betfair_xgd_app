@@ -12,10 +12,26 @@ const teamSearchInput = document.getElementById("teamSearchInput");
 const tableControls = document.querySelector(".table-controls");
 const gamesTabBtn = document.getElementById("gamesTabBtn");
 const savedGamesTabBtn = document.getElementById("savedGamesTabBtn");
+const teamHcRankingsTabBtn = document.getElementById("teamHcRankingsTabBtn");
 const manualMappingTabBtn = document.getElementById("manualMappingTabBtn");
 const gamesTabPane = document.getElementById("gamesTabPane");
 const savedGamesTabPane = document.getElementById("savedGamesTabPane");
 const savedGamesView = document.getElementById("savedGamesView");
+const teamHcRankingsTabPane = document.getElementById("teamHcRankingsTabPane");
+const teamHcRankingsView = document.getElementById("teamHcRankingsView");
+const teamHcRankingsGeneralTabBtn = document.getElementById("teamHcRankingsGeneralTabBtn");
+const teamHcRankingsHomeTabBtn = document.getElementById("teamHcRankingsHomeTabBtn");
+const teamHcRankingsAwayTabBtn = document.getElementById("teamHcRankingsAwayTabBtn");
+const teamHcRankingsSortSelect = document.getElementById("teamHcRankingsSortSelect");
+const teamHcRankingsLeagueFilter = document.getElementById("teamHcRankingsLeagueFilter");
+const teamHcRankingsLeagueFilterBtn = document.getElementById("teamHcRankingsLeagueFilterBtn");
+const teamHcRankingsLeagueFilterMenu = document.getElementById("teamHcRankingsLeagueFilterMenu");
+const teamHcRankingsRefreshBtn = document.getElementById("teamHcRankingsRefreshBtn");
+const teamHcPerfPanel = document.getElementById("teamHcPerfPanel");
+const teamHcPerfTitle = document.getElementById("teamHcPerfTitle");
+const teamHcPerfMeta = document.getElementById("teamHcPerfMeta");
+const teamHcPerfContent = document.getElementById("teamHcPerfContent");
+const teamHcPerfCloseBtn = document.getElementById("teamHcPerfCloseBtn");
 const manualMappingTabPane = document.getElementById("manualMappingTabPane");
 const mappingRefreshBtn = document.getElementById("mappingRefreshBtn");
 const mappingStatus = document.getElementById("mappingStatus");
@@ -78,11 +94,21 @@ let savedGamesLoading = false;
 let savedGamesErrorText = "";
 let savedGamesCount = 0;
 let savedMarketIds = new Set();
+let teamHcRankingsLeagues = [];
+let teamHcRankingsRows = [];
+let teamHcRankingsLoading = false;
+let teamHcRankingsLoaded = false;
+let teamHcRankingsErrorText = "";
+let teamHcRankingsVenueMode = "overall";
+let teamHcRankingsSortMetric = "result";
+let selectedTeamHcRankingsLeague = "";
+let teamHcRankingsLeagueSearch = "";
 let mappingSubTab = "teams";
 let lastManualMappingPayload = null;
 let teamMappingSearchBetfair = "";
 let teamMappingSearchSavedTeams = "";
 const historicalDayCalcInFlight = new Set();
+let teamHcPerfDetailLoadingKey = "";
 const AUTO_REFRESH_MS = 2 * 60 * 1000;
 
 function escapeHtml(value) {
@@ -111,6 +137,8 @@ function setActiveTab(tabName) {
   const tabRaw = String(tabName || "").trim().toLowerCase();
   if (tabRaw === "saved") {
     activeTab = "saved";
+  } else if (tabRaw === "rankings") {
+    activeTab = "rankings";
   } else if (tabRaw === "mapping") {
     activeTab = "mapping";
   } else {
@@ -118,19 +146,32 @@ function setActiveTab(tabName) {
   }
   const gamesActive = activeTab === "games";
   const savedActive = activeTab === "saved";
+  const rankingsActive = activeTab === "rankings";
   const mappingActive = activeTab === "mapping";
   gamesTabBtn.classList.toggle("active", gamesActive);
   if (savedGamesTabBtn) {
     savedGamesTabBtn.classList.toggle("active", savedActive);
+  }
+  if (teamHcRankingsTabBtn instanceof HTMLButtonElement) {
+    teamHcRankingsTabBtn.classList.toggle("active", rankingsActive);
   }
   manualMappingTabBtn.classList.toggle("active", mappingActive);
   gamesTabPane.classList.toggle("hidden", !gamesActive);
   if (savedGamesTabPane) {
     savedGamesTabPane.classList.toggle("hidden", !savedActive);
   }
+  if (teamHcRankingsTabPane) {
+    teamHcRankingsTabPane.classList.toggle("hidden", !rankingsActive);
+  }
   manualMappingTabPane.classList.toggle("hidden", !mappingActive);
   if (activeTab !== "games") {
     detailsPanel.classList.add("hidden");
+  }
+  if (activeTab !== "rankings" && teamHcPerfPanel) {
+    teamHcPerfPanel.classList.add("hidden");
+  }
+  if (activeTab !== "rankings") {
+    setTeamHcRankingsLeagueFilterOpen(false);
   }
   if (mappingActive) {
     setMappingSubTab(mappingSubTab);
@@ -141,6 +182,9 @@ function setActiveTab(tabName) {
   if (savedActive && !savedGamesLoading) {
     loadSavedGames({ silent: savedGamesLoaded });
   }
+  if (rankingsActive && !teamHcRankingsLoading) {
+    loadTeamHcRankings({ silent: teamHcRankingsLoaded });
+  }
 }
 
 function setMappingSubTab(tabName) {
@@ -150,6 +194,26 @@ function setMappingSubTab(tabName) {
   competitionMappingsSubTabBtn.classList.toggle("active", !teamsActive);
   teamMappingsPane.classList.toggle("hidden", !teamsActive);
   competitionMappingsPane.classList.toggle("hidden", teamsActive);
+}
+
+function setTeamHcRankingsVenueMode(mode) {
+  const modeText = String(mode || "").trim().toLowerCase();
+  if (modeText === "home") {
+    teamHcRankingsVenueMode = "home";
+  } else if (modeText === "away") {
+    teamHcRankingsVenueMode = "away";
+  } else {
+    teamHcRankingsVenueMode = "overall";
+  }
+  if (teamHcRankingsGeneralTabBtn instanceof HTMLButtonElement) {
+    teamHcRankingsGeneralTabBtn.classList.toggle("active", teamHcRankingsVenueMode === "overall");
+  }
+  if (teamHcRankingsHomeTabBtn instanceof HTMLButtonElement) {
+    teamHcRankingsHomeTabBtn.classList.toggle("active", teamHcRankingsVenueMode === "home");
+  }
+  if (teamHcRankingsAwayTabBtn instanceof HTMLButtonElement) {
+    teamHcRankingsAwayTabBtn.classList.toggle("active", teamHcRankingsVenueMode === "away");
+  }
 }
 
 function setGamesMode(mode, reload = true) {
@@ -2461,6 +2525,8 @@ async function loadGames(options = {}) {
     }
     if (activeTab === "mapping") {
       loadManualMappings();
+    } else if (activeTab === "rankings" && teamHcRankingsLoaded) {
+      loadTeamHcRankings({ silent: true });
     } else if (activeTab === "saved" && savedGamesLoaded) {
       loadSavedGames({ silent: true });
     }
@@ -2785,6 +2851,358 @@ function renderSavedGames() {
     block.appendChild(header);
     block.appendChild(table);
     savedGamesView.appendChild(block);
+  }
+}
+
+function getRankingSortCounts(row) {
+  const venueKey = teamHcRankingsVenueMode === "home" || teamHcRankingsVenueMode === "away"
+    ? teamHcRankingsVenueMode
+    : "overall";
+  const metricKey = teamHcRankingsSortMetric === "xg" ? "xg" : "result";
+  const counts = row && typeof row === "object" && row[metricKey] && typeof row[metricKey] === "object"
+    ? row[metricKey][venueKey]
+    : null;
+  if (!counts || typeof counts !== "object") {
+    return { win: -1, push: -1, loss: Number.POSITIVE_INFINITY };
+  }
+  const win = Number(counts.win) || 0;
+  const push = Number(counts.push) || 0;
+  const loss = Number(counts.loss) || 0;
+  if (metricKey === "result") {
+    const halfWin = Number(counts.half_win) || 0;
+    const halfLoss = Number(counts.half_loss) || 0;
+    return {
+      win: win + (0.5 * halfWin),
+      push: push + (0.5 * halfWin) + (0.5 * halfLoss),
+      loss: loss + (0.5 * halfLoss),
+    };
+  }
+  return { win, push, loss };
+}
+
+function getRankingSortPnl(row) {
+  const venueKey = teamHcRankingsVenueMode === "home" || teamHcRankingsVenueMode === "away"
+    ? teamHcRankingsVenueMode
+    : "overall";
+  const pnlRaw = row && typeof row === "object" && row.pnl && typeof row.pnl === "object"
+    ? row.pnl[venueKey]
+    : null;
+  const pnlNum = Number(pnlRaw);
+  return Number.isFinite(pnlNum) ? pnlNum : Number.NEGATIVE_INFINITY;
+}
+
+function setSelectedTeamHcRankingsLeague(competitionName) {
+  const next = String(competitionName || "").trim();
+  selectedTeamHcRankingsLeague = next;
+}
+
+function setTeamHcRankingsLeagueFilterOpen(isOpen) {
+  if (!teamHcRankingsLeagueFilterMenu || !teamHcRankingsLeagueFilterBtn) return;
+  teamHcRankingsLeagueFilterMenu.classList.toggle("hidden", !isOpen);
+  teamHcRankingsLeagueFilterBtn.setAttribute("aria-expanded", isOpen ? "true" : "false");
+}
+
+function updateTeamHcRankingsLeagueFilterButtonLabel() {
+  if (!teamHcRankingsLeagueFilterBtn) return;
+  const selectedText = String(selectedTeamHcRankingsLeague || "").trim();
+  teamHcRankingsLeagueFilterBtn.textContent = selectedText || "Select League";
+}
+
+function updateTeamHcRankingsLeagueFilterMenu() {
+  if (!teamHcRankingsLeagueFilterMenu) return;
+  teamHcRankingsLeagueFilterMenu.innerHTML = "";
+  const leagueNames = (Array.isArray(teamHcRankingsLeagues) ? teamHcRankingsLeagues : [])
+    .map((row) => String(row?.competition || "").trim())
+    .filter((name) => !!name);
+  if (!leagueNames.length) {
+    const empty = document.createElement("p");
+    empty.className = "league-filter-empty";
+    empty.textContent = "No leagues available.";
+    teamHcRankingsLeagueFilterMenu.appendChild(empty);
+    return;
+  }
+
+  const searchWrap = document.createElement("div");
+  searchWrap.className = "league-filter-search";
+  const searchInput = document.createElement("input");
+  searchInput.type = "search";
+  searchInput.className = "league-filter-search-input";
+  searchInput.placeholder = "Search leagues...";
+  searchInput.value = teamHcRankingsLeagueSearch;
+  searchInput.addEventListener("input", () => {
+    teamHcRankingsLeagueSearch = String(searchInput.value || "");
+    updateTeamHcRankingsLeagueFilterMenu();
+    const nextInput = teamHcRankingsLeagueFilterMenu.querySelector(".league-filter-search-input");
+    if (nextInput instanceof HTMLInputElement) {
+      nextInput.focus();
+    }
+  });
+  searchWrap.appendChild(searchInput);
+  teamHcRankingsLeagueFilterMenu.appendChild(searchWrap);
+
+  const query = teamHcRankingsLeagueSearch.trim().toLowerCase();
+  const visibleLeagues = !query
+    ? leagueNames
+    : leagueNames.filter((league) => league.toLowerCase().includes(query));
+  if (!visibleLeagues.length) {
+    const empty = document.createElement("p");
+    empty.className = "league-filter-empty";
+    empty.textContent = "No leagues match search.";
+    teamHcRankingsLeagueFilterMenu.appendChild(empty);
+    return;
+  }
+
+  for (const leagueName of visibleLeagues) {
+    const row = document.createElement("label");
+    row.className = "league-option";
+    const input = document.createElement("input");
+    input.type = "radio";
+    input.name = "teamHcRankingsLeague";
+    input.value = leagueName;
+    input.checked = leagueName === selectedTeamHcRankingsLeague;
+    const text = document.createElement("span");
+    text.textContent = leagueName;
+    row.appendChild(input);
+    row.appendChild(text);
+    teamHcRankingsLeagueFilterMenu.appendChild(row);
+  }
+}
+
+function sortTeamHcRankingRows(rows) {
+  const safeRows = Array.isArray(rows) ? [...rows] : [];
+  safeRows.sort((a, b) => {
+    if (teamHcRankingsSortMetric === "pnl") {
+      const pnlDiff = getRankingSortPnl(b) - getRankingSortPnl(a);
+      if (Math.abs(pnlDiff) > 1e-12) return pnlDiff;
+      return String(a?.team || "").localeCompare(String(b?.team || ""));
+    }
+    const aCounts = getRankingSortCounts(a);
+    const bCounts = getRankingSortCounts(b);
+    const winDiff = bCounts.win - aCounts.win;
+    if (Math.abs(winDiff) > 1e-12) return winDiff;
+    const pushDiff = bCounts.push - aCounts.push;
+    if (Math.abs(pushDiff) > 1e-12) return pushDiff;
+    const lossDiff = aCounts.loss - bCounts.loss;
+    if (Math.abs(lossDiff) > 1e-12) return lossDiff;
+    return String(a?.team || "").localeCompare(String(b?.team || ""));
+  });
+  return safeRows;
+}
+
+function closeTeamHcPerfPanel() {
+  if (teamHcPerfPanel) {
+    teamHcPerfPanel.classList.add("hidden");
+  }
+}
+
+async function loadTeamHcRankingTeamDetails(teamName, competitionName) {
+  if (!teamHcPerfPanel || !teamHcPerfContent || !teamHcPerfTitle || !teamHcPerfMeta) return;
+  const teamText = String(teamName || "").trim();
+  const competitionText = String(competitionName || "").trim();
+  if (!teamText || !competitionText) return;
+  const requestKey = `${competitionText}::${teamText}`;
+  teamHcPerfDetailLoadingKey = requestKey;
+
+  teamHcPerfTitle.textContent = `${teamText} - HC Perf`;
+  teamHcPerfMeta.textContent = `${competitionText} | Loading...`;
+  teamHcPerfContent.innerHTML = `
+    <div class="hcperf-loading">
+      <span class="hcperf-loading-dot" aria-hidden="true"></span>
+      <span>Loading team handicap performance...</span>
+    </div>
+  `;
+  teamHcPerfPanel.classList.remove("hidden");
+
+  try {
+    const query = new URLSearchParams();
+    query.set("team", teamText);
+    query.set("competition", competitionText);
+    const res = await fetch(`/api/team-hc-rankings/details?${query.toString()}`);
+    const payload = await parseApiResponse(res);
+    if (!res.ok) throw new Error(payload.error || "Failed to load team handicap performance");
+    if (teamHcPerfDetailLoadingKey !== requestKey) return;
+
+    const rows = Array.isArray(payload?.rows) ? payload.rows : [];
+    const homeRows = rows.filter((row) => String(row?.venue || "").trim().toLowerCase() === "home");
+    const awayRows = rows.filter((row) => String(row?.venue || "").trim().toLowerCase() === "away");
+
+    teamHcPerfTitle.textContent = `${teamText} - HC Perf`;
+    teamHcPerfMeta.textContent = `${competitionText} | ${rows.length} games`;
+    if (!rows.length) {
+      teamHcPerfContent.innerHTML = "<p>No games found for this team in this league.</p>";
+      return;
+    }
+
+    const summaryHtml = buildHcPerfSummaryTableHtml(teamText, rows);
+    const generalGamesHtml = buildSeasonHandicapPerformanceTableHtml(teamText, rows, {
+      title: `${teamText} - General`,
+      relevantTeam: teamText,
+    });
+    const homeGamesHtml = buildSeasonHandicapPerformanceTableHtml(teamText, homeRows, {
+      title: `${teamText} - Home`,
+      relevantTeam: teamText,
+    });
+    const awayGamesHtml = buildSeasonHandicapPerformanceTableHtml(teamText, awayRows, {
+      title: `${teamText} - Away`,
+      relevantTeam: teamText,
+    });
+    teamHcPerfContent.innerHTML = `${summaryHtml}${generalGamesHtml}${homeGamesHtml}${awayGamesHtml}`;
+  } catch (err) {
+    if (teamHcPerfDetailLoadingKey !== requestKey) return;
+    teamHcPerfMeta.textContent = `${competitionText} | Error`;
+    teamHcPerfContent.innerHTML = `<p>${escapeHtml(String(err.message || err))}</p>`;
+  }
+}
+
+function renderTeamHcRankings() {
+  if (!teamHcRankingsView) return;
+  teamHcRankingsView.innerHTML = "";
+  updateTeamHcRankingsLeagueFilterButtonLabel();
+  updateTeamHcRankingsLeagueFilterMenu();
+  if (teamHcRankingsLoading) {
+    teamHcRankingsView.innerHTML = "<p>Loading HC rankings...</p>";
+    return;
+  }
+  if (teamHcRankingsErrorText) {
+    teamHcRankingsView.innerHTML = `<p>${escapeHtml(teamHcRankingsErrorText)}</p>`;
+    return;
+  }
+  const selectedLeague = teamHcRankingsLeagues.find(
+    (row) => String(row?.competition || "").trim() === selectedTeamHcRankingsLeague
+  );
+  const leagueRows = Array.isArray(selectedLeague?.rows) ? selectedLeague.rows : [];
+  const sortedRows = sortTeamHcRankingRows(leagueRows);
+  if (!sortedRows.length) {
+    teamHcRankingsView.innerHTML = "<p>No ranked teams found for this league.</p>";
+    return;
+  }
+  const venueKey = teamHcRankingsVenueMode === "home" || teamHcRankingsVenueMode === "away"
+    ? teamHcRankingsVenueMode
+    : "overall";
+  const venueLabel = venueKey === "overall" ? "General" : (venueKey === "home" ? "Home" : "Away");
+
+  const table = document.createElement("table");
+  table.className = "games-table recent-lines-table";
+  table.innerHTML = `
+    <thead>
+      <tr>
+        <th>#</th>
+        <th>Team</th>
+        <th>Tier</th>
+        <th>
+          <button
+            type="button"
+            class="team-hc-sort-head-btn ${teamHcRankingsSortMetric === "result" ? "active" : ""}"
+            data-rank-sort="result"
+          >
+            Result (${venueLabel})
+          </button>
+        </th>
+        <th>
+          <button
+            type="button"
+            class="team-hc-sort-head-btn ${teamHcRankingsSortMetric === "xg" ? "active" : ""}"
+            data-rank-sort="xg"
+          >
+            xG (${venueLabel})
+          </button>
+        </th>
+        <th>
+          <button
+            type="button"
+            class="team-hc-sort-head-btn ${teamHcRankingsSortMetric === "pnl" ? "active" : ""}"
+            data-rank-sort="pnl"
+          >
+            PnL (${venueLabel})
+          </button>
+        </th>
+      </tr>
+    </thead>
+    <tbody></tbody>
+  `;
+  const tbody = table.querySelector("tbody");
+  sortedRows.forEach((row, idx) => {
+    const tr = document.createElement("tr");
+    const tierClass = tierRowClass(row?.tier);
+    if (tierClass) tr.classList.add(tierClass);
+    const teamToken = encodeURIComponent(String(row?.team || ""));
+    const leagueToken = encodeURIComponent(String(row?.competition || ""));
+    tr.innerHTML = `
+      <td>${idx + 1}</td>
+      <td><button type="button" class="team-hc-rank-team-btn" data-team="${teamToken}" data-league="${leagueToken}">${escapeHtml(String(row?.team || "-"))}</button></td>
+      <td>${escapeHtml(String(row?.tier || "-"))}</td>
+      <td class="hcperf-summary-cell">${formatHcPerfSummaryCell(row?.result?.[venueKey])}</td>
+      <td class="hcperf-summary-cell">${formatHcPerfSummaryCellBasic(row?.xg?.[venueKey])}</td>
+      <td>${formatSignedMetricValue(row?.pnl?.[venueKey], 2)}</td>
+    `;
+    const teamBtn = tr.querySelector(".team-hc-rank-team-btn");
+    if (teamBtn instanceof HTMLButtonElement) {
+      teamBtn.addEventListener("click", () => {
+        const teamName = decodeURIComponent(String(teamBtn.dataset.team || ""));
+        const leagueName = decodeURIComponent(String(teamBtn.dataset.league || ""));
+        loadTeamHcRankingTeamDetails(teamName, leagueName);
+      });
+    }
+    tbody.appendChild(tr);
+  });
+  const sortHeaderButtons = table.querySelectorAll(".team-hc-sort-head-btn");
+  for (const button of sortHeaderButtons) {
+    if (!(button instanceof HTMLButtonElement)) continue;
+    button.addEventListener("click", () => {
+      const mode = String(button.dataset.rankSort || "").trim().toLowerCase();
+      const nextMetric = mode === "xg" || mode === "pnl" ? mode : "result";
+      if (nextMetric === teamHcRankingsSortMetric) return;
+      teamHcRankingsSortMetric = nextMetric;
+      if (teamHcRankingsSortSelect instanceof HTMLSelectElement) {
+        teamHcRankingsSortSelect.value = teamHcRankingsSortMetric;
+      }
+      renderTeamHcRankings();
+    });
+  }
+  teamHcRankingsView.appendChild(table);
+}
+
+async function loadTeamHcRankings(options = {}) {
+  if (teamHcRankingsLoading) return false;
+  const silent = Boolean(options?.silent);
+  teamHcRankingsLoading = true;
+  if (!silent) {
+    statusText.textContent = "Loading team HC rankings...";
+  }
+  renderTeamHcRankings();
+  try {
+    const res = await fetch("/api/team-hc-rankings");
+    const payload = await parseApiResponse(res);
+    if (!res.ok) throw new Error(payload.error || "Failed to load team HC rankings");
+    teamHcRankingsLeagues = Array.isArray(payload?.leagues) ? payload.leagues : [];
+    teamHcRankingsRows = Array.isArray(payload?.rows) ? payload.rows : [];
+    if (
+      !selectedTeamHcRankingsLeague
+      || !teamHcRankingsLeagues.some((row) => String(row?.competition || "").trim() === selectedTeamHcRankingsLeague)
+    ) {
+      const premierLeague = teamHcRankingsLeagues.find((row) => {
+        const name = String(row?.competition || "").trim().toLowerCase();
+        return name === "premier league" || name.includes("premier league");
+      });
+      const defaultLeague = premierLeague || teamHcRankingsLeagues[0];
+      selectedTeamHcRankingsLeague = String(defaultLeague?.competition || "").trim();
+    }
+    teamHcRankingsLoaded = true;
+    teamHcRankingsErrorText = "";
+    if (activeTab === "rankings" && !silent) {
+      statusText.textContent = `Loaded HC rankings for ${Number(payload?.total_teams) || 0} teams across ${Number(payload?.total_leagues) || 0} leagues`;
+    }
+    renderTeamHcRankings();
+    return true;
+  } catch (err) {
+    teamHcRankingsErrorText = String(err.message || err);
+    if (!silent) {
+      statusText.textContent = teamHcRankingsErrorText;
+    }
+    return false;
+  } finally {
+    teamHcRankingsLoading = false;
+    renderTeamHcRankings();
   }
 }
 
@@ -3384,6 +3802,11 @@ if (savedGamesTabBtn instanceof HTMLButtonElement) {
     setActiveTab("saved");
   });
 }
+if (teamHcRankingsTabBtn instanceof HTMLButtonElement) {
+  teamHcRankingsTabBtn.addEventListener("click", () => {
+    setActiveTab("rankings");
+  });
+}
 manualMappingTabBtn.addEventListener("click", () => {
   setActiveTab("mapping");
   loadManualMappings();
@@ -3403,6 +3826,76 @@ competitionMappingsSubTabBtn.addEventListener("click", () => {
 mappingRefreshBtn.addEventListener("click", () => {
   loadManualMappings();
 });
+if (teamHcRankingsGeneralTabBtn instanceof HTMLButtonElement) {
+  teamHcRankingsGeneralTabBtn.addEventListener("click", () => {
+    setTeamHcRankingsVenueMode("overall");
+    renderTeamHcRankings();
+  });
+}
+if (teamHcRankingsHomeTabBtn instanceof HTMLButtonElement) {
+  teamHcRankingsHomeTabBtn.addEventListener("click", () => {
+    setTeamHcRankingsVenueMode("home");
+    renderTeamHcRankings();
+  });
+}
+if (teamHcRankingsAwayTabBtn instanceof HTMLButtonElement) {
+  teamHcRankingsAwayTabBtn.addEventListener("click", () => {
+    setTeamHcRankingsVenueMode("away");
+    renderTeamHcRankings();
+  });
+}
+if (teamHcRankingsSortSelect instanceof HTMLSelectElement) {
+  teamHcRankingsSortSelect.addEventListener("change", () => {
+    const mode = String(teamHcRankingsSortSelect.value || "").trim();
+    if (mode === "xg" || mode === "pnl") {
+      teamHcRankingsSortMetric = mode;
+    } else {
+      teamHcRankingsSortMetric = "result";
+    }
+    renderTeamHcRankings();
+  });
+}
+if (teamHcRankingsLeagueFilterBtn instanceof HTMLButtonElement) {
+  teamHcRankingsLeagueFilterBtn.addEventListener("click", (event) => {
+    event.stopPropagation();
+    const willOpen = teamHcRankingsLeagueFilterMenu?.classList.contains("hidden");
+    setTeamHcRankingsLeagueFilterOpen(Boolean(willOpen));
+    if (willOpen) {
+      setLeagueFilterOpen(false);
+      setTierFilterOpen(false);
+      window.setTimeout(() => {
+        const searchInput = teamHcRankingsLeagueFilterMenu?.querySelector(".league-filter-search-input");
+        if (searchInput instanceof HTMLInputElement) {
+          searchInput.focus();
+        }
+      }, 0);
+    }
+  });
+}
+if (teamHcRankingsLeagueFilterMenu instanceof HTMLDivElement) {
+  teamHcRankingsLeagueFilterMenu.addEventListener("change", (event) => {
+    const target = event.target;
+    if (!(target instanceof HTMLInputElement) || target.type !== "radio") return;
+    const selectedLeague = String(target.value || "").trim();
+    if (!selectedLeague) return;
+    if (selectedLeague !== selectedTeamHcRankingsLeague) {
+      setSelectedTeamHcRankingsLeague(selectedLeague);
+      closeTeamHcPerfPanel();
+    }
+    setTeamHcRankingsLeagueFilterOpen(false);
+    renderTeamHcRankings();
+  });
+}
+if (teamHcRankingsRefreshBtn instanceof HTMLButtonElement) {
+  teamHcRankingsRefreshBtn.addEventListener("click", () => {
+    loadTeamHcRankings();
+  });
+}
+if (teamHcPerfCloseBtn instanceof HTMLButtonElement) {
+  teamHcPerfCloseBtn.addEventListener("click", () => {
+    closeTeamHcPerfPanel();
+  });
+}
 leagueFilterBtn.addEventListener("click", (event) => {
   event.stopPropagation();
   const willOpen = leagueFilterMenu.classList.contains("hidden");
@@ -3468,11 +3961,15 @@ document.addEventListener("click", (event) => {
   if (!tierFilter.contains(event.target)) {
     setTierFilterOpen(false);
   }
+  if (teamHcRankingsLeagueFilter && !teamHcRankingsLeagueFilter.contains(event.target)) {
+    setTeamHcRankingsLeagueFilterOpen(false);
+  }
 });
 document.addEventListener("keydown", (event) => {
   if (event.key === "Escape") {
     setLeagueFilterOpen(false);
     setTierFilterOpen(false);
+    setTeamHcRankingsLeagueFilterOpen(false);
   }
 });
 sortModeBtn.addEventListener("change", () => {
@@ -3558,6 +4055,10 @@ if (saveGameBtn instanceof HTMLButtonElement) {
 updateSortButtonLabel();
 updateLeagueFilterButtonLabel();
 updateTierFilterButtonLabel();
+if (teamHcRankingsSortSelect instanceof HTMLSelectElement) {
+  teamHcRankingsSortSelect.value = teamHcRankingsSortMetric;
+}
+setTeamHcRankingsVenueMode("overall");
 updateSavedTabLabel();
 updateDetailsSaveButton();
 setMappingSubTab("teams");

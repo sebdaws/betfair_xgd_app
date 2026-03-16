@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import math
 import time
 
 from xgd_app.core import *  # noqa: F401,F403
@@ -47,6 +48,485 @@ class GameXgdService:
         if value < -1e-9:
             return "No Cover"
         return "Push"
+
+    @staticmethod
+    def _empty_hc_rank_counts() -> dict[str, int]:
+        return {"win": 0, "half_win": 0, "half_loss": 0, "loss": 0, "push": 0, "total": 0}
+
+    @staticmethod
+    def _increment_hc_rank_counts(target: dict[str, int], verdict: str | None) -> None:
+        if not isinstance(target, dict):
+            return
+        verdict_text = str(verdict or "").strip().lower()
+        if verdict_text not in {"win", "half_win", "half_loss", "loss", "push"}:
+            return
+        target[verdict_text] = int(target.get(verdict_text, 0)) + 1
+        target["total"] = int(target.get("total", 0)) + 1
+
+    @staticmethod
+    def _classify_result_handicap_delta(delta: float | None) -> str | None:
+        if delta is None:
+            return None
+        try:
+            delta_value = float(delta)
+        except Exception:
+            return None
+        if not math.isfinite(delta_value):
+            return None
+        if abs(delta_value) <= 1e-9:
+            return "push"
+        abs_delta = abs(delta_value)
+        is_half = abs(abs_delta - 0.25) <= 1e-6
+        if delta_value > 0:
+            return "half_win" if is_half else "win"
+        return "half_loss" if is_half else "loss"
+
+    @staticmethod
+    def _classify_xg_handicap_delta(delta: float | None, push_threshold: float = 0.1) -> str | None:
+        if delta is None:
+            return None
+        try:
+            delta_value = float(delta)
+        except Exception:
+            return None
+        if not math.isfinite(delta_value):
+            return None
+        threshold = max(0.0, float(push_threshold))
+        if delta_value > threshold:
+            return "win"
+        if delta_value < -threshold:
+            return "loss"
+        return "push"
+
+    @staticmethod
+    def _result_weighted_counts(counts: dict[str, Any]) -> tuple[float, float, float]:
+        win = float(counts.get("win", 0) or 0)
+        half_win = float(counts.get("half_win", 0) or 0)
+        half_loss = float(counts.get("half_loss", 0) or 0)
+        loss = float(counts.get("loss", 0) or 0)
+        push = float(counts.get("push", 0) or 0)
+        weighted_win = win + (0.5 * half_win)
+        weighted_loss = loss + (0.5 * half_loss)
+        weighted_push = push + (0.5 * half_win) + (0.5 * half_loss)
+        return weighted_win, weighted_loss, weighted_push
+
+    @staticmethod
+    def _score_from_result_counts(counts: dict[str, Any]) -> float:
+        total = float(counts.get("total", 0) or 0)
+        if total <= 0:
+            return 0.0
+        weighted_win, weighted_loss, _ = GameXgdService._result_weighted_counts(counts)
+        return (weighted_win - weighted_loss) / total
+
+    @staticmethod
+    def _score_from_xg_counts(counts: dict[str, Any]) -> float:
+        total = float(counts.get("total", 0) or 0)
+        if total <= 0:
+            return 0.0
+        win = float(counts.get("win", 0) or 0)
+        loss = float(counts.get("loss", 0) or 0)
+        return (win - loss) / total
+
+    @staticmethod
+    def _to_serializable_int_counts(counts: dict[str, Any]) -> dict[str, int]:
+        return {
+            "win": int(counts.get("win", 0) or 0),
+            "half_win": int(counts.get("half_win", 0) or 0),
+            "half_loss": int(counts.get("half_loss", 0) or 0),
+            "loss": int(counts.get("loss", 0) or 0),
+            "push": int(counts.get("push", 0) or 0),
+            "total": int(counts.get("total", 0) or 0),
+        }
+
+    @staticmethod
+    def _result_pnl_from_verdict_and_price(verdict: str | None, price: float | None) -> float:
+        if not verdict:
+            return 0.0
+        try:
+            odds = float(price) if price is not None else float("nan")
+        except Exception:
+            odds = float("nan")
+        if not math.isfinite(odds) or odds <= 1.0:
+            return 0.0
+        verdict_text = str(verdict).strip().lower()
+        if verdict_text == "win":
+            return odds - 1.0
+        if verdict_text == "half_win":
+            return (odds - 1.0) * 0.5
+        if verdict_text == "loss":
+            return -1.0
+        if verdict_text == "half_loss":
+            return -0.5
+        return 0.0
+
+    @staticmethod
+    def _season_id_key(value: Any) -> str:
+        try:
+            if value is None or pd.isna(value):
+                return ""
+        except Exception:
+            pass
+        text = str(value).strip()
+        if not text:
+            return ""
+        try:
+            numeric = float(text)
+        except Exception:
+            return text
+        if math.isfinite(numeric) and abs(numeric - round(numeric)) <= 1e-9:
+            return str(int(round(numeric)))
+        return text
+
+    @staticmethod
+    def _season_start_year(ts: pd.Timestamp) -> int | None:
+        if pd.isna(ts):
+            return None
+        year = int(ts.year)
+        return year if int(ts.month) >= 7 else (year - 1)
+
+    def _filter_rows_for_hc_rankings_current_season(self, rows: pd.DataFrame) -> pd.DataFrame:
+        if not isinstance(rows, pd.DataFrame) or rows.empty:
+            return pd.DataFrame()
+        out = rows.copy()
+        if "date_time" not in out.columns:
+            return out
+
+        out["date_time"] = pd.to_datetime(out["date_time"], errors="coerce", utc=True)
+        out = out[out["date_time"].notna()].copy()
+        if out.empty:
+            return pd.DataFrame()
+
+        if "competition_name" in out.columns:
+            out["_competition"] = out["competition_name"].fillna("").astype(str).str.strip()
+            out["_competition"] = out["_competition"].replace("", "Unknown")
+        else:
+            out["_competition"] = "Unknown"
+
+        if "season_id" in out.columns:
+            out["_season_id_key"] = out["season_id"].map(self._season_id_key)
+        else:
+            out["_season_id_key"] = ""
+        out["_season_start_year"] = out["date_time"].map(self._season_start_year)
+
+        filtered_frames: list[pd.DataFrame] = []
+        for _, comp_rows in out.groupby("_competition", sort=False):
+            rows_with_season_id = comp_rows[comp_rows["_season_id_key"] != ""]
+            if not rows_with_season_id.empty:
+                latest_by_season = rows_with_season_id.groupby("_season_id_key")["date_time"].max()
+                current_season_key = str(latest_by_season.idxmax())
+                keep_mask = comp_rows["_season_id_key"] == current_season_key
+            else:
+                current_start_year = pd.to_numeric(comp_rows["_season_start_year"], errors="coerce").max()
+                keep_mask = comp_rows["_season_start_year"] == current_start_year
+            filtered_frames.append(comp_rows[keep_mask].copy())
+
+        if not filtered_frames:
+            return pd.DataFrame()
+        filtered = pd.concat(filtered_frames, ignore_index=True)
+        return filtered.drop(columns=["_competition", "_season_id_key", "_season_start_year"], errors="ignore")
+
+    def _build_prices_by_match_id_for_home_rows(self, source_rows: pd.DataFrame) -> dict[str, dict[str, str]]:
+        if not isinstance(source_rows, pd.DataFrame) or source_rows.empty:
+            return {}
+        historical_service = self.state.historical_data_service
+        match_ids = source_rows["match_id"].dropna().tolist() if "match_id" in source_rows.columns else []
+        rows_df = historical_service._query_historical_price_rows_for_match_ids(match_ids)
+        entries = historical_service._build_historical_price_entries_from_rows(rows_df)
+        out: dict[str, dict[str, str]] = {}
+        for entry in entries:
+            game_id = historical_service._normalize_game_id_value(entry.get("game_id"))
+            if not game_id:
+                continue
+            prices = dict(entry.get("prices", {})) if isinstance(entry, dict) else {}
+            mainline_text = str(prices.get("mainline", "")).strip()
+            if not mainline_text or mainline_text == "-":
+                continue
+            out[game_id] = prices
+        return out
+
+    def get_team_hc_rankings(self) -> dict[str, Any]:
+        historical_service = self.state.historical_data_service
+        source_rows = self._filter_rows_for_hc_rankings_current_season(
+            historical_service._prepare_historical_home_rows()
+        )
+        if not isinstance(source_rows, pd.DataFrame) or source_rows.empty:
+            return {
+                "leagues": [],
+                "rows": [],
+                "total_leagues": 0,
+                "total_teams": 0,
+                "sort_options": ["result", "xg", "pnl"],
+                "venue_options": ["overall", "home", "away"],
+            }
+
+        prices_by_match_id = self._build_prices_by_match_id_for_home_rows(source_rows)
+        league_team_stats: dict[str, dict[str, dict[str, Any]]] = {}
+
+        def get_team_bucket(competition_name: str, team_name: str) -> dict[str, Any]:
+            competition_text = str(competition_name or "").strip() or "Unknown"
+            team_text = str(team_name or "").strip()
+            league_bucket = league_team_stats.setdefault(competition_text, {})
+            if team_text not in league_bucket:
+                league_bucket[team_text] = {
+                    "team": team_text,
+                    "result": {
+                        "home": self._empty_hc_rank_counts(),
+                        "away": self._empty_hc_rank_counts(),
+                        "overall": self._empty_hc_rank_counts(),
+                    },
+                    "xg": {
+                        "home": self._empty_hc_rank_counts(),
+                        "away": self._empty_hc_rank_counts(),
+                        "overall": self._empty_hc_rank_counts(),
+                    },
+                    "pnl": {
+                        "home": 0.0,
+                        "away": 0.0,
+                        "overall": 0.0,
+                    },
+                    "tier_counts": {},
+                }
+            return league_bucket[team_text]
+
+        for row in source_rows.to_dict(orient="records"):
+            home_team = str(row.get("team", "")).strip()
+            away_team = str(row.get("opponent", "")).strip()
+            if not home_team or not away_team:
+                continue
+
+            competition = str(row.get("competition_name", "")).strip() or "Unknown"
+            tier = str(row.get("tier", "")).strip()
+            match_id = historical_service._normalize_game_id_value(row.get("match_id"))
+            prices = prices_by_match_id.get(match_id, {}) if match_id else {}
+            home_handicap = parse_handicap_value((prices or {}).get("mainline"))
+            if home_handicap is None:
+                continue
+            home_handicap = float(home_handicap)
+            home_price = self._to_float_or_none((prices or {}).get("home_price"))
+            away_price = self._to_float_or_none((prices or {}).get("away_price"))
+
+            home_goals = self._to_float_or_none(row.get("GF"))
+            away_goals = self._to_float_or_none(row.get("GA"))
+            home_xg = self._to_float_or_none(row.get("xG"))
+            away_xg = self._to_float_or_none(row.get("xGA"))
+
+            result_delta_home = None
+            result_delta_away = None
+            if home_goals is not None and away_goals is not None:
+                result_delta_home = (float(home_goals) - float(away_goals)) + home_handicap
+                result_delta_away = -result_delta_home
+
+            xg_delta_home = None
+            xg_delta_away = None
+            if home_xg is not None and away_xg is not None:
+                xg_delta_home = (float(home_xg) - float(away_xg)) + home_handicap
+                xg_delta_away = -xg_delta_home
+
+            home_bucket = get_team_bucket(competition, home_team)
+            away_bucket = get_team_bucket(competition, away_team)
+            if tier:
+                home_tier_counts = home_bucket["tier_counts"]
+                away_tier_counts = away_bucket["tier_counts"]
+                home_tier_counts[tier] = int(home_tier_counts.get(tier, 0)) + 1
+                away_tier_counts[tier] = int(away_tier_counts.get(tier, 0)) + 1
+
+            home_result_verdict = self._classify_result_handicap_delta(result_delta_home)
+            away_result_verdict = self._classify_result_handicap_delta(result_delta_away)
+            self._increment_hc_rank_counts(home_bucket["result"]["home"], home_result_verdict)
+            self._increment_hc_rank_counts(home_bucket["result"]["overall"], home_result_verdict)
+            self._increment_hc_rank_counts(away_bucket["result"]["away"], away_result_verdict)
+            self._increment_hc_rank_counts(away_bucket["result"]["overall"], away_result_verdict)
+            home_result_pnl = self._result_pnl_from_verdict_and_price(home_result_verdict, home_price)
+            away_result_pnl = self._result_pnl_from_verdict_and_price(away_result_verdict, away_price)
+            home_bucket["pnl"]["home"] = float(home_bucket["pnl"].get("home", 0.0)) + float(home_result_pnl)
+            home_bucket["pnl"]["overall"] = float(home_bucket["pnl"].get("overall", 0.0)) + float(home_result_pnl)
+            away_bucket["pnl"]["away"] = float(away_bucket["pnl"].get("away", 0.0)) + float(away_result_pnl)
+            away_bucket["pnl"]["overall"] = float(away_bucket["pnl"].get("overall", 0.0)) + float(away_result_pnl)
+
+            home_xg_verdict = self._classify_xg_handicap_delta(xg_delta_home, push_threshold=0.1)
+            away_xg_verdict = self._classify_xg_handicap_delta(xg_delta_away, push_threshold=0.1)
+            self._increment_hc_rank_counts(home_bucket["xg"]["home"], home_xg_verdict)
+            self._increment_hc_rank_counts(home_bucket["xg"]["overall"], home_xg_verdict)
+            self._increment_hc_rank_counts(away_bucket["xg"]["away"], away_xg_verdict)
+            self._increment_hc_rank_counts(away_bucket["xg"]["overall"], away_xg_verdict)
+
+        leagues: list[dict[str, Any]] = []
+        rows: list[dict[str, Any]] = []
+        for competition_name in sorted(league_team_stats.keys(), key=lambda value: str(value).lower()):
+            competition_bucket = league_team_stats.get(competition_name, {})
+            competition_rows: list[dict[str, Any]] = []
+            for team_name in sorted(competition_bucket.keys(), key=lambda value: str(value).lower()):
+                bucket = competition_bucket.get(team_name, {})
+                if not team_name:
+                    continue
+                tier_counts = bucket.get("tier_counts", {})
+                tier = (
+                    max(tier_counts.items(), key=lambda kv: (int(kv[1]), str(kv[0]).lower()))[0]
+                    if tier_counts
+                    else ""
+                )
+
+                result_home = self._to_serializable_int_counts(bucket["result"]["home"])
+                result_away = self._to_serializable_int_counts(bucket["result"]["away"])
+                result_overall = self._to_serializable_int_counts(bucket["result"]["overall"])
+                xg_home = self._to_serializable_int_counts(bucket["xg"]["home"])
+                xg_away = self._to_serializable_int_counts(bucket["xg"]["away"])
+                xg_overall = self._to_serializable_int_counts(bucket["xg"]["overall"])
+
+                row_out = {
+                    "team": team_name,
+                    "competition": competition_name,
+                    "tier": tier,
+                    "result": {
+                        "home": result_home,
+                        "away": result_away,
+                        "overall": result_overall,
+                    },
+                    "xg": {
+                        "home": xg_home,
+                        "away": xg_away,
+                        "overall": xg_overall,
+                    },
+                    "scores": {
+                        "result_home": self._score_from_result_counts(result_home),
+                        "result_away": self._score_from_result_counts(result_away),
+                        "result_overall": self._score_from_result_counts(result_overall),
+                        "xg_home": self._score_from_xg_counts(xg_home),
+                        "xg_away": self._score_from_xg_counts(xg_away),
+                        "xg_overall": self._score_from_xg_counts(xg_overall),
+                    },
+                    "pnl": {
+                        "home": round(float(bucket.get("pnl", {}).get("home", 0.0) or 0.0), 4),
+                        "away": round(float(bucket.get("pnl", {}).get("away", 0.0) or 0.0), 4),
+                        "overall": round(float(bucket.get("pnl", {}).get("overall", 0.0) or 0.0), 4),
+                    },
+                }
+                competition_rows.append(row_out)
+                rows.append(row_out)
+
+            leagues.append(
+                {
+                    "competition": competition_name,
+                    "rows": competition_rows,
+                    "total_teams": len(competition_rows),
+                }
+            )
+
+        return {
+            "leagues": leagues,
+            "rows": rows,
+            "total_leagues": len(leagues),
+            "total_teams": len(rows),
+            "sort_options": ["result", "xg", "pnl"],
+            "venue_options": ["overall", "home", "away"],
+        }
+
+    def get_team_hc_ranking_details(self, team_name: str, competition_name: str | None = None) -> dict[str, Any]:
+        team_text = str(team_name or "").strip()
+        if not team_text:
+            raise ValueError("team is required")
+
+        competition_text = str(competition_name or "").strip()
+        historical_service = self.state.historical_data_service
+        source_rows = self._filter_rows_for_hc_rankings_current_season(
+            historical_service._prepare_historical_home_rows()
+        )
+        if not isinstance(source_rows, pd.DataFrame) or source_rows.empty:
+            return {"team": team_text, "competition": competition_text, "rows": [], "games_count": 0}
+
+        work = source_rows.copy()
+        if competition_text and "competition_name" in work.columns:
+            comp_col = work["competition_name"].fillna("").astype(str).str.strip()
+            work = work[comp_col == competition_text].copy()
+        if work.empty:
+            return {"team": team_text, "competition": competition_text, "rows": [], "games_count": 0}
+
+        team_col = work["team"].fillna("").astype(str).str.strip() if "team" in work.columns else pd.Series(dtype=str)
+        opp_col = work["opponent"].fillna("").astype(str).str.strip() if "opponent" in work.columns else pd.Series(dtype=str)
+        work = work[(team_col == team_text) | (opp_col == team_text)].copy()
+        if work.empty:
+            return {"team": team_text, "competition": competition_text, "rows": [], "games_count": 0}
+
+        prices_by_match_id = self._build_prices_by_match_id_for_home_rows(work)
+        default_prices = historical_service._historical_default_price_snapshot()
+        rows_out: list[dict[str, Any]] = []
+
+        for row in work.to_dict(orient="records"):
+            home_team = str(row.get("team", "")).strip()
+            away_team = str(row.get("opponent", "")).strip()
+            if not home_team or not away_team:
+                continue
+            is_home = team_text == home_team
+            if (not is_home) and team_text != away_team:
+                continue
+
+            match_id = historical_service._normalize_game_id_value(row.get("match_id"))
+            closing = prices_by_match_id.get(match_id) if match_id else None
+            if not isinstance(closing, dict):
+                closing = dict(default_prices)
+
+            home_handicap = parse_handicap_value((closing or {}).get("mainline"))
+            team_handicap = None if home_handicap is None else (float(home_handicap) if is_home else -float(home_handicap))
+
+            match_home_goals = self._to_float_or_none(row.get("GF"))
+            match_away_goals = self._to_float_or_none(row.get("GA"))
+            match_home_xg = self._to_float_or_none(row.get("xG"))
+            match_away_xg = self._to_float_or_none(row.get("xGA"))
+
+            result_margin = None
+            if match_home_goals is not None and match_away_goals is not None:
+                result_margin = (
+                    (float(match_home_goals) - float(match_away_goals))
+                    if is_home
+                    else (float(match_away_goals) - float(match_home_goals))
+                )
+            xg_margin = None
+            if match_home_xg is not None and match_away_xg is not None:
+                xg_margin = (
+                    (float(match_home_xg) - float(match_away_xg))
+                    if is_home
+                    else (float(match_away_xg) - float(match_home_xg))
+                )
+            result_vs_hc = (result_margin + team_handicap) if (result_margin is not None and team_handicap is not None) else None
+            xg_vs_hc = (xg_margin + team_handicap) if (xg_margin is not None and team_handicap is not None) else None
+
+            kickoff_ts = pd.to_datetime(row.get("date_time"), errors="coerce", utc=True)
+            rows_out.append(
+                {
+                    "_sort_kickoff": kickoff_ts,
+                    "date_time": kickoff_ts.strftime("%Y-%m-%d %H:%M") if not pd.isna(kickoff_ts) else "",
+                    "competition_name": str(row.get("competition_name", "")).strip(),
+                    "team": team_text,
+                    "opponent": away_team if is_home else home_team,
+                    "venue": "home" if is_home else "away",
+                    "home_team": home_team,
+                    "away_team": away_team,
+                    "home_goals": match_home_goals,
+                    "away_goals": match_away_goals,
+                    "home_xg": match_home_xg,
+                    "away_xg": match_away_xg,
+                    "closing_mainline": str((closing or {}).get("mainline", "-") or "-"),
+                    "closing_home_price": str((closing or {}).get("home_price", "-") or "-"),
+                    "closing_away_price": str((closing or {}).get("away_price", "-") or "-"),
+                    "closing_handicap_team": team_handicap,
+                    "result_vs_hc": result_vs_hc,
+                    "xg_vs_hc": xg_vs_hc,
+                }
+            )
+
+        rows_out = sorted(
+            rows_out,
+            key=lambda item: pd.to_datetime(item.get("_sort_kickoff"), errors="coerce", utc=True),
+            reverse=True,
+        )
+        for row in rows_out:
+            row.pop("_sort_kickoff", None)
+        return {
+            "team": team_text,
+            "competition": competition_text,
+            "rows": rows_out,
+            "games_count": len(rows_out),
+        }
 
     def _build_team_season_handicap_rows(
         self,

@@ -19,6 +19,7 @@
     <section class="page-tabs">
       <button id="gamesTabBtn" class="tab-btn active" type="button">Games</button>
       <button id="savedGamesTabBtn" class="tab-btn" type="button">Saved Games</button>
+      <button id="teamHcRankingsTabBtn" class="tab-btn" type="button">HC Rankings</button>
       <button id="manualMappingTabBtn" class="tab-btn" type="button">Mapping</button>
     </section>
 
@@ -67,6 +68,36 @@
 
     <section id="savedGamesTabPane" class="tab-pane hidden">
       <section id="savedGamesView" class="calendar-view"></section>
+    </section>
+
+    <section id="teamHcRankingsTabPane" class="tab-pane hidden">
+      <section class="page-tabs mapping-sub-tabs">
+        <button id="teamHcRankingsGeneralTabBtn" class="tab-btn active" type="button">General</button>
+        <button id="teamHcRankingsHomeTabBtn" class="tab-btn" type="button">Home</button>
+        <button id="teamHcRankingsAwayTabBtn" class="tab-btn" type="button">Away</button>
+      </section>
+      <section class="table-controls">
+        <label for="teamHcRankingsSortSelect" class="control-label">Rank By</label>
+        <select id="teamHcRankingsSortSelect" aria-label="Rank teams by handicap performance">
+          <option value="result">Result</option>
+          <option value="xg">xG</option>
+          <option value="pnl">PnL</option>
+        </select>
+        <label for="teamHcRankingsLeagueFilterBtn" class="control-label">League</label>
+        <div class="league-filter" id="teamHcRankingsLeagueFilter">
+          <button id="teamHcRankingsLeagueFilterBtn" type="button" aria-haspopup="true" aria-expanded="false">
+            Select League
+          </button>
+          <div
+            id="teamHcRankingsLeagueFilterMenu"
+            class="league-filter-menu hidden"
+            role="menu"
+            aria-label="HC rankings league options"
+          ></div>
+        </div>
+        <button id="teamHcRankingsRefreshBtn" type="button">Refresh Rankings</button>
+      </section>
+      <section id="teamHcRankingsView" class="calendar-view"></section>
     </section>
 
     <section id="manualMappingTabPane" class="tab-pane hidden">
@@ -118,6 +149,17 @@
     </div>
     <p id="detailsMeta" class="meta"></p>
     <div id="linesContainer"></div>
+  </aside>
+
+  <aside id="teamHcPerfPanel" class="details-panel hidden" aria-live="polite">
+    <div class="details-header">
+      <h2 id="teamHcPerfTitle">Team HC Performance</h2>
+      <div class="details-actions">
+        <button id="teamHcPerfCloseBtn" type="button">Close</button>
+      </div>
+    </div>
+    <p id="teamHcPerfMeta" class="meta"></p>
+    <div id="teamHcPerfContent"></div>
   </aside>
 
   <script src="/app.js"></script>

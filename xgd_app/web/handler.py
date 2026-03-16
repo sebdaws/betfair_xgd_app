@@ -83,6 +83,13 @@ class AppHandler(BaseHTTPRequestHandler):
             return self._serve_manual_mappings()
         if path == "/api/saved-games":
             return self._serve_saved_games()
+        if path == "/api/team-hc-rankings":
+            return self._serve_team_hc_rankings()
+        if path == "/api/team-hc-rankings/details":
+            query = parse_qs(parsed.query)
+            team_name = (query.get("team") or [""])[0]
+            competition_name = (query.get("competition") or [""])[0]
+            return self._serve_team_hc_ranking_details(team_name=team_name, competition_name=competition_name)
 
         self._json({"error": "Not found"}, status=HTTPStatus.NOT_FOUND)
 
@@ -179,6 +186,29 @@ class AppHandler(BaseHTTPRequestHandler):
         try:
             payload = self.state.list_saved_games_grouped_by_day()
             self._json(payload)
+        except Exception as exc:
+            self._json({"error": str(exc)}, status=HTTPStatus.INTERNAL_SERVER_ERROR)
+
+    def _serve_team_hc_rankings(self) -> None:
+        try:
+            payload = self.state.get_team_hc_rankings()
+            self._json(payload)
+        except Exception as exc:
+            self._json({"error": str(exc)}, status=HTTPStatus.INTERNAL_SERVER_ERROR)
+
+    def _serve_team_hc_ranking_details(self, team_name: str, competition_name: str) -> None:
+        team_text = str(team_name or "").strip()
+        if not team_text:
+            self._json({"error": "team is required"}, status=HTTPStatus.BAD_REQUEST)
+            return
+        try:
+            payload = self.state.get_team_hc_ranking_details(
+                team_name=team_text,
+                competition_name=str(competition_name or "").strip() or None,
+            )
+            self._json(payload)
+        except ValueError as exc:
+            self._json({"error": str(exc)}, status=HTTPStatus.BAD_REQUEST)
         except Exception as exc:
             self._json({"error": str(exc)}, status=HTTPStatus.INTERNAL_SERVER_ERROR)
 

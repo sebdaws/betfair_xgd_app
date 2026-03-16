@@ -20,6 +20,7 @@
 856134|Colombian Primera B
 194961|CONCACAF Champions League
 3039445|Costa Rican Liga de Ascenso
+2079376|Costa Rican Primera Division
 19|Cypriot 1st Division
 862638|Czech 2 Liga
 23|Danish Superliga
@@ -27,6 +28,7 @@
 9404054|Dutch Eredivisie
 803690|Ecuadorian Serie A
 9882094|EFL Trophy
+801976|Egyptian Premier
 30558|English FA Cup
 2134|English Football League Cup
 11086347|English National League
@@ -39,6 +41,7 @@
 37|English Sky Bet League 2
 12511339|English U21 Pro Development League
 12202273|English WSL
+873203|Estonian Esiliiga
 12469077|FIFA World Cup
 12209560|French Cup
 55|French Ligue 1
@@ -51,8 +54,6 @@
 12211021|Greek Cup
 67|Greek Super League
 6566654|Guatemalan Liga Nacional
-6812603|Guatemalan Primera Division de Ascenso
-12202271|Honduras Liga Nacional
 4556576|Hungarian NB II
 6251219|Indian Super League
 12203971|Irish Premier Division
@@ -61,7 +62,6 @@
 81|Italian Serie A
 12199689|Italian Serie B
 12199513|Italian Serie C
-3796898|Jamaican Premier League
 12782082|Japanese J. League 100 Year Vision
 12200652|Jordanian Premier League
 12216489|Kazakhstan Premier League
