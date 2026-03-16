@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import sqlite3
 from pathlib import Path
 from typing import Any, Callable
 
@@ -123,6 +124,108 @@ class MappingService:
     def get_manual_competition_mapping_lookup_snapshot(self) -> dict[str, str]:
         with self.state.lock:
             return dict(self.state.manual_competition_mapping_lookup)
+
+    def _load_historical_db_unmatched_team_rows(self) -> list[dict[str, Any]]:
+        db_path = Path(getattr(self.state, "sofascore_db_path", "")).expanduser().resolve()
+        if not db_path.exists():
+            return []
+
+        conn: sqlite3.Connection | None = None
+        try:
+            conn = sqlite3.connect(str(db_path))
+            table_rows = conn.execute("SELECT name FROM sqlite_master WHERE type='table'").fetchall()
+            table_names = {
+                str(row[0]).strip().casefold()
+                for row in table_rows
+                if row and str(row[0]).strip()
+            }
+            has_hist = "betfair_historical_prices" in table_names
+            has_team_map = "betfair_team_id_mappings" in table_names
+            if not has_hist:
+                return []
+
+            if has_team_map:
+                query = """
+                    WITH hist_names AS (
+                        SELECT DISTINCT TRIM(betfair_home_team_name) AS raw_name
+                        FROM betfair_historical_prices
+                        WHERE betfair_home_team_name IS NOT NULL AND TRIM(betfair_home_team_name) <> ''
+                        UNION
+                        SELECT DISTINCT TRIM(betfair_away_team_name) AS raw_name
+                        FROM betfair_historical_prices
+                        WHERE betfair_away_team_name IS NOT NULL AND TRIM(betfair_away_team_name) <> ''
+                    ),
+                    map_agg AS (
+                        SELECT
+                            LOWER(TRIM(betfair_team_name)) AS raw_key,
+                            MAX(CASE WHEN TRIM(COALESCE(sofascore_team_name, '')) <> '' THEN 1 ELSE 0 END) AS has_sofa,
+                            MAX(CASE
+                                WHEN LOWER(COALESCE(mapping_method, '')) IN ('missing', 'unmatched') THEN 1
+                                ELSE 0
+                            END) AS has_unmatched_method,
+                            MAX(COALESCE(seen_count, 0)) AS seen_count
+                        FROM betfair_team_id_mappings
+                        WHERE betfair_team_name IS NOT NULL AND TRIM(betfair_team_name) <> ''
+                        GROUP BY LOWER(TRIM(betfair_team_name))
+                    )
+                    SELECT
+                        h.raw_name,
+                        COALESCE(m.seen_count, 0) AS seen_count
+                    FROM hist_names h
+                    LEFT JOIN map_agg m
+                        ON LOWER(TRIM(h.raw_name)) = m.raw_key
+                    WHERE
+                        m.raw_key IS NULL
+                        OR m.has_sofa = 0
+                        OR m.has_unmatched_method = 1
+                """
+            else:
+                query = """
+                    SELECT DISTINCT TRIM(raw_name) AS raw_name, 0 AS seen_count
+                    FROM (
+                        SELECT betfair_home_team_name AS raw_name
+                        FROM betfair_historical_prices
+                        UNION ALL
+                        SELECT betfair_away_team_name AS raw_name
+                        FROM betfair_historical_prices
+                    )
+                    WHERE raw_name IS NOT NULL AND TRIM(raw_name) <> ''
+                """
+            rows = conn.execute(query).fetchall()
+        except Exception:
+            return []
+        finally:
+            if conn is not None:
+                conn.close()
+
+        out: list[dict[str, Any]] = []
+        seen_raw_lower: set[str] = set()
+        for row in rows:
+            raw_name = str(row[0] if len(row) > 0 else "").strip()
+            if not raw_name:
+                continue
+            raw_lower = raw_name.casefold()
+            if raw_lower in seen_raw_lower:
+                continue
+            seen_raw_lower.add(raw_lower)
+            seen_count = 0
+            try:
+                seen_count = int(row[1] if len(row) > 1 else 0)
+            except Exception:
+                seen_count = 0
+            event_label = "Historical Betfair Prices"
+            if seen_count > 0:
+                event_label = f"Historical Betfair Prices (seen {seen_count})"
+            out.append(
+                {
+                    "raw_name": raw_name,
+                    "side": "Any",
+                    "event_name": event_label,
+                    "competition": "Historical DB",
+                    "kickoff_raw": "",
+                }
+            )
+        return out
 
     def list_manual_mappings(self) -> dict[str, Any]:
         return self.list_manual_team_mappings()
@@ -361,6 +464,25 @@ class MappingService:
                 and self.normalize_team_name(str(row.get("raw_name", "")).strip()) not in manual_raw_norms
             )
         ]
+        historical_unmatched_rows = self._load_historical_db_unmatched_team_rows()
+        if historical_unmatched_rows:
+            existing_unmatched_norms = {
+                self.normalize_team_name(str(row.get("raw_name", "")).strip())
+                for row in unmatched_rows
+                if self.normalize_team_name(str(row.get("raw_name", "")).strip())
+            }
+            auto_candidate_norms = set(auto_mapping_candidates.keys())
+            for row in historical_unmatched_rows:
+                raw_name = str(row.get("raw_name", "")).strip()
+                raw_norm = self.normalize_team_name(raw_name)
+                if not raw_name or not raw_norm:
+                    continue
+                if raw_norm in mapped_raw_norms or raw_norm in manual_raw_norms or raw_norm in auto_candidate_norms:
+                    continue
+                if raw_norm in existing_unmatched_norms:
+                    continue
+                existing_unmatched_norms.add(raw_norm)
+                unmatched_rows.append(row)
         unmatched_rows = sorted(
             unmatched_rows,
             key=lambda row: (

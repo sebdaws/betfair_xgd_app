@@ -43,6 +43,14 @@ def _sanitize_for_json(value: Any) -> Any:
 class AppHandler(BaseHTTPRequestHandler):
     state: Any
 
+    @staticmethod
+    def _is_client_disconnect_error(exc: BaseException) -> bool:
+        if isinstance(exc, (BrokenPipeError, ConnectionResetError, ConnectionAbortedError)):
+            return True
+        if isinstance(exc, OSError):
+            return int(getattr(exc, "errno", -1)) in {32, 54, 104}
+        return False
+
     def do_GET(self) -> None:  # noqa: N802
         parsed = urlparse(self.path)
         path = parsed.path
@@ -128,7 +136,11 @@ class AppHandler(BaseHTTPRequestHandler):
             self._json({"error": "market_id is required"}, status=HTTPStatus.BAD_REQUEST)
             return
         try:
-            payload = self.state.get_game_hc_performance(market_id)
+            parsed = urlparse(self.path)
+            query = parse_qs(parsed.query)
+            verbose_raw = (query.get("verbose") or ["0"])[0]
+            verbose = str(verbose_raw or "").strip().lower() in {"1", "true", "yes", "on"}
+            payload = self.state.get_game_hc_performance(market_id, verbose=verbose)
             self._json(payload)
         except KeyError:
             self._json({"error": "Market not found"}, status=HTTPStatus.NOT_FOUND)
@@ -261,20 +273,30 @@ class AppHandler(BaseHTTPRequestHandler):
             self._json({"error": f"Missing asset: {path}"}, status=HTTPStatus.NOT_FOUND)
             return
         data = path.read_bytes()
-        self.send_response(HTTPStatus.OK)
-        self.send_header("Content-Type", content_type)
-        self.send_header("Content-Length", str(len(data)))
-        self.end_headers()
-        self.wfile.write(data)
+        try:
+            self.send_response(HTTPStatus.OK)
+            self.send_header("Content-Type", content_type)
+            self.send_header("Content-Length", str(len(data)))
+            self.end_headers()
+            self.wfile.write(data)
+        except Exception as exc:
+            if self._is_client_disconnect_error(exc):
+                return
+            raise
 
     def _json(self, payload: dict[str, Any], status: HTTPStatus = HTTPStatus.OK) -> None:
         safe_payload = _sanitize_for_json(payload)
         body = json.dumps(safe_payload, allow_nan=False).encode("utf-8")
-        self.send_response(status)
-        self.send_header("Content-Type", "application/json; charset=utf-8")
-        self.send_header("Content-Length", str(len(body)))
-        self.end_headers()
-        self.wfile.write(body)
+        try:
+            self.send_response(status)
+            self.send_header("Content-Type", "application/json; charset=utf-8")
+            self.send_header("Content-Length", str(len(body)))
+            self.end_headers()
+            self.wfile.write(body)
+        except Exception as exc:
+            if self._is_client_disconnect_error(exc):
+                return
+            raise
 
     def log_message(self, format: str, *args) -> None:  # noqa: A003
         return

@@ -71,7 +71,16 @@ def runner_name_matches(candidate: str | None, target: str | None) -> bool:
 def parse_handicap_value(value: Any) -> float | None:
     if isinstance(value, (int, float)):
         return float(value)
-    return None
+    if value is None:
+        return None
+    text = str(value).strip()
+    if not text:
+        return None
+    text = text.replace(",", "")
+    try:
+        return float(text)
+    except Exception:
+        return None
 
 
 def get_best_offer_price(ex_data: dict[str, Any], side: str) -> float | None:

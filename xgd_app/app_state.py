@@ -378,8 +378,8 @@ class AppState:
     def get_game_xgd(self, market_id: str, recent_n: int = 5, venue_recent_n: int = 5) -> dict[str, Any]:
         return self.game_xgd_service.get_game_xgd(market_id=market_id, recent_n=recent_n, venue_recent_n=venue_recent_n)
 
-    def get_game_hc_performance(self, market_id: str) -> dict[str, Any]:
-        return self.game_xgd_service.get_game_hc_performance(market_id=market_id)
+    def get_game_hc_performance(self, market_id: str, verbose: bool = False) -> dict[str, Any]:
+        return self.game_xgd_service.get_game_hc_performance(market_id=market_id, verbose=bool(verbose))
 
     def _get_historical_game_xgd(self, match_id: int, recent_n: int, venue_recent_n: int) -> dict[str, Any]:
         return self.game_xgd_service._get_historical_game_xgd(match_id=match_id, recent_n=recent_n, venue_recent_n=venue_recent_n)

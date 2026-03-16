@@ -2,14 +2,33 @@
 
 from __future__ import annotations
 
+import sqlite3
+import time
+
 from xgd_app.core import *  # noqa: F401,F403
 
 class HistoricalBetfairDataService:
     def __init__(self, state: Any) -> None:
         self.state = state
+        self._verbose_timing = False
+        self._historical_price_db_loaded = False
+        self._historical_price_db_available = False
+        self._historical_price_db_table_name: str | None = None
+        self._historical_team_mapping_table_name: str | None = None
+        self._historical_price_db_columns: dict[str, str] = {}
+        self._historical_price_db_team_rows_cache: dict[str, pd.DataFrame] = {}
+        self._historical_team_mapping_cache: dict[str, dict[str, set[str]]] = {}
 
     def __getattr__(self, name: str) -> Any:
         return getattr(self.state, name)
+
+    def _log_price_timing(self, label: str, step: str, started_at: float, **meta: Any) -> None:
+        if not bool(getattr(self, "_verbose_timing", False)):
+            return
+        elapsed_ms = (time.perf_counter() - started_at) * 1000.0
+        parts = [f"{k}={v}" for k, v in meta.items() if v is not None]
+        meta_text = f" | {' '.join(parts)}" if parts else ""
+        print(f"[HC PRICE TIMING] {label} | {step} | {elapsed_ms:.1f}ms{meta_text}", flush=True)
 
     @staticmethod
     def _historical_month_num_from_dir_name(value: str) -> int | None:
@@ -146,6 +165,785 @@ class HistoricalBetfairDataService:
             "goal_under_price": "-",
             "goal_over_price": "-",
         }
+
+    @staticmethod
+    def _historical_price_db_table_candidates() -> tuple[str, ...]:
+        return (
+            "betfair_historical_prices",
+        )
+
+    @staticmethod
+    def _normalize_game_id_value(value: Any) -> str:
+        if value is None:
+            return ""
+        try:
+            if pd.isna(value):
+                return ""
+        except Exception:
+            pass
+        text = str(value).strip()
+        if not text:
+            return ""
+        try:
+            num = float(text)
+            if pd.notna(num) and float(num).is_integer():
+                return str(int(num))
+        except Exception:
+            pass
+        return text
+
+    @staticmethod
+    def _pick_first_existing_column(columns: list[str], aliases: tuple[str, ...]) -> str | None:
+        if not columns:
+            return None
+        by_casefold = {str(col).casefold(): str(col) for col in columns}
+        for alias in aliases:
+            found = by_casefold.get(str(alias).casefold())
+            if found:
+                return found
+        return None
+
+    @staticmethod
+    def _format_db_mainline_value(value: Any) -> str:
+        parsed = parse_handicap_value(value)
+        if parsed is None:
+            return "-"
+        return format_handicap_value(parsed)
+
+    @staticmethod
+    def _format_db_goal_line_value(value: Any) -> str:
+        parsed = parse_handicap_value(value)
+        if parsed is None:
+            return "-"
+        return format_goal_line_value(parsed)
+
+    @staticmethod
+    def _format_db_price_value(value: Any) -> str:
+        if value is None:
+            return "-"
+        try:
+            if pd.isna(value):
+                return "-"
+        except Exception:
+            pass
+        text = str(value).strip()
+        if not text or text == "-":
+            return "-"
+        try:
+            return format_price_value(float(text))
+        except Exception:
+            return text
+
+    def _load_historical_price_db_cache(self, force: bool = False) -> bool:
+        started_at = time.perf_counter()
+        label = "db_metadata"
+        if self._historical_price_db_loaded and (not force):
+            self._log_price_timing(label, "cache_hit", started_at, available=bool(self._historical_price_db_available))
+            return bool(self._historical_price_db_available)
+
+        self._historical_price_db_loaded = True
+        self._historical_price_db_available = False
+        self._historical_price_db_table_name = None
+        self._historical_team_mapping_table_name = None
+        self._historical_price_db_columns = {}
+        self._historical_price_db_team_rows_cache = {}
+        self._historical_team_mapping_cache = {}
+
+        db_path_raw = getattr(self, "sofascore_db_path", None)
+        if db_path_raw is None:
+            self._log_price_timing(label, "no_db_path", started_at)
+            return False
+        db_path = Path(db_path_raw).expanduser().resolve()
+        if not db_path.exists():
+            self._log_price_timing(label, "db_missing", started_at, path=str(db_path))
+            return False
+
+        conn: sqlite3.Connection | None = None
+        try:
+            conn = sqlite3.connect(str(db_path))
+            table_rows = conn.execute("SELECT name FROM sqlite_master WHERE type='table'").fetchall()
+            table_names = [str(row[0]).strip() for row in table_rows if row and str(row[0]).strip()]
+            by_casefold = {name.casefold(): name for name in table_names}
+
+            table_name = None
+            for candidate in self._historical_price_db_table_candidates():
+                found = by_casefold.get(candidate.casefold())
+                if found:
+                    table_name = found
+                    break
+            if not table_name:
+                self._log_price_timing(label, "table_not_found", started_at)
+                return False
+
+            self._historical_price_db_table_name = table_name
+            self._historical_team_mapping_table_name = by_casefold.get("betfair_team_id_mappings")
+            columns_df = pd.read_sql_query(f'PRAGMA table_info("{table_name}")', conn)
+            if columns_df.empty or ("name" not in columns_df.columns):
+                self._log_price_timing(label, "table_no_columns", started_at, table=table_name)
+                return False
+            columns = [
+                str(value).strip()
+                for value in columns_df["name"].tolist()
+                if str(value).strip()
+            ]
+            if not columns:
+                self._log_price_timing(label, "table_empty_columns", started_at, table=table_name)
+                return False
+
+            home_col = self._pick_first_existing_column(
+                columns,
+                (
+                    "home_team",
+                    "home",
+                    "team_home",
+                    "home_name",
+                    "home_team_name",
+                    "home_raw",
+                    "home_sofa",
+                    "bf_home",
+                    "betfair_home_team_name",
+                    "sofascore_home_team_name",
+                ),
+            )
+            away_col = self._pick_first_existing_column(
+                columns,
+                (
+                    "away_team",
+                    "away",
+                    "team_away",
+                    "away_name",
+                    "away_team_name",
+                    "away_raw",
+                    "away_sofa",
+                    "bf_away",
+                    "betfair_away_team_name",
+                    "sofascore_away_team_name",
+                ),
+            )
+            home_team_id_col = self._pick_first_existing_column(
+                columns,
+                ("home_team_id", "betfair_home_team_id"),
+            )
+            away_team_id_col = self._pick_first_existing_column(
+                columns,
+                ("away_team_id", "betfair_away_team_id"),
+            )
+            kickoff_col = self._pick_first_existing_column(
+                columns,
+                (
+                    "kickoff_time",
+                    "kickoff_ts",
+                    "kickoff_utc",
+                    "match_time",
+                    "date_time",
+                    "start_time",
+                    "market_time",
+                    "kickoff",
+                    "event_time",
+                    "match_datetime",
+                    "utc_kickoff",
+                ),
+            )
+            day_col = self._pick_first_existing_column(
+                columns,
+                ("match_day", "day", "date", "kickoff_date", "event_date"),
+            )
+            updated_col = self._pick_first_existing_column(
+                columns,
+                (
+                    "timestamp",
+                    "ts",
+                    "pt",
+                    "publish_time",
+                    "price_timestamp",
+                    "price_time",
+                    "last_update_time",
+                    "update_time",
+                    "updated_at",
+                ),
+            )
+            status_col = self._pick_first_existing_column(
+                columns,
+                ("status", "market_status", "selection_status", "state"),
+            )
+            game_id_col = self._pick_first_existing_column(
+                columns,
+                ("game_id", "match_id", "sofascore_match_id", "event_id", "fixture_id", "market_id"),
+            )
+
+            if not home_col or not away_col or (not kickoff_col and not day_col):
+                self._log_price_timing(label, "missing_required_columns", started_at, table=table_name)
+                return False
+
+            mainline_col = self._pick_first_existing_column(
+                columns,
+                ("mainline", "hc_mainline", "closing_mainline", "handicap_mainline", "handicap_line", "hc_line"),
+            )
+            home_price_col = self._pick_first_existing_column(
+                columns,
+                ("home_price", "home_px", "closing_home_price", "home_odds", "h_px"),
+            )
+            away_price_col = self._pick_first_existing_column(
+                columns,
+                ("away_price", "away_px", "closing_away_price", "away_odds", "a_px"),
+            )
+            goal_mainline_col = self._pick_first_existing_column(
+                columns,
+                ("goal_mainline", "goals_mainline", "closing_goal_mainline", "goal_line", "ou_line"),
+            )
+            goal_under_price_col = self._pick_first_existing_column(
+                columns,
+                ("goal_under_price", "under_price", "ou_under_price", "closing_goal_under_price", "u_px"),
+            )
+            goal_over_price_col = self._pick_first_existing_column(
+                columns,
+                ("goal_over_price", "over_price", "ou_over_price", "closing_goal_over_price", "o_px"),
+            )
+
+            self._historical_price_db_columns = {
+                "home_team": str(home_col),
+                "away_team": str(away_col),
+                "home_team_id": str(home_team_id_col) if home_team_id_col else "",
+                "away_team_id": str(away_team_id_col) if away_team_id_col else "",
+                "kickoff_time": str(kickoff_col) if kickoff_col else "",
+                "match_day": str(day_col) if day_col else "",
+                "updated_at": str(updated_col) if updated_col else "",
+                "status": str(status_col) if status_col else "",
+                "game_id": str(game_id_col) if game_id_col else "",
+                "mainline": str(mainline_col) if mainline_col else "",
+                "home_price": str(home_price_col) if home_price_col else "",
+                "away_price": str(away_price_col) if away_price_col else "",
+                "goal_mainline": str(goal_mainline_col) if goal_mainline_col else "",
+                "goal_under_price": str(goal_under_price_col) if goal_under_price_col else "",
+                "goal_over_price": str(goal_over_price_col) if goal_over_price_col else "",
+            }
+            self._historical_price_db_available = True
+            self._log_price_timing(
+                label,
+                "metadata_loaded",
+                started_at,
+                table=table_name,
+                columns=int(len(columns)),
+            )
+            return True
+        except Exception:
+            self._historical_price_db_available = False
+            self._historical_price_db_table_name = None
+            self._historical_team_mapping_table_name = None
+            self._historical_price_db_columns = {}
+            self._historical_price_db_team_rows_cache = {}
+            self._historical_team_mapping_cache = {}
+            self._log_price_timing(label, "metadata_error", started_at)
+            return False
+        finally:
+            if conn is not None:
+                conn.close()
+
+    def _historical_price_db_select_columns(self) -> list[str]:
+        col = self._historical_price_db_columns
+        select_cols: list[str] = []
+        for key in (
+            "home_team",
+            "away_team",
+            "home_team_id",
+            "away_team_id",
+            "kickoff_time",
+            "match_day",
+            "updated_at",
+            "status",
+            "game_id",
+            "mainline",
+            "home_price",
+            "away_price",
+            "goal_mainline",
+            "goal_under_price",
+            "goal_over_price",
+        ):
+            name = str(col.get(key, "")).strip()
+            if name and name not in select_cols:
+                select_cols.append(name)
+        return select_cols
+
+    def _resolve_betfair_team_candidates(self, team_name: str) -> dict[str, set[str]]:
+        started_at = time.perf_counter()
+        team_text = str(team_name or "").strip()
+        team_norm = normalize_team_name(team_text)
+        label = f"team_map|{team_text}"
+        empty_out = {"names": set(), "ids": set()}
+        if not team_norm:
+            self._log_price_timing(label, "empty_team", started_at)
+            return empty_out
+
+        cached = self._historical_team_mapping_cache.get(team_norm)
+        if isinstance(cached, dict):
+            out_cached = {
+                "names": set(cached.get("names", set())),
+                "ids": set(cached.get("ids", set())),
+            }
+            self._log_price_timing(
+                label,
+                "cache_hit",
+                started_at,
+                names=int(len(out_cached["names"])),
+                ids=int(len(out_cached["ids"])),
+            )
+            return out_cached
+
+        if not self._load_historical_price_db_cache():
+            self._log_price_timing(label, "db_unavailable", started_at)
+            return empty_out
+
+        table_name = str(self._historical_team_mapping_table_name or "").strip()
+        if not table_name:
+            self._historical_team_mapping_cache[team_norm] = {"names": set(), "ids": set()}
+            self._log_price_timing(label, "mapping_table_missing", started_at)
+            return empty_out
+
+        db_path = Path(getattr(self, "sofascore_db_path")).expanduser().resolve()
+        conn: sqlite3.Connection | None = None
+        out_names: set[str] = set()
+        out_ids: set[str] = set()
+        try:
+            conn = sqlite3.connect(str(db_path))
+            rows = conn.execute(
+                f"""
+                SELECT betfair_team_id, betfair_team_name, sofascore_team_name
+                FROM "{table_name}"
+                WHERE sofascore_team_name IS NOT NULL
+                  AND LOWER(sofascore_team_name) = LOWER(?)
+                """,
+                (team_text,),
+            ).fetchall()
+
+            # Fallback: include rows where the Betfair name already matches this team text.
+            if not rows:
+                rows = conn.execute(
+                    f"""
+                    SELECT betfair_team_id, betfair_team_name, sofascore_team_name
+                    FROM "{table_name}"
+                    WHERE betfair_team_name IS NOT NULL
+                      AND LOWER(betfair_team_name) = LOWER(?)
+                    """,
+                    (team_text,),
+                ).fetchall()
+        except Exception:
+            rows = []
+        finally:
+            if conn is not None:
+                conn.close()
+
+        for row in rows:
+            betfair_team_id = self._normalize_game_id_value(row[0] if len(row) > 0 else None)
+            betfair_team_name = str(row[1] if len(row) > 1 else "").strip()
+            sofascore_team_name = str(row[2] if len(row) > 2 else "").strip()
+            if sofascore_team_name and normalize_team_name(sofascore_team_name) != team_norm:
+                # Guard against accidental cross-matches from lower() fallback noise.
+                continue
+            if betfair_team_id:
+                out_ids.add(betfair_team_id)
+            if betfair_team_name:
+                out_names.add(betfair_team_name)
+
+        out = {"names": out_names, "ids": out_ids}
+        self._historical_team_mapping_cache[team_norm] = {"names": set(out_names), "ids": set(out_ids)}
+        self._log_price_timing(label, "resolved", started_at, names=int(len(out_names)), ids=int(len(out_ids)))
+        return out
+
+    def _query_historical_price_rows_for_match_ids(self, match_ids: list[Any]) -> pd.DataFrame:
+        started_at = time.perf_counter()
+        clean_ids = [self._normalize_game_id_value(value) for value in (match_ids or [])]
+        clean_ids = sorted({value for value in clean_ids if value})
+        label = f"match_id_query|count={len(clean_ids)}"
+        if not clean_ids:
+            self._log_price_timing(label, "empty_ids", started_at)
+            return pd.DataFrame()
+        if not self._load_historical_price_db_cache():
+            self._log_price_timing(label, "db_unavailable", started_at)
+            return pd.DataFrame()
+
+        db_path = Path(getattr(self, "sofascore_db_path")).expanduser().resolve()
+        table_name = str(self._historical_price_db_table_name or "").strip()
+        col = self._historical_price_db_columns
+        game_id_col = str(col.get("game_id", "")).strip()
+        if not table_name or not game_id_col:
+            self._log_price_timing(label, "missing_table_or_game_id_col", started_at)
+            return pd.DataFrame()
+
+        select_cols = self._historical_price_db_select_columns()
+        if not select_cols:
+            self._log_price_timing(label, "no_select_columns", started_at)
+            return pd.DataFrame()
+
+        quoted_select = ", ".join([f'"{name}"' for name in select_cols])
+        placeholders = ", ".join(["?"] * len(clean_ids))
+        sql = (
+            f'SELECT rowid AS "__rowid", {quoted_select} '
+            f'FROM "{table_name}" '
+            f'WHERE CAST("{game_id_col}" AS TEXT) IN ({placeholders})'
+        )
+
+        conn: sqlite3.Connection | None = None
+        try:
+            conn = sqlite3.connect(str(db_path))
+            out = pd.read_sql_query(sql, conn, params=clean_ids)
+        except Exception:
+            out = pd.DataFrame()
+        finally:
+            if conn is not None:
+                conn.close()
+
+        self._log_price_timing(label, "query_complete", started_at, rows=int(len(out)))
+        return out
+
+    @staticmethod
+    def _historical_price_lookup_key(home_norm: str, away_norm: str, kickoff_time: pd.Timestamp) -> tuple[str, str, str]:
+        kickoff_ts = pd.to_datetime(kickoff_time, errors="coerce", utc=True)
+        kickoff_key = kickoff_ts.strftime("%Y-%m-%dT%H:%M") if not pd.isna(kickoff_ts) else ""
+        return (
+            str(home_norm or "").strip(),
+            str(away_norm or "").strip(),
+            kickoff_key,
+        )
+
+    def _historical_price_snapshot_from_db_row(self, row: dict[str, Any]) -> dict[str, str]:
+        col = self._historical_price_db_columns
+        return {
+            "mainline": self._format_db_mainline_value(row.get(col.get("mainline", ""))) if col.get("mainline") else "-",
+            "home_price": self._format_db_price_value(row.get(col.get("home_price", ""))) if col.get("home_price") else "-",
+            "away_price": self._format_db_price_value(row.get(col.get("away_price", ""))) if col.get("away_price") else "-",
+            "goal_mainline": (
+                self._format_db_goal_line_value(row.get(col.get("goal_mainline", ""))) if col.get("goal_mainline") else "-"
+            ),
+            "goal_under_price": (
+                self._format_db_price_value(row.get(col.get("goal_under_price", ""))) if col.get("goal_under_price") else "-"
+            ),
+            "goal_over_price": (
+                self._format_db_price_value(row.get(col.get("goal_over_price", ""))) if col.get("goal_over_price") else "-"
+            ),
+        }
+
+    def _query_historical_price_rows_for_team(self, team_name: str) -> pd.DataFrame:
+        started_at = time.perf_counter()
+        label = f"team_query|{str(team_name or '').strip()}"
+        if not self._load_historical_price_db_cache():
+            self._log_price_timing(label, "db_unavailable", started_at)
+            return pd.DataFrame()
+        team_text = str(team_name or "").strip()
+        if not team_text:
+            self._log_price_timing(label, "empty_team", started_at)
+            return pd.DataFrame()
+        team_norm = normalize_team_name(team_text)
+        cached = self._historical_price_db_team_rows_cache.get(team_norm)
+        if isinstance(cached, pd.DataFrame):
+            self._log_price_timing(label, "cache_hit", started_at, rows=int(len(cached)))
+            return cached.copy()
+
+        db_path = Path(getattr(self, "sofascore_db_path")).expanduser().resolve()
+        table_name = str(self._historical_price_db_table_name or "").strip()
+        col = self._historical_price_db_columns
+        if not table_name or not col.get("home_team") or not col.get("away_team"):
+            self._log_price_timing(label, "missing_table_or_columns", started_at)
+            return pd.DataFrame()
+
+        select_cols = self._historical_price_db_select_columns()
+        if not select_cols:
+            self._log_price_timing(label, "no_select_columns", started_at)
+            return pd.DataFrame()
+
+        quoted_select = ", ".join([f'"{name}"' for name in select_cols])
+        home_col = str(col.get("home_team", "")).strip()
+        away_col = str(col.get("away_team", "")).strip()
+        home_id_col = str(col.get("home_team_id", "")).strip()
+        away_id_col = str(col.get("away_team_id", "")).strip()
+        mapped = self._resolve_betfair_team_candidates(team_text)
+        query_names = {team_text, *mapped.get("names", set())}
+        query_names = {str(value).strip() for value in query_names if str(value).strip()}
+        query_name_lc = sorted({value.casefold() for value in query_names if value})
+        query_ids = sorted({str(value).strip() for value in mapped.get("ids", set()) if str(value).strip()})
+
+        where_parts: list[str] = []
+        params: list[Any] = []
+        if query_name_lc:
+            placeholders = ", ".join(["?"] * len(query_name_lc))
+            where_parts.append(f'LOWER("{home_col}") IN ({placeholders})')
+            params.extend(query_name_lc)
+            where_parts.append(f'LOWER("{away_col}") IN ({placeholders})')
+            params.extend(query_name_lc)
+        if query_ids and home_id_col and away_id_col:
+            placeholders = ", ".join(["?"] * len(query_ids))
+            where_parts.append(f'CAST("{home_id_col}" AS TEXT) IN ({placeholders})')
+            params.extend(query_ids)
+            where_parts.append(f'CAST("{away_id_col}" AS TEXT) IN ({placeholders})')
+            params.extend(query_ids)
+        if not where_parts:
+            self._log_price_timing(label, "no_query_candidates", started_at)
+            return pd.DataFrame()
+        sql = (
+            f'SELECT rowid AS "__rowid", {quoted_select} '
+            f'FROM "{table_name}" '
+            f'WHERE ' + " OR ".join(f"({part})" for part in where_parts)
+        )
+
+        conn: sqlite3.Connection | None = None
+        try:
+            conn = sqlite3.connect(str(db_path))
+            out = pd.read_sql_query(sql, conn, params=params)
+        except Exception:
+            out = pd.DataFrame()
+        finally:
+            if conn is not None:
+                conn.close()
+
+        self._historical_price_db_team_rows_cache[team_norm] = out.copy()
+        self._log_price_timing(
+            label,
+            "query_complete",
+            started_at,
+            rows=int(len(out)),
+            names=int(len(query_name_lc)),
+            ids=int(len(query_ids)),
+        )
+        return out
+
+    def _build_historical_price_entries_from_rows(self, rows_df: pd.DataFrame) -> list[dict[str, Any]]:
+        started_at = time.perf_counter()
+        input_rows = int(len(rows_df)) if isinstance(rows_df, pd.DataFrame) else 0
+        label = "build_entries"
+        if not isinstance(rows_df, pd.DataFrame) or rows_df.empty:
+            self._log_price_timing(label, "empty_input", started_at, rows=input_rows)
+            return []
+        col = self._historical_price_db_columns
+        home_col = str(col.get("home_team", "")).strip()
+        away_col = str(col.get("away_team", "")).strip()
+        kickoff_col = str(col.get("kickoff_time", "")).strip()
+        day_col = str(col.get("match_day", "")).strip()
+        updated_col = str(col.get("updated_at", "")).strip()
+        status_col = str(col.get("status", "")).strip()
+        game_id_col = str(col.get("game_id", "")).strip()
+        if not home_col or not away_col:
+            self._log_price_timing(label, "missing_home_away_columns", started_at, rows=input_rows)
+            return []
+
+        work = rows_df.copy()
+        work["_home_norm"] = work[home_col].apply(normalize_team_name)
+        work["_away_norm"] = work[away_col].apply(normalize_team_name)
+        work["_kickoff_time"] = (
+            pd.to_datetime(work[kickoff_col], errors="coerce", utc=True) if kickoff_col and kickoff_col in work.columns else pd.NaT
+        )
+        if day_col and day_col in work.columns:
+            day_ts = pd.to_datetime(work[day_col], errors="coerce", utc=True)
+            work["_kickoff_time"] = work["_kickoff_time"].where(work["_kickoff_time"].notna(), day_ts)
+        work = work[
+            work["_home_norm"].astype(str).str.strip().ne("")
+            & work["_away_norm"].astype(str).str.strip().ne("")
+            & work["_kickoff_time"].notna()
+        ].copy()
+        if work.empty:
+            self._log_price_timing(label, "empty_after_team_kickoff_filter", started_at, rows=input_rows)
+            return []
+
+        if updated_col and updated_col in work.columns:
+            work["_updated_at"] = pd.to_datetime(work[updated_col], errors="coerce", utc=True)
+            updated_key = str(updated_col).strip().casefold()
+            # Only apply "last update before kickoff" logic for columns that
+            # represent market tick/update timestamps. Columns like "updated_at"
+            # in this project are import timestamps and can be after kickoff.
+            pre_kickoff_safe_keys = {
+                "pt",
+                "timestamp",
+                "ts",
+                "publish_time",
+                "price_timestamp",
+                "price_time",
+                "last_update_time",
+                "update_time",
+            }
+            if updated_key in pre_kickoff_safe_keys:
+                work = work[(work["_updated_at"].isna()) | (work["_updated_at"] <= work["_kickoff_time"])].copy()
+                if work.empty:
+                    self._log_price_timing(label, "empty_after_pre_kickoff_filter", started_at, rows=input_rows)
+                    return []
+            else:
+                self._log_price_timing(label, "skip_pre_kickoff_filter", started_at, updated_col=updated_col, rows=int(len(work)))
+        else:
+            work["_updated_at"] = pd.NaT
+
+        if status_col and status_col in work.columns:
+            status_series = work[status_col].fillna("").astype(str).str.strip().str.upper()
+            # Keep rows with neutral/known tradable statuses and exclude explicit in-play snapshots.
+            work = work[~status_series.isin({"IN_PLAY", "INPLAY"})].copy()
+            if work.empty:
+                self._log_price_timing(label, "empty_after_status_filter", started_at, rows=input_rows)
+                return []
+
+        work["_kickoff_key"] = work["_kickoff_time"].dt.strftime("%Y-%m-%dT%H:%M")
+        if game_id_col and game_id_col in work.columns:
+            gid = work[game_id_col].fillna("").astype(str).str.strip()
+            work["_group_key"] = gid.where(gid.ne(""), work["_home_norm"] + "|" + work["_away_norm"] + "|" + work["_kickoff_key"])
+        else:
+            work["_group_key"] = work["_home_norm"] + "|" + work["_away_norm"] + "|" + work["_kickoff_key"]
+        if "__rowid" not in work.columns:
+            work["__rowid"] = range(1, len(work) + 1)
+        work = work.sort_values(["_group_key", "_updated_at", "__rowid"], na_position="first")
+        best = work.groupby("_group_key", as_index=False).tail(1).copy()
+
+        entries: list[dict[str, Any]] = []
+        for row in best.to_dict(orient="records"):
+            game_id_value = self._normalize_game_id_value(row.get(game_id_col)) if game_id_col else ""
+            entries.append(
+                {
+                    "home_norm": str(row.get("_home_norm", "")).strip(),
+                    "away_norm": str(row.get("_away_norm", "")).strip(),
+                    "kickoff_time": pd.to_datetime(row.get("_kickoff_time"), errors="coerce", utc=True),
+                    "game_id": game_id_value,
+                    "prices": self._historical_price_snapshot_from_db_row(row),
+                }
+            )
+        self._log_price_timing(label, "complete", started_at, rows=input_rows, grouped=int(len(best)), entries=int(len(entries)))
+        return entries
+
+    def _bulk_lookup_historical_betfair_prices_for_team_fixtures(
+        self,
+        team_name: str,
+        fixtures: list[dict[str, Any]],
+    ) -> dict[tuple[str, str, str], dict[str, str]]:
+        started_at = time.perf_counter()
+        label = f"bulk_lookup|{str(team_name or '').strip()}"
+        if not fixtures:
+            self._log_price_timing(label, "empty_fixtures", started_at)
+            return {}
+        fixture_match_ids = [fixture.get("match_id") for fixture in fixtures]
+        rows_df = self._query_historical_price_rows_for_match_ids(fixture_match_ids)
+        if rows_df.empty:
+            rows_df = self._query_historical_price_rows_for_team(team_name)
+        entries = self._build_historical_price_entries_from_rows(rows_df)
+        if not entries:
+            self._log_price_timing(label, "no_entries", started_at, fixtures=int(len(fixtures)))
+            return {}
+
+        by_game_id: dict[str, list[dict[str, Any]]] = {}
+        by_pair: dict[tuple[str, str], list[dict[str, Any]]] = {}
+        for entry in entries:
+            game_id = self._normalize_game_id_value(entry.get("game_id"))
+            if game_id:
+                by_game_id.setdefault(game_id, []).append(entry)
+            home_norm = str(entry.get("home_norm", "")).strip()
+            away_norm = str(entry.get("away_norm", "")).strip()
+            kickoff_ts = pd.to_datetime(entry.get("kickoff_time"), errors="coerce", utc=True)
+            if not home_norm or not away_norm or pd.isna(kickoff_ts):
+                continue
+            by_pair.setdefault((home_norm, away_norm), []).append(entry)
+
+        out: dict[tuple[str, str, str], dict[str, str]] = {}
+        for fixture in fixtures:
+            home_team = str(fixture.get("home_team", "")).strip()
+            away_team = str(fixture.get("away_team", "")).strip()
+            kickoff_time = pd.to_datetime(fixture.get("kickoff_time"), errors="coerce", utc=True)
+            home_norm = normalize_team_name(home_team)
+            away_norm = normalize_team_name(away_team)
+            if not home_norm or not away_norm or pd.isna(kickoff_time):
+                continue
+
+            fixture_key = self._historical_price_lookup_key(home_norm, away_norm, kickoff_time)
+            fixture_match_id = self._normalize_game_id_value(fixture.get("match_id"))
+            pair_entries = by_game_id.get(fixture_match_id, []) if fixture_match_id else []
+            if not pair_entries:
+                pair_entries = by_pair.get((home_norm, away_norm), [])
+            best_entry: dict[str, Any] | None = None
+            best_delta_minutes = float("inf")
+            kickoff_day_iso = kickoff_time.strftime("%Y-%m-%d")
+            for entry in pair_entries:
+                entry_kickoff = pd.to_datetime(entry.get("kickoff_time"), errors="coerce", utc=True)
+                if pd.isna(entry_kickoff):
+                    continue
+                day_iso = entry_kickoff.strftime("%Y-%m-%d")
+                delta_minutes = abs(float((entry_kickoff - kickoff_time).total_seconds()) / 60.0)
+                if delta_minutes < best_delta_minutes:
+                    best_delta_minutes = delta_minutes
+                    best_entry = entry
+                if delta_minutes <= 180 and day_iso == kickoff_day_iso:
+                    break
+            if best_entry is not None and best_delta_minutes <= (24 * 60):
+                out[fixture_key] = dict(best_entry.get("prices", {}))
+        self._log_price_timing(
+            label,
+            "complete",
+            started_at,
+            fixtures=int(len(fixtures)),
+            entries=int(len(entries)),
+            matched=int(len(out)),
+        )
+        return out
+
+    def _lookup_historical_betfair_prices_from_db(
+        self,
+        home_team: str,
+        away_team: str,
+        home_norm: str,
+        away_norm: str,
+        kickoff_time: pd.Timestamp,
+    ) -> dict[str, str] | None:
+        started_at = time.perf_counter()
+        label = f"single_lookup|{str(home_team or '').strip()}|{str(away_team or '').strip()}"
+        if not self._load_historical_price_db_cache():
+            self._log_price_timing(label, "db_unavailable", started_at)
+            return None
+
+        home_rows = self._query_historical_price_rows_for_team(home_team)
+        away_rows = self._query_historical_price_rows_for_team(away_team)
+        frames: list[pd.DataFrame] = []
+        for df in (home_rows, away_rows):
+            if not isinstance(df, pd.DataFrame) or df.empty:
+                continue
+            # Exclude all-NA frames to avoid pandas concat FutureWarning.
+            if df.dropna(how="all").empty:
+                continue
+            frames.append(df)
+        if not frames:
+            combined = pd.DataFrame()
+        elif len(frames) == 1:
+            combined = frames[0].copy()
+        else:
+            combined = pd.concat(frames, ignore_index=True)
+        if "__rowid" in combined.columns:
+            combined = combined.drop_duplicates(subset=["__rowid"], keep="last")
+        entries = self._build_historical_price_entries_from_rows(combined)
+        if not entries:
+            self._log_price_timing(label, "no_entries", started_at)
+            return self._historical_default_price_snapshot()
+
+        by_pair: dict[tuple[str, str], list[dict[str, Any]]] = {}
+        for entry in entries:
+            pair_key = (str(entry.get("home_norm", "")).strip(), str(entry.get("away_norm", "")).strip())
+            by_pair.setdefault(pair_key, []).append(entry)
+
+        pair_entries = by_pair.get((home_norm, away_norm), [])
+        best_prices: dict[str, str] | None = None
+        best_delta_minutes = float("inf")
+        kickoff_day_iso = kickoff_time.strftime("%Y-%m-%d")
+        for entry in pair_entries:
+            entry_kickoff = pd.to_datetime(entry.get("kickoff_time"), errors="coerce", utc=True)
+            if pd.isna(entry_kickoff):
+                continue
+            day_iso = entry_kickoff.strftime("%Y-%m-%d")
+            delta_minutes = abs(float((entry_kickoff - kickoff_time).total_seconds()) / 60.0)
+            if delta_minutes < best_delta_minutes:
+                best_delta_minutes = delta_minutes
+                best_prices = dict(entry.get("prices", {}))
+            if best_prices is not None and best_delta_minutes <= 180 and day_iso == kickoff_day_iso:
+                break
+
+        if best_prices is None or best_delta_minutes > (24 * 60):
+            self._log_price_timing(label, "no_match", started_at, pair_entries=int(len(pair_entries)))
+            return self._historical_default_price_snapshot()
+        self._log_price_timing(
+            label,
+            "complete",
+            started_at,
+            pair_entries=int(len(pair_entries)),
+            delta_min=f"{best_delta_minutes:.1f}",
+        )
+        return best_prices
 
     @staticmethod
     def _stream_ltp_key(selection_id: int, handicap: float | None) -> tuple[int, float | None]:
@@ -672,13 +1470,17 @@ class HistoricalBetfairDataService:
         away_team: str,
         kickoff_ts: Any,
     ) -> dict[str, str]:
+        started_at = time.perf_counter()
+        label = f"lookup|{str(home_team or '').strip()}|{str(away_team or '').strip()}"
         kickoff_time = pd.to_datetime(kickoff_ts, errors="coerce", utc=True)
         if pd.isna(kickoff_time):
+            self._log_price_timing(label, "invalid_kickoff", started_at)
             return self._historical_default_price_snapshot()
 
         home_norm = normalize_team_name(home_team)
         away_norm = normalize_team_name(away_team)
         if not home_norm or not away_norm:
+            self._log_price_timing(label, "invalid_team_names", started_at)
             return self._historical_default_price_snapshot()
 
         cache_key = (
@@ -688,7 +1490,20 @@ class HistoricalBetfairDataService:
         )
         cached = self._historical_match_price_cache.get(cache_key)
         if cached is not None:
+            self._log_price_timing(label, "match_cache_hit", started_at)
             return dict(cached)
+
+        db_prices = self._lookup_historical_betfair_prices_from_db(
+            home_team=home_team,
+            away_team=away_team,
+            home_norm=home_norm,
+            away_norm=away_norm,
+            kickoff_time=kickoff_time,
+        )
+        if db_prices is not None:
+            self._historical_match_price_cache[cache_key] = dict(db_prices)
+            self._log_price_timing(label, "db_lookup_complete", started_at)
+            return db_prices
 
         day_candidates = [
             kickoff_time.normalize(),
@@ -733,10 +1548,12 @@ class HistoricalBetfairDataService:
         if best_event is None or best_delta_minutes > (24 * 60):
             out = self._historical_default_price_snapshot()
             self._historical_match_price_cache[cache_key] = dict(out)
+            self._log_price_timing(label, "archive_no_match", started_at)
             return out
 
         out = self._historical_event_closing_prices(best_event)
         self._historical_match_price_cache[cache_key] = dict(out)
+        self._log_price_timing(label, "archive_lookup_complete", started_at, delta_min=f"{best_delta_minutes:.1f}")
         return out
 
     @staticmethod
@@ -1147,6 +1964,13 @@ class HistoricalBetfairDataService:
             self._historical_event_stream_cache = {}
             self._historical_event_price_cache = {}
             self._historical_match_price_cache = {}
+            self._historical_price_db_loaded = False
+            self._historical_price_db_available = False
+            self._historical_price_db_table_name = None
+            self._historical_team_mapping_table_name = None
+            self._historical_price_db_columns = {}
+            self._historical_price_db_team_rows_cache = {}
+            self._historical_team_mapping_cache = {}
 
         updated_df = historical_df.copy()
         changed_games = 0

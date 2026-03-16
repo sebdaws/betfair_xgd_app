@@ -2,14 +2,25 @@
 
 from __future__ import annotations
 
+import time
+
 from xgd_app.core import *  # noqa: F401,F403
 
 class GameXgdService:
     def __init__(self, state: Any) -> None:
         self.state = state
+        self._verbose_timing = False
 
     def __getattr__(self, name: str) -> Any:
         return getattr(self.state, name)
+
+    def _log_hcperf_timing(self, label: str, step: str, started_at: float, **meta: Any) -> None:
+        if not bool(getattr(self, "_verbose_timing", False)):
+            return
+        elapsed_ms = (time.perf_counter() - started_at) * 1000.0
+        parts = [f"{k}={v}" for k, v in meta.items() if v is not None]
+        meta_text = f" | {' '.join(parts)}" if parts else ""
+        print(f"[HC PERF TIMING] {label} | {step} | {elapsed_ms:.1f}ms{meta_text}", flush=True)
 
     def _parse_historical_match_id(self, market_id: Any) -> int | None:
         return self.state.historical_data_service._parse_historical_match_id(market_id)
@@ -43,19 +54,28 @@ class GameXgdService:
         season_id: Any,
         kickoff_time: Any,
         resolve_from_archive: bool = False,
+        timing_label: str = "",
     ) -> list[dict[str, Any]]:
+        func_started_at = time.perf_counter()
+        label = timing_label or str(team_name or "team")
         team = str(team_name or "").strip()
         kickoff_ts = pd.to_datetime(kickoff_time, errors="coerce", utc=True)
         if not team or pd.isna(kickoff_ts):
+            self._log_hcperf_timing(label, "early_exit_invalid_team_or_kickoff", func_started_at)
             return []
         if self.form_df.empty:
+            self._log_hcperf_timing(label, "early_exit_empty_form_df", func_started_at)
             return []
         if "team" not in self.form_df.columns or "date_time" not in self.form_df.columns:
+            self._log_hcperf_timing(label, "early_exit_missing_form_columns", func_started_at)
             return []
 
+        step_started_at = time.perf_counter()
         with self.lock:
             historical_df = self.historical_games_df.copy()
+        self._log_hcperf_timing(label, "copy_historical_df", step_started_at, rows=int(len(historical_df)))
         historical_by_match_id: dict[int, dict[str, str]] = {}
+        step_started_at = time.perf_counter()
         if isinstance(historical_df, pd.DataFrame) and (not historical_df.empty):
             for hist_row in historical_df.to_dict(orient="records"):
                 match_id_raw = hist_row.get("match_id")
@@ -70,23 +90,69 @@ class GameXgdService:
                     "home_price": str(hist_row.get("home_price", "-") or "-"),
                     "away_price": str(hist_row.get("away_price", "-") or "-"),
                 }
+        self._log_hcperf_timing(label, "build_historical_by_match_id", step_started_at, entries=int(len(historical_by_match_id)))
 
+        step_started_at = time.perf_counter()
         team_df = self.form_df[self.form_df["team"].astype(str) == team].copy()
         if team_df.empty:
+            self._log_hcperf_timing(label, "early_exit_team_not_found", step_started_at)
             return []
         team_df["date_time"] = pd.to_datetime(team_df["date_time"], errors="coerce", utc=True)
         team_df = team_df[team_df["date_time"].notna()].copy()
         team_df = team_df[team_df["date_time"] < kickoff_ts].copy()
         if team_df.empty:
+            self._log_hcperf_timing(label, "early_exit_no_games_before_kickoff", step_started_at)
             return []
+        self._log_hcperf_timing(label, "filter_team_games", step_started_at, rows=int(len(team_df)))
 
         if season_id is not None and (not pd.isna(season_id)) and "season_id" in team_df.columns:
+            step_started_at = time.perf_counter()
             season_filtered = team_df[team_df["season_id"] == season_id].copy()
             if not season_filtered.empty:
                 team_df = season_filtered
+            self._log_hcperf_timing(label, "season_filter", step_started_at, rows=int(len(team_df)))
 
+        step_started_at = time.perf_counter()
         team_df = team_df.sort_values("date_time", ascending=False).reset_index(drop=True)
+        self._log_hcperf_timing(label, "sort_team_games", step_started_at, rows=int(len(team_df)))
+        archive_prices_by_fixture: dict[tuple[str, str, str], dict[str, str]] = {}
+        if resolve_from_archive:
+            step_started_at = time.perf_counter()
+            fixture_rows: list[dict[str, Any]] = []
+            for src_row in team_df.to_dict(orient="records"):
+                venue_text = str(src_row.get("venue", "")).strip().lower()
+                opponent_text = str(src_row.get("opponent", "")).strip()
+                kickoff_src = src_row.get("date_time")
+                if not opponent_text or pd.isna(kickoff_src):
+                    continue
+                is_home_src = venue_text == "home"
+                fixture_rows.append(
+                    {
+                        "match_id": src_row.get("match_id"),
+                        "home_team": team if is_home_src else opponent_text,
+                        "away_team": opponent_text if is_home_src else team,
+                        "kickoff_time": kickoff_src,
+                    }
+                )
+            self._log_hcperf_timing(label, "prepare_fixture_rows", step_started_at, fixtures=int(len(fixture_rows)))
+            step_started_at = time.perf_counter()
+            archive_prices_by_fixture = self.state.historical_data_service._bulk_lookup_historical_betfair_prices_for_team_fixtures(
+                team_name=team,
+                fixtures=fixture_rows,
+            )
+            self._log_hcperf_timing(
+                label,
+                "bulk_lookup_prices",
+                step_started_at,
+                matched=int(len(archive_prices_by_fixture)),
+                fixtures=int(len(fixture_rows)),
+            )
         rows: list[dict[str, Any]] = []
+        loop_started_at = time.perf_counter()
+        bulk_hit_count = 0
+        historical_hit_count = 0
+        fallback_lookup_count = 0
+        fallback_lookup_time_ms = 0.0
         for row in team_df.to_dict(orient="records"):
             venue = str(row.get("venue", "")).strip().lower()
             opponent = str(row.get("opponent", "")).strip()
@@ -99,18 +165,34 @@ class GameXgdService:
             match_id_raw = row.get("match_id")
             closing = None
             if resolve_from_archive:
+                fixture_key = self.state.historical_data_service._historical_price_lookup_key(
+                    normalize_team_name(home_team),
+                    normalize_team_name(away_team),
+                    pd.to_datetime(row.get("date_time"), errors="coerce", utc=True),
+                )
+                closing = archive_prices_by_fixture.get(fixture_key)
+                if isinstance(closing, dict):
+                    bulk_hit_count += 1
                 if match_id_raw is not None and (not pd.isna(match_id_raw)):
                     try:
-                        closing = historical_by_match_id.get(int(match_id_raw))
+                        db_closing = historical_by_match_id.get(int(match_id_raw))
+                        current_mainline = str((closing or {}).get("mainline", "")).strip() if isinstance(closing, dict) else ""
+                        db_mainline = str((db_closing or {}).get("mainline", "")).strip() if isinstance(db_closing, dict) else ""
+                        if isinstance(db_closing, dict) and (not current_mainline or current_mainline == "-") and db_mainline and db_mainline != "-":
+                            closing = db_closing
+                            historical_hit_count += 1
                     except Exception:
-                        closing = None
+                        pass
                 closing_mainline = str((closing or {}).get("mainline", "")).strip() if isinstance(closing, dict) else ""
                 if not closing_mainline or closing_mainline == "-":
+                    fallback_started_at = time.perf_counter()
                     closing = self.state.historical_data_service._lookup_historical_betfair_prices(
                         home_team=home_team,
                         away_team=away_team,
                         kickoff_ts=row.get("date_time"),
                     )
+                    fallback_lookup_count += 1
+                    fallback_lookup_time_ms += (time.perf_counter() - fallback_started_at) * 1000.0
             else:
                 if match_id_raw is not None and (not pd.isna(match_id_raw)):
                     try:
@@ -164,6 +246,17 @@ class GameXgdService:
                     "xg_verdict": self._handicap_verdict(xg_vs_hc),
                 }
             )
+        self._log_hcperf_timing(
+            label,
+            "build_rows_loop",
+            loop_started_at,
+            rows=int(len(rows)),
+            bulk_hits=int(bulk_hit_count),
+            historical_hits=int(historical_hit_count),
+            fallback_calls=int(fallback_lookup_count),
+            fallback_ms=f"{fallback_lookup_time_ms:.1f}",
+        )
+        self._log_hcperf_timing(label, "total_team_build", func_started_at, rows=int(len(rows)))
         return rows
 
     def _resolve_fixture_context_for_market(self, market_id: str) -> dict[str, Any]:
@@ -217,40 +310,76 @@ class GameXgdService:
             "is_historical": False,
         }
 
-    def get_game_hc_performance(self, market_id: str) -> dict[str, Any]:
-        context = self._resolve_fixture_context_for_market(market_id=market_id)
-        home_team = str(context.get("home_team", "")).strip()
-        away_team = str(context.get("away_team", "")).strip()
-        kickoff_time = context.get("kickoff_time")
-        fixture_season_id = context.get("fixture_season_id")
-        if not home_team or not away_team or pd.isna(kickoff_time):
+    def get_game_hc_performance(self, market_id: str, verbose: bool = False) -> dict[str, Any]:
+        previous_verbose = bool(getattr(self, "_verbose_timing", False))
+        historical_service = self.state.historical_data_service
+        previous_price_verbose = bool(getattr(historical_service, "_verbose_timing", False))
+        self._verbose_timing = bool(verbose)
+        historical_service._verbose_timing = bool(verbose)
+        try:
+            req_started_at = time.perf_counter()
+            req_label = f"{market_id}"
+            self._log_hcperf_timing(req_label, "request_start", req_started_at)
+            step_started_at = time.perf_counter()
+            context = self._resolve_fixture_context_for_market(market_id=market_id)
+            self._log_hcperf_timing(
+                req_label,
+                "resolve_fixture_context",
+                step_started_at,
+                home=str(context.get("home_team", "")).strip(),
+                away=str(context.get("away_team", "")).strip(),
+            )
+            home_team = str(context.get("home_team", "")).strip()
+            away_team = str(context.get("away_team", "")).strip()
+            kickoff_time = context.get("kickoff_time")
+            fixture_season_id = context.get("fixture_season_id")
+            if not home_team or not away_team or pd.isna(kickoff_time):
+                self._log_hcperf_timing(req_label, "early_exit_invalid_context", req_started_at)
+                return {
+                    "market_id": str(context.get("market_id", market_id)),
+                    "home_label": str(context.get("home_label", "Home team")),
+                    "away_label": str(context.get("away_label", "Away team")),
+                    "season_handicap_rows": {"home": [], "away": []},
+                    "is_historical": bool(context.get("is_historical")),
+                }
+            step_started_at = time.perf_counter()
+            home_rows = self._build_team_season_handicap_rows(
+                team_name=home_team,
+                season_id=fixture_season_id,
+                kickoff_time=kickoff_time,
+                resolve_from_archive=True,
+                timing_label=f"{req_label}|home|{home_team}",
+            )
+            self._log_hcperf_timing(req_label, "build_home_rows", step_started_at, rows=int(len(home_rows)))
+            step_started_at = time.perf_counter()
+            away_rows = self._build_team_season_handicap_rows(
+                team_name=away_team,
+                season_id=fixture_season_id,
+                kickoff_time=kickoff_time,
+                resolve_from_archive=True,
+                timing_label=f"{req_label}|away|{away_team}",
+            )
+            self._log_hcperf_timing(req_label, "build_away_rows", step_started_at, rows=int(len(away_rows)))
+            self._log_hcperf_timing(
+                req_label,
+                "request_total",
+                req_started_at,
+                home_rows=int(len(home_rows)),
+                away_rows=int(len(away_rows)),
+            )
             return {
                 "market_id": str(context.get("market_id", market_id)),
-                "home_label": str(context.get("home_label", "Home team")),
-                "away_label": str(context.get("away_label", "Away team")),
-                "season_handicap_rows": {"home": [], "away": []},
+                "home_label": str(context.get("home_label", home_team)),
+                "away_label": str(context.get("away_label", away_team)),
+                "season_handicap_rows": {
+                    "home": home_rows,
+                    "away": away_rows,
+                },
                 "is_historical": bool(context.get("is_historical")),
             }
-        return {
-            "market_id": str(context.get("market_id", market_id)),
-            "home_label": str(context.get("home_label", home_team)),
-            "away_label": str(context.get("away_label", away_team)),
-            "season_handicap_rows": {
-                "home": self._build_team_season_handicap_rows(
-                    team_name=home_team,
-                    season_id=fixture_season_id,
-                    kickoff_time=kickoff_time,
-                    resolve_from_archive=True,
-                ),
-                "away": self._build_team_season_handicap_rows(
-                    team_name=away_team,
-                    season_id=fixture_season_id,
-                    kickoff_time=kickoff_time,
-                    resolve_from_archive=True,
-                ),
-            },
-            "is_historical": bool(context.get("is_historical")),
-        }
+        finally:
+            self._verbose_timing = previous_verbose
+            historical_service._verbose_timing = previous_price_verbose
 
     def get_game_xgd(self, market_id: str, recent_n: int = 5, venue_recent_n: int = 5) -> dict[str, Any]:
         recent_n = clamp_int(recent_n, default=5, min_value=1, max_value=20)
