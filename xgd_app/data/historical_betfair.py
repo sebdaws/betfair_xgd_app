@@ -895,16 +895,18 @@ class HistoricalBetfairDataService:
         for df in (home_rows, away_rows):
             if not isinstance(df, pd.DataFrame) or df.empty:
                 continue
-            # Exclude all-NA frames to avoid pandas concat FutureWarning.
-            if df.dropna(how="all").empty:
+            df_non_empty = df.dropna(how="all")
+            if df_non_empty.empty:
                 continue
-            frames.append(df)
+            frames.append(df_non_empty)
         if not frames:
             combined = pd.DataFrame()
-        elif len(frames) == 1:
-            combined = frames[0].copy()
         else:
-            combined = pd.concat(frames, ignore_index=True)
+            # Build from records to avoid pandas concat FutureWarning for sparse/all-NA columns.
+            records: list[dict[str, Any]] = []
+            for df in frames:
+                records.extend(df.to_dict(orient="records"))
+            combined = pd.DataFrame.from_records(records)
         if "__rowid" in combined.columns:
             combined = combined.drop_duplicates(subset=["__rowid"], keep="last")
         entries = self._build_historical_price_entries_from_rows(combined)

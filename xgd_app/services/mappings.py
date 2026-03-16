@@ -125,10 +125,38 @@ class MappingService:
         with self.state.lock:
             return dict(self.state.manual_competition_mapping_lookup)
 
-    def _load_historical_db_unmatched_team_rows(self) -> list[dict[str, Any]]:
+    def _selected_betfair_competition_names(self) -> set[str]:
+        games_service = getattr(self.state, "games_service", None)
+        if games_service is None:
+            return set()
+        selected_path = getattr(games_service, "default_selected_leagues", None)
+        loader = getattr(games_service, "load_selected_league_entries", None)
+        if selected_path is None or not callable(loader):
+            return set()
+        try:
+            entries, _ = loader(selected_path)
+        except Exception:
+            return set()
+        return {
+            str(row.get("competition_name", "")).strip()
+            for row in entries
+            if str(row.get("competition_name", "")).strip()
+        }
+
+    def _load_historical_db_unmatched_team_rows(
+        self,
+        *,
+        allowed_competitions: set[str] | None = None,
+    ) -> list[dict[str, Any]]:
         db_path = Path(getattr(self.state, "sofascore_db_path", "")).expanduser().resolve()
         if not db_path.exists():
             return []
+
+        allowed_competition_norms = {
+            self.normalize_competition_key(name)
+            for name in (allowed_competitions or set())
+            if self.normalize_competition_key(name)
+        }
 
         conn: sqlite3.Connection | None = None
         try:
@@ -144,16 +172,46 @@ class MappingService:
             if not has_hist:
                 return []
 
+            hist_col_rows = conn.execute("PRAGMA table_info(betfair_historical_prices)").fetchall()
+            hist_cols = {
+                str(row[1]).strip().casefold(): str(row[1]).strip()
+                for row in hist_col_rows
+                if len(row) > 1 and str(row[1]).strip()
+            }
+            competition_col = None
+            for candidate in (
+                "betfair_competition_name",
+                "competition_name",
+                "competition",
+                "event_type_name",
+                "event_competition_name",
+            ):
+                found = hist_cols.get(candidate.casefold())
+                if found:
+                    competition_col = found
+                    break
+
+            if allowed_competition_norms and not competition_col:
+                return []
+
+            comp_expr = f"TRIM(COALESCE({competition_col}, ''))" if competition_col else "''"
+            comp_filter_sql = ""
+            comp_filter_params: list[Any] = []
+            if allowed_competition_norms and competition_col:
+                placeholders = ", ".join("?" for _ in allowed_competition_norms)
+                comp_filter_sql = f" AND LOWER(TRIM(COALESCE({competition_col}, ''))) IN ({placeholders})"
+                comp_filter_params = [str(value).strip().lower() for value in sorted(allowed_competition_norms)]
+
             if has_team_map:
                 query = """
                     WITH hist_names AS (
-                        SELECT DISTINCT TRIM(betfair_home_team_name) AS raw_name
+                        SELECT DISTINCT TRIM(betfair_home_team_name) AS raw_name, {comp_expr} AS competition
                         FROM betfair_historical_prices
-                        WHERE betfair_home_team_name IS NOT NULL AND TRIM(betfair_home_team_name) <> ''
+                        WHERE betfair_home_team_name IS NOT NULL AND TRIM(betfair_home_team_name) <> ''{comp_filter_sql}
                         UNION
-                        SELECT DISTINCT TRIM(betfair_away_team_name) AS raw_name
+                        SELECT DISTINCT TRIM(betfair_away_team_name) AS raw_name, {comp_expr} AS competition
                         FROM betfair_historical_prices
-                        WHERE betfair_away_team_name IS NOT NULL AND TRIM(betfair_away_team_name) <> ''
+                        WHERE betfair_away_team_name IS NOT NULL AND TRIM(betfair_away_team_name) <> ''{comp_filter_sql}
                     ),
                     map_agg AS (
                         SELECT
@@ -170,6 +228,7 @@ class MappingService:
                     )
                     SELECT
                         h.raw_name,
+                        h.competition,
                         COALESCE(m.seen_count, 0) AS seen_count
                     FROM hist_names h
                     LEFT JOIN map_agg m
@@ -178,20 +237,30 @@ class MappingService:
                         m.raw_key IS NULL
                         OR m.has_sofa = 0
                         OR m.has_unmatched_method = 1
-                """
+                """.format(comp_expr=comp_expr, comp_filter_sql=comp_filter_sql)
+                params: list[Any] = []
+                if comp_filter_params:
+                    params.extend(comp_filter_params)
+                    params.extend(comp_filter_params)
             else:
                 query = """
-                    SELECT DISTINCT TRIM(raw_name) AS raw_name, 0 AS seen_count
+                    SELECT DISTINCT TRIM(raw_name) AS raw_name, TRIM(competition) AS competition, 0 AS seen_count
                     FROM (
-                        SELECT betfair_home_team_name AS raw_name
+                        SELECT betfair_home_team_name AS raw_name, {comp_expr} AS competition
                         FROM betfair_historical_prices
+                        WHERE betfair_home_team_name IS NOT NULL AND TRIM(betfair_home_team_name) <> ''{comp_filter_sql}
                         UNION ALL
-                        SELECT betfair_away_team_name AS raw_name
+                        SELECT betfair_away_team_name AS raw_name, {comp_expr} AS competition
                         FROM betfair_historical_prices
+                        WHERE betfair_away_team_name IS NOT NULL AND TRIM(betfair_away_team_name) <> ''{comp_filter_sql}
                     )
                     WHERE raw_name IS NOT NULL AND TRIM(raw_name) <> ''
-                """
-            rows = conn.execute(query).fetchall()
+                """.format(comp_expr=comp_expr, comp_filter_sql=comp_filter_sql)
+                params = []
+                if comp_filter_params:
+                    params.extend(comp_filter_params)
+                    params.extend(comp_filter_params)
+            rows = conn.execute(query, params).fetchall()
         except Exception:
             return []
         finally:
@@ -210,9 +279,10 @@ class MappingService:
             seen_raw_lower.add(raw_lower)
             seen_count = 0
             try:
-                seen_count = int(row[1] if len(row) > 1 else 0)
+                seen_count = int(row[2] if len(row) > 2 else 0)
             except Exception:
                 seen_count = 0
+            competition_name = str(row[1] if len(row) > 1 else "").strip()
             event_label = "Historical Betfair Prices"
             if seen_count > 0:
                 event_label = f"Historical Betfair Prices (seen {seen_count})"
@@ -221,7 +291,7 @@ class MappingService:
                     "raw_name": raw_name,
                     "side": "Any",
                     "event_name": event_label,
-                    "competition": "Historical DB",
+                    "competition": competition_name or "Historical DB",
                     "kickoff_raw": "",
                 }
             )
@@ -245,8 +315,8 @@ class MappingService:
             sofa_competition_by_norm = dict(self.state.sofa_competition_by_norm)
             sofa_competition_set = set(self.state.sofa_competitions)
 
-        selected_betfair_competitions: set[str] = set()
-        if not games_df.empty and "competition" in games_df.columns:
+        selected_betfair_competitions: set[str] = self._selected_betfair_competition_names()
+        if (not selected_betfair_competitions) and (not games_df.empty) and ("competition" in games_df.columns):
             selected_betfair_competitions = {
                 str(value).strip()
                 for value in games_df["competition"].dropna().tolist()
@@ -464,7 +534,9 @@ class MappingService:
                 and self.normalize_team_name(str(row.get("raw_name", "")).strip()) not in manual_raw_norms
             )
         ]
-        historical_unmatched_rows = self._load_historical_db_unmatched_team_rows()
+        historical_unmatched_rows = self._load_historical_db_unmatched_team_rows(
+            allowed_competitions=selected_betfair_competitions
+        )
         if historical_unmatched_rows:
             existing_unmatched_norms = {
                 self.normalize_team_name(str(row.get("raw_name", "")).strip())
