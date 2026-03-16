@@ -24,8 +24,6 @@
 3039445|Costa Rican Liga de Ascenso
 2079376|Costa Rican Primera Division
 17|Croatian HNL
-19|Cypriot 1st Division
-862638|Czech 2 Liga
 23|Danish Superliga
 11|Dutch Eerste Divisie
 9404054|Dutch Eredivisie
@@ -46,14 +44,12 @@
 37|English Sky Bet League 2
 12511339|English U21 Pro Development League
 12202273|English WSL
-873203|Estonian Esiliiga
 12216175|Estonian Premier League
 12469077|FIFA World Cup
 12209560|French Cup
 55|French Ligue 1
 57|French Ligue 2
 1081960|French National
-2273834|Georgian Umaglesi Liga
 59|German Bundesliga
 61|German Bundesliga 2
 11458113|German Cup
@@ -64,7 +60,6 @@
 849220|Icelandic League Cup
 12199393|Indian I-League
 12203971|Irish Premier Division
-12201574|Italian Campionato Primavera
 12214429|Italian Coppa Italia
 81|Italian Serie A
 12199689|Italian Serie B
@@ -87,6 +82,7 @@
 839575|Paraguayan Primera Division
 11838780|Polish 2 Liga
 97|Polish Ekstraklasa
+7710075|Polish III Liga
 12218844|Portuguese Cup
 99|Portuguese Primeira Liga
 9513|Portuguese Segunda Liga
@@ -97,7 +93,6 @@
 109|Scottish League One
 111|Scottish League Two
 105|Scottish Premiership
-103|Serbian Super League
 97855|Slovakian Cup
 115|Slovenian Premier League
 10699940|South African Premier Division
@@ -109,7 +104,6 @@
 129|Swedish Allsvenskan
 133|Swiss Super League
 12209388|Thai League 1
-175680|Turkish 1 Lig
 194215|Turkish Super League
 11641480|UAE Arabian Gulf League
 228|UEFA Champions League

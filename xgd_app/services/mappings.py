@@ -14,7 +14,7 @@ NormalizeCompetitionKeyFn = Callable[[str], str]
 MapBetfairGamesFn = Callable[..., tuple[list[dict[str, Any]], Any]]
 MatchCompetitionNameFn = Callable[..., tuple[str | None, float | None, str]]
 
-MAX_UNMATCHED_TEAM_ROWS_PAYLOAD = 1200
+MAX_UNMATCHED_TEAM_ROWS_PAYLOAD = 5000
 MAX_UNMATCHED_COMPETITION_ROWS_PAYLOAD = 600
 
 
@@ -198,23 +198,17 @@ class MappingService:
                 return []
 
             comp_expr = f"TRIM(COALESCE({competition_col}, ''))" if competition_col else "''"
-            comp_filter_sql = ""
-            comp_filter_params: list[Any] = []
-            if allowed_competition_norms and competition_col:
-                placeholders = ", ".join("?" for _ in allowed_competition_norms)
-                comp_filter_sql = f" AND LOWER(TRIM(COALESCE({competition_col}, ''))) IN ({placeholders})"
-                comp_filter_params = [str(value).strip().lower() for value in sorted(allowed_competition_norms)]
 
             if has_team_map:
                 query = """
                     WITH hist_names AS (
                         SELECT DISTINCT TRIM(betfair_home_team_name) AS raw_name, {comp_expr} AS competition
                         FROM betfair_historical_prices
-                        WHERE betfair_home_team_name IS NOT NULL AND TRIM(betfair_home_team_name) <> ''{comp_filter_sql}
+                        WHERE betfair_home_team_name IS NOT NULL AND TRIM(betfair_home_team_name) <> ''
                         UNION
                         SELECT DISTINCT TRIM(betfair_away_team_name) AS raw_name, {comp_expr} AS competition
                         FROM betfair_historical_prices
-                        WHERE betfair_away_team_name IS NOT NULL AND TRIM(betfair_away_team_name) <> ''{comp_filter_sql}
+                        WHERE betfair_away_team_name IS NOT NULL AND TRIM(betfair_away_team_name) <> ''
                     ),
                     map_agg AS (
                         SELECT
@@ -240,29 +234,23 @@ class MappingService:
                         m.raw_key IS NULL
                         OR m.has_sofa = 0
                         OR m.has_unmatched_method = 1
-                """.format(comp_expr=comp_expr, comp_filter_sql=comp_filter_sql)
+                """.format(comp_expr=comp_expr)
                 params: list[Any] = []
-                if comp_filter_params:
-                    params.extend(comp_filter_params)
-                    params.extend(comp_filter_params)
             else:
                 query = """
                     SELECT DISTINCT TRIM(raw_name) AS raw_name, TRIM(competition) AS competition, 0 AS seen_count
                     FROM (
                         SELECT betfair_home_team_name AS raw_name, {comp_expr} AS competition
                         FROM betfair_historical_prices
-                        WHERE betfair_home_team_name IS NOT NULL AND TRIM(betfair_home_team_name) <> ''{comp_filter_sql}
+                        WHERE betfair_home_team_name IS NOT NULL AND TRIM(betfair_home_team_name) <> ''
                         UNION ALL
                         SELECT betfair_away_team_name AS raw_name, {comp_expr} AS competition
                         FROM betfair_historical_prices
-                        WHERE betfair_away_team_name IS NOT NULL AND TRIM(betfair_away_team_name) <> ''{comp_filter_sql}
+                        WHERE betfair_away_team_name IS NOT NULL AND TRIM(betfair_away_team_name) <> ''
                     )
                     WHERE raw_name IS NOT NULL AND TRIM(raw_name) <> ''
-                """.format(comp_expr=comp_expr, comp_filter_sql=comp_filter_sql)
+                """.format(comp_expr=comp_expr)
                 params = []
-                if comp_filter_params:
-                    params.extend(comp_filter_params)
-                    params.extend(comp_filter_params)
             rows = conn.execute(query, params).fetchall()
         except Exception:
             return []
@@ -286,6 +274,10 @@ class MappingService:
             except Exception:
                 seen_count = 0
             competition_name = str(row[1] if len(row) > 1 else "").strip()
+            if allowed_competition_norms:
+                competition_norm = self.normalize_competition_key(competition_name)
+                if not competition_norm or competition_norm not in allowed_competition_norms:
+                    continue
             event_label = "Historical Betfair Prices"
             if seen_count > 0:
                 event_label = f"Historical Betfair Prices (seen {seen_count})"
@@ -306,8 +298,8 @@ class MappingService:
             raw_name = str(row.get("raw_name", "")).strip()
             if not raw_name:
                 continue
-            raw_norm = self.normalize_team_name(raw_name) or raw_name.casefold()
-            if not raw_norm:
+            raw_key = raw_name.casefold()
+            if not raw_key:
                 continue
 
             side = str(row.get("side", "")).strip() or "Any"
@@ -315,9 +307,9 @@ class MappingService:
             competition = str(row.get("competition", "")).strip()
             kickoff_raw = str(row.get("kickoff_raw", "")).strip()
 
-            existing = collapsed.get(raw_norm)
+            existing = collapsed.get(raw_key)
             if existing is None:
-                collapsed[raw_norm] = {
+                collapsed[raw_key] = {
                     "raw_name": raw_name,
                     "side": side,
                     "event_name": event_name,
@@ -778,7 +770,21 @@ class MappingService:
         if sofa_team not in self.state.team_matcher.team_set:
             raise ValueError(f"Unknown SofaScore team: {sofa_team}")
 
+        raw_norm = self.normalize_team_name(raw_team)
         with self.state.lock:
+            if raw_norm:
+                conflicting_keys = [
+                    existing_raw
+                    for existing_raw, existing_sofa in self.state.manual_team_mappings.items()
+                    if (
+                        str(existing_raw).strip()
+                        and str(existing_raw).strip() != raw_team
+                        and self.normalize_team_name(existing_raw) == raw_norm
+                        and str(existing_sofa).strip() != sofa_team
+                    )
+                ]
+                for existing_raw in conflicting_keys:
+                    self.state.manual_team_mappings.pop(existing_raw, None)
             self.state.manual_team_mappings[raw_team] = sofa_team
             self.state.manual_mapping_lookup = self.build_manual_mapping_lookup(self.state.manual_team_mappings)
             self._save_manual_team_mappings()

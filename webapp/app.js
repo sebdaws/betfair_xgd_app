@@ -299,12 +299,6 @@ function renderManualMappingSections(payload) {
   const autoCountRaw = Number(payload?.auto_count);
   const manualCount = Number.isFinite(manualCountRaw) ? manualCountRaw : manualMappings.length;
   const autoCount = Number.isFinite(autoCountRaw) ? autoCountRaw : autoMappings.length;
-  const teamMappingsByRawName = new Map();
-  for (const row of teamMappings) {
-    const key = String(row?.raw_name || "").trim();
-    if (!key || teamMappingsByRawName.has(key)) continue;
-    teamMappingsByRawName.set(key, row);
-  }
   const mappedSofaNames = new Set(
     teamMappings
       .map((row) => String(row?.sofa_name || "").trim())
@@ -313,9 +307,6 @@ function renderManualMappingSections(payload) {
   const normalizedSofaTeams = sofaTeams
     .map((team) => String(team || "").trim())
     .filter((team) => !!team);
-  const sofaTeamLookup = new Map(
-    normalizedSofaTeams.map((team) => [team.toLowerCase(), team])
-  );
   const availableSofaTeams = normalizedSofaTeams
     .map((team) => String(team || "").trim())
     .filter((team) => !!team && !mappedSofaNames.has(team));
@@ -447,18 +438,10 @@ function renderManualMappingSections(payload) {
     for (const row of visibleUnmatchedTeams) {
       const tr = document.createElement("tr");
       const rawName = String(row.raw_name || "");
-      const existing = teamMappingsByRawName.get(rawName);
-      const existingSofaName = String(existing?.sofa_name || "").trim();
-      const existingSofaNameLower = existingSofaName.toLowerCase();
       const resolveSofaTeam = (inputValue) => {
         const normalized = String(inputValue || "").trim();
         if (!normalized) return "";
-        const fromAvailable = availableSofaTeamLookup.get(normalized.toLowerCase());
-        if (fromAvailable) return fromAvailable;
-        if (existingSofaName && normalized.toLowerCase() === existingSofaNameLower) {
-          return existingSofaName;
-        }
-        return "";
+        return availableSofaTeamLookup.get(normalized.toLowerCase()) || "";
       };
       tr.innerHTML = `
         <td>${escapeHtml(String(row.event_name || "-"))}</td>
@@ -479,13 +462,9 @@ function renderManualMappingSections(payload) {
       const renderDropdownOptions = (query = "") => {
         if (!dropdown) return;
         const q = String(query || "").trim().toLowerCase();
-        const baseOptions = !q
+        const options = !q
           ? availableSofaTeams
           : availableSofaTeams.filter((team) => team.toLowerCase().includes(q));
-        const existingMatches = existingSofaName && (!q || existingSofaNameLower.includes(q));
-        const options = existingMatches && !baseOptions.some((team) => team.toLowerCase() === existingSofaNameLower)
-          ? [existingSofaName, ...baseOptions]
-          : baseOptions;
         if (!options.length) {
           dropdown.innerHTML = `<div class="mapping-team-option-empty">No matching teams</div>`;
           return;
@@ -530,9 +509,6 @@ function renderManualMappingSections(payload) {
           dropdown.classList.add("hidden");
           input.focus();
         });
-      }
-      if (input && existing?.sofa_name) {
-        input.value = String(existing.sofa_name);
       }
       const saveBtn = tr.querySelector(".mapping-save-btn");
       if (saveBtn && input) {
@@ -608,7 +584,7 @@ function renderManualMappingSections(payload) {
       const teamDatalistId = "mappingSofaTeamOptions";
       const teamDatalist = document.createElement("datalist");
       teamDatalist.id = teamDatalistId;
-      teamDatalist.innerHTML = normalizedSofaTeams
+      teamDatalist.innerHTML = availableSofaTeams
         .map((teamName) => `<option value="${escapeHtml(teamName)}"></option>`)
         .join("");
       savedMappingsContainer.appendChild(teamDatalist);
@@ -656,7 +632,7 @@ function renderManualMappingSections(payload) {
           saveBtn.addEventListener("click", async () => {
             const selectedRaw = String(teamInput.value || "").trim();
             const selectedLower = selectedRaw.toLowerCase();
-            const selectedSofaName = sofaTeamLookup.get(selectedLower)
+            const selectedSofaName = availableSofaTeamLookup.get(selectedLower)
               || (selectedLower && selectedLower === sofaNameLower ? sofaName : "");
             if (!selectedSofaName) {
               mappingStatus.textContent = "Select a valid SofaScore team before saving.";
