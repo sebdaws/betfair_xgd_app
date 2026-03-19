@@ -247,7 +247,11 @@ class GameXgdService:
             out[game_id] = prices
         return out
 
-    def get_team_hc_rankings(self) -> dict[str, Any]:
+    def get_team_hc_rankings(self, xg_push_threshold: float = 0.1) -> dict[str, Any]:
+        xg_threshold = self._to_float_or_none(xg_push_threshold)
+        if xg_threshold is None or not math.isfinite(float(xg_threshold)):
+            xg_threshold = 0.1
+        xg_threshold = max(0.0, min(5.0, float(xg_threshold)))
         historical_service = self.state.historical_data_service
         source_rows = self._filter_rows_for_hc_rankings_current_season(
             historical_service._prepare_historical_home_rows()
@@ -260,6 +264,7 @@ class GameXgdService:
                 "total_teams": 0,
                 "sort_options": ["result", "xg", "pnl", "pnl_against"],
                 "venue_options": ["overall", "home", "away"],
+                "xg_push_threshold": xg_threshold,
             }
 
         prices_by_match_id = self._build_prices_by_match_id_for_home_rows(source_rows)
@@ -389,8 +394,8 @@ class GameXgdService:
                 float(away_bucket["pnl_against"].get("overall", 0.0)) + float(home_result_pnl)
             )
 
-            home_xg_verdict = self._classify_xg_handicap_delta(xg_delta_home, push_threshold=0.1)
-            away_xg_verdict = self._classify_xg_handicap_delta(xg_delta_away, push_threshold=0.1)
+            home_xg_verdict = self._classify_xg_handicap_delta(xg_delta_home, push_threshold=xg_threshold)
+            away_xg_verdict = self._classify_xg_handicap_delta(xg_delta_away, push_threshold=xg_threshold)
             self._increment_hc_rank_counts(home_bucket["xg"]["home"], home_xg_verdict)
             self._increment_hc_rank_counts(home_bucket["xg"]["overall"], home_xg_verdict)
             self._increment_hc_rank_counts(away_bucket["xg"]["away"], away_xg_verdict)
@@ -488,6 +493,7 @@ class GameXgdService:
             "total_teams": len(rows),
             "sort_options": ["result", "xg", "pnl", "pnl_against"],
             "venue_options": ["overall", "home", "away"],
+            "xg_push_threshold": xg_threshold,
         }
 
     def get_team_hc_ranking_details(self, team_name: str, competition_name: str | None = None) -> dict[str, Any]:
@@ -604,6 +610,8 @@ class GameXgdService:
         kickoff_time: Any,
         resolve_from_archive: bool = False,
         timing_label: str = "",
+        competition_name: str | None = None,
+        area_name: str | None = None,
     ) -> list[dict[str, Any]]:
         func_started_at = time.perf_counter()
         label = timing_label or str(team_name or "team")
@@ -660,6 +668,34 @@ class GameXgdService:
             if not season_filtered.empty:
                 team_df = season_filtered
             self._log_hcperf_timing(label, "season_filter", step_started_at, rows=int(len(team_df)))
+
+        competition_text = str(competition_name or "").strip()
+        if competition_text and "competition_name" in team_df.columns:
+            step_started_at = time.perf_counter()
+            competition_filtered = team_df[team_df["competition_name"].astype(str) == competition_text].copy()
+            if not competition_filtered.empty:
+                team_df = competition_filtered
+            self._log_hcperf_timing(
+                label,
+                "competition_filter",
+                step_started_at,
+                rows=int(len(team_df)),
+                competition=competition_text,
+            )
+
+        area_text = str(area_name or "").strip()
+        if area_text and "area_name" in team_df.columns:
+            step_started_at = time.perf_counter()
+            area_filtered = team_df[team_df["area_name"].astype(str) == area_text].copy()
+            if not area_filtered.empty:
+                team_df = area_filtered
+            self._log_hcperf_timing(
+                label,
+                "area_filter",
+                step_started_at,
+                rows=int(len(team_df)),
+                area=area_text,
+            )
 
         step_started_at = time.perf_counter()
         team_df = team_df.sort_values("date_time", ascending=False).reset_index(drop=True)
@@ -1123,11 +1159,13 @@ class GameXgdService:
                         team_name=str(home_sofa),
                         season_id=fixture_season_id,
                         kickoff_time=kickoff_time,
+                        resolve_from_archive=True,
                     ),
                     "away": self._build_team_season_handicap_rows(
                         team_name=str(away_sofa),
                         season_id=fixture_season_id,
                         kickoff_time=kickoff_time,
+                        resolve_from_archive=True,
                     ),
                 }
 
@@ -1224,6 +1262,7 @@ class GameXgdService:
             "away_recent_rows": away_recent_rows,
             "home_team_venue_rows": home_team_venue_rows,
             "away_team_venue_rows": away_team_venue_rows,
+            "season_handicap_rows": season_handicap_rows,
         }
         xgd_views: list[dict[str, Any]] = [base_view]
 
@@ -1289,6 +1328,25 @@ class GameXgdService:
                         "area_name": cup_area,
                     },
                 )
+                if cup_view:
+                    cup_view["season_handicap_rows"] = {
+                        "home": self._build_team_season_handicap_rows(
+                            team_name=primary_home_sofa,
+                            season_id=primary_mapping_row.get("fixture_season_id"),
+                            kickoff_time=kickoff_time,
+                            resolve_from_archive=True,
+                            competition_name=cup_competition,
+                            area_name=cup_area,
+                        ),
+                        "away": self._build_team_season_handicap_rows(
+                            team_name=primary_away_sofa,
+                            season_id=primary_mapping_row.get("fixture_season_id"),
+                            kickoff_time=kickoff_time,
+                            resolve_from_archive=True,
+                            competition_name=cup_competition,
+                            area_name=cup_area,
+                        ),
+                    }
 
             home_league_comp, home_league_area = infer_team_domestic_competition(
                 form_df=self.form_df,
@@ -1357,6 +1415,25 @@ class GameXgdService:
                             "area_name": away_league_area,
                         },
                     )
+                    if league_view:
+                        league_view["season_handicap_rows"] = {
+                            "home": self._build_team_season_handicap_rows(
+                                team_name=primary_home_sofa,
+                                season_id=home_league_season,
+                                kickoff_time=kickoff_time,
+                                resolve_from_archive=True,
+                                competition_name=home_league_comp,
+                                area_name=home_league_area,
+                            ),
+                            "away": self._build_team_season_handicap_rows(
+                                team_name=primary_away_sofa,
+                                season_id=away_league_season,
+                                kickoff_time=kickoff_time,
+                                resolve_from_archive=True,
+                                competition_name=away_league_comp,
+                                area_name=away_league_area,
+                            ),
+                        }
 
             tier_zero_views = [view for view in (cup_view, league_view) if view]
             if tier_zero_views:

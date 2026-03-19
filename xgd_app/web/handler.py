@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import math
 from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler
 from pathlib import Path
@@ -20,6 +21,16 @@ def _clamp_int(value: Any, default: int, min_value: int, max_value: int) -> int:
     except Exception:
         out = int(default)
     return max(min_value, min(max_value, out))
+
+
+def _clamp_float(value: Any, default: float, min_value: float, max_value: float) -> float:
+    try:
+        out = float(value)
+    except Exception:
+        out = float(default)
+    if not math.isfinite(out):
+        out = float(default)
+    return max(float(min_value), min(float(max_value), out))
 
 
 def _sanitize_for_json(value: Any) -> Any:
@@ -84,7 +95,10 @@ class AppHandler(BaseHTTPRequestHandler):
         if path == "/api/saved-games":
             return self._serve_saved_games()
         if path == "/api/team-hc-rankings":
-            return self._serve_team_hc_rankings()
+            query = parse_qs(parsed.query)
+            xg_threshold_raw = (query.get("xg_threshold") or ["0.1"])[0]
+            xg_threshold = _clamp_float(xg_threshold_raw, default=0.1, min_value=0.0, max_value=5.0)
+            return self._serve_team_hc_rankings(xg_threshold=xg_threshold)
         if path == "/api/team-hc-rankings/details":
             query = parse_qs(parsed.query)
             team_name = (query.get("team") or [""])[0]
@@ -189,9 +203,9 @@ class AppHandler(BaseHTTPRequestHandler):
         except Exception as exc:
             self._json({"error": str(exc)}, status=HTTPStatus.INTERNAL_SERVER_ERROR)
 
-    def _serve_team_hc_rankings(self) -> None:
+    def _serve_team_hc_rankings(self, xg_threshold: float = 0.1) -> None:
         try:
-            payload = self.state.get_team_hc_rankings()
+            payload = self.state.get_team_hc_rankings(xg_push_threshold=xg_threshold)
             self._json(payload)
         except Exception as exc:
             self._json({"error": str(exc)}, status=HTTPStatus.INTERNAL_SERVER_ERROR)

@@ -381,8 +381,8 @@ class AppState:
     def get_game_hc_performance(self, market_id: str, verbose: bool = False) -> dict[str, Any]:
         return self.game_xgd_service.get_game_hc_performance(market_id=market_id, verbose=bool(verbose))
 
-    def get_team_hc_rankings(self) -> dict[str, Any]:
-        return self.game_xgd_service.get_team_hc_rankings()
+    def get_team_hc_rankings(self, xg_push_threshold: float = 0.1) -> dict[str, Any]:
+        return self.game_xgd_service.get_team_hc_rankings(xg_push_threshold=xg_push_threshold)
 
     def get_team_hc_ranking_details(self, team_name: str, competition_name: str | None = None) -> dict[str, Any]:
         return self.game_xgd_service.get_team_hc_ranking_details(team_name=team_name, competition_name=competition_name)

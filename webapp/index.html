@@ -10,6 +10,17 @@
   <header class="topbar">
     <h1>Betfair Handicap Viewer</h1>
     <div class="actions">
+      <label class="topbar-threshold-field" for="xgThresholdInput">
+        <span>xG Threshold</span>
+        <input
+          id="xgThresholdInput"
+          type="text"
+          inputmode="decimal"
+          value="0.10"
+          aria-label="xG threshold for handicap performance and highlights"
+          autocomplete="off"
+        />
+      </label>
       <button id="refreshBtn" type="button">Refresh</button>
       <span id="statusText">Loading...</span>
     </div>

@@ -40,6 +40,26 @@ body {
   flex-wrap: wrap;
 }
 
+.topbar-threshold-field {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.topbar-threshold-field > span {
+  font-size: 0.74rem;
+  font-weight: 700;
+  color: #475569;
+  text-transform: uppercase;
+  letter-spacing: 0.03em;
+  white-space: nowrap;
+}
+
+.topbar-threshold-field > input {
+  width: 76px;
+  text-align: right;
+}
+
 button {
   border: 1px solid var(--line);
   background: #fff;

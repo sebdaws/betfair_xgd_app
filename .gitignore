@@ -5,3 +5,4 @@ betfair_credentials.py
 .vscode/
 historical_data/
 saved_games.json
+all_leagues.txt

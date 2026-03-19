@@ -56,6 +56,7 @@ const nextDayBtn = document.getElementById("nextDayBtn");
 const dayLabel = document.getElementById("dayLabel");
 const upcomingModeBtn = document.getElementById("upcomingModeBtn");
 const historicalModeBtn = document.getElementById("historicalModeBtn");
+const xgThresholdInput = document.getElementById("xgThresholdInput");
 
 let gamesById = new Map();
 let rawDays = [];
@@ -77,8 +78,10 @@ let gamesShownAuto = true;
 let rollingWindowCount = 3;
 let showTrendCharts = false;
 let recentTeamView = "home";
-let statsGamesShownCount = 0;
-let statsGamesShownAuto = true;
+let statsVenueGamesShownCount = 0;
+let statsVenueGamesShownAuto = true;
+let statsAllGamesShownCount = 0;
+let statsAllGamesShownAuto = true;
 let statsTeamView = "home";
 let hcPerfTeamView = "home";
 const hcPerfPayloadByMarket = new Map();
@@ -109,6 +112,14 @@ let teamMappingSearchBetfair = "";
 let teamMappingSearchSavedTeams = "";
 const historicalDayCalcInFlight = new Set();
 let teamHcPerfDetailLoadingKey = "";
+let teamHcPerfDetailTeam = "";
+let teamHcPerfDetailCompetition = "";
+let teamHcPerfDetailRows = [];
+const DEFAULT_XG_PUSH_THRESHOLD = 0.1;
+const MIN_XG_PUSH_THRESHOLD = 0.0;
+const MAX_XG_PUSH_THRESHOLD = 5.0;
+const XG_PUSH_THRESHOLD_STORAGE_KEY = "xgd_hc_xg_threshold";
+let xgPushThreshold = DEFAULT_XG_PUSH_THRESHOLD;
 const AUTO_REFRESH_MS = 2 * 60 * 1000;
 const MAPPING_UNMATCHED_TEAM_RENDER_LIMIT = 250;
 const MAPPING_SAVED_TEAM_RENDER_LIMIT = 400;
@@ -135,6 +146,91 @@ async function parseApiResponse(res) {
   }
   const text = await res.text();
   return { error: String(text || "Unexpected response") };
+}
+
+function normalizeXgPushThreshold(value, fallback = DEFAULT_XG_PUSH_THRESHOLD) {
+  const text = String(value ?? "").trim().replace(",", ".");
+  const parsed = Number(text);
+  const fallbackNum = Number(fallback);
+  const fallbackSafe = Number.isFinite(fallbackNum)
+    ? Math.max(MIN_XG_PUSH_THRESHOLD, Math.min(MAX_XG_PUSH_THRESHOLD, fallbackNum))
+    : DEFAULT_XG_PUSH_THRESHOLD;
+  if (!Number.isFinite(parsed)) return fallbackSafe;
+  return Math.max(MIN_XG_PUSH_THRESHOLD, Math.min(MAX_XG_PUSH_THRESHOLD, parsed));
+}
+
+function formatXgPushThresholdForInput(value) {
+  const normalized = normalizeXgPushThreshold(value, DEFAULT_XG_PUSH_THRESHOLD);
+  const rounded = Math.round(normalized * 1000) / 1000;
+  return String(rounded);
+}
+
+function formatXgPushThresholdForLabel(value) {
+  const normalized = normalizeXgPushThreshold(value, DEFAULT_XG_PUSH_THRESHOLD);
+  return normalized.toFixed(2);
+}
+
+function getStoredXgPushThreshold() {
+  try {
+    const raw = window.localStorage.getItem(XG_PUSH_THRESHOLD_STORAGE_KEY);
+    if (raw == null) return DEFAULT_XG_PUSH_THRESHOLD;
+    return normalizeXgPushThreshold(raw, DEFAULT_XG_PUSH_THRESHOLD);
+  } catch (_err) {
+    return DEFAULT_XG_PUSH_THRESHOLD;
+  }
+}
+
+function persistXgPushThreshold(value) {
+  try {
+    window.localStorage.setItem(
+      XG_PUSH_THRESHOLD_STORAGE_KEY,
+      formatXgPushThresholdForInput(value)
+    );
+  } catch (_err) {
+    // Ignore storage failures.
+  }
+}
+
+function getCurrentXgPushThreshold() {
+  return normalizeXgPushThreshold(xgPushThreshold, DEFAULT_XG_PUSH_THRESHOLD);
+}
+
+function applyGlobalXgPushThreshold(nextValue) {
+  const normalized = normalizeXgPushThreshold(nextValue, getCurrentXgPushThreshold());
+  const changed = Math.abs(normalized - getCurrentXgPushThreshold()) > 1e-9;
+  xgPushThreshold = normalized;
+  persistXgPushThreshold(normalized);
+  if (xgThresholdInput instanceof HTMLInputElement) {
+    xgThresholdInput.value = formatXgPushThresholdForInput(normalized);
+  }
+  if (!changed) return;
+
+  if (activeTab === "games") {
+    renderCurrentDay();
+  } else if (activeTab === "saved") {
+    renderSavedGames();
+  }
+  if (!detailsPanel.classList.contains("hidden") && lastXgdPayload) {
+    renderXgd(lastXgdPayload);
+  }
+  if (
+    teamHcPerfPanel
+    && !teamHcPerfPanel.classList.contains("hidden")
+    && teamHcPerfDetailTeam
+    && teamHcPerfDetailCompetition
+    && Array.isArray(teamHcPerfDetailRows)
+    && teamHcPerfDetailRows.length > 0
+  ) {
+    renderTeamHcPerfDetailFromRows(
+      teamHcPerfDetailTeam,
+      teamHcPerfDetailCompetition,
+      teamHcPerfDetailRows
+    );
+  }
+  if (teamHcRankingsLoaded || activeTab === "rankings") {
+    loadTeamHcRankings({ silent: true });
+  }
+  statusText.textContent = `xG threshold set to ${formatXgPushThresholdForLabel(normalized)}`;
 }
 
 function setActiveTab(tabName) {
@@ -1121,7 +1217,7 @@ function getHcMetricConsensusDirection(game, periodValues) {
   const metricValues = periodValues.map(toMetricNumberOrNull);
   if (metricValues.some((value) => value == null)) return null;
   const sums = metricValues.map((value) => handicap + value);
-  const threshold = 0.1;
+  const threshold = getCurrentXgPushThreshold();
   if (sums.every((value) => value > threshold)) return "positive";
   if (sums.every((value) => value < -threshold)) return "negative";
   return null;
@@ -1859,6 +1955,7 @@ function computeTeamDeltaVsHandicap(row, metric = "result", relevantTeam = "") {
 
 function computeHcPerfSummary(rows, relevantTeam = "") {
   const safeRows = Array.isArray(rows) ? rows : [];
+  const xgThreshold = getCurrentXgPushThreshold();
   const summary = {
     result: {
       home: emptyHcPerfCounts(),
@@ -1883,7 +1980,7 @@ function computeHcPerfSummary(rows, relevantTeam = "") {
     }
 
     const xgDelta = computeTeamDeltaVsHandicap(row, "xg", relevantTeam);
-    const xgVerdict = classifyDelta(xgDelta, 0.1);
+    const xgVerdict = classifyDelta(xgDelta, xgThreshold);
     if (xgVerdict) {
       incrementHcPerfCounts(summary.xg.overall, xgVerdict);
       if (venueKey) incrementHcPerfCounts(summary.xg[venueKey], xgVerdict);
@@ -1920,6 +2017,7 @@ function formatHcPerfSummaryCellBasic(counts) {
 
 function buildHcPerfSummaryTableHtml(teamLabel, rows, options = {}) {
   const safeTeamLabel = String(teamLabel || "Team");
+  const thresholdLabel = formatXgPushThresholdForLabel(getCurrentXgPushThreshold());
   const focusVenue = String(options?.focusVenue || "").trim().toLowerCase();
   const focusHome = focusVenue === "home";
   const focusAway = focusVenue === "away";
@@ -1951,7 +2049,7 @@ function buildHcPerfSummaryTableHtml(teamLabel, rows, options = {}) {
               <td class="hcperf-summary-cell">${formatHcPerfSummaryCell(summary.result.overall)}</td>
             </tr>
             <tr>
-              <td class="hcperf-summary-metric">xG (threshold = 0.10)</td>
+              <td class="hcperf-summary-metric">xG (threshold = ${thresholdLabel})</td>
               <td class="${homeCellClassBottom}">${formatHcPerfSummaryCellBasic(summary.xg.home)}</td>
               <td class="${awayCellClassBottom}">${formatHcPerfSummaryCellBasic(summary.xg.away)}</td>
               <td class="hcperf-summary-cell">${formatHcPerfSummaryCellBasic(summary.xg.overall)}</td>
@@ -2058,7 +2156,8 @@ function buildSeasonHandicapPerformanceTableHtml(teamLabel, rows, options = {}) 
                   )
                     ? ((homeXgNum + homeHcNum) - awayXgNum)
                     : null;
-                  const xgNoBet = Number.isFinite(xgDelta) && Math.abs(xgDelta) < 0.2;
+                  const xgThreshold = getCurrentXgPushThreshold();
+                  const xgNoBet = Number.isFinite(xgDelta) && Math.abs(xgDelta) <= xgThreshold;
                   const xgPickSide = Number.isFinite(xgDelta)
                     ? (
                       xgNoBet
@@ -2216,13 +2315,16 @@ function buildGamesShownControlHtml(value, maxValue, rollingMaxValue = maxValue)
   `;
 }
 
-function buildStatsGamesShownControlHtml(value, maxValue) {
+function buildStatsGamesShownControlHtml(value, maxValue, options = {}) {
   const safeMax = Number.isFinite(maxValue) && maxValue > 0 ? Math.floor(maxValue) : 1;
   const safeValue = Math.max(1, Math.min(safeMax, clampRecentMatchesCount(value)));
+  const inputIdRaw = String(options?.inputId || "statsGamesShownInput").trim();
+  const inputId = inputIdRaw || "statsGamesShownInput";
+  const labelText = String(options?.label || "Last X games");
   return `
     <div class="details-options">
-      <label for="statsGamesShownInput">Last X games</label>
-      <input id="statsGamesShownInput" type="number" min="1" max="${safeMax}" step="1" value="${safeValue}" />
+      <label for="${escapeHtml(inputId)}">${escapeHtml(labelText)}</label>
+      <input id="${escapeHtml(inputId)}" type="number" min="1" max="${safeMax}" step="1" value="${safeValue}" />
     </div>
   `;
 }
@@ -2849,13 +2951,14 @@ function createGamesTable(sortedGames, isHistorical, options = {}) {
     const last3XgdValue = noXgMetrics ? "-" : game.last3_xgd;
     const xgdCellClasses = [...baseMetricCellClasses];
     const xgdCellNotes = [...baseMetricCellNotes];
+    const xgThresholdLabel = formatXgPushThresholdForLabel(getCurrentXgPushThreshold());
     const hcXgdConsensusDirection = noXgMetrics ? null : getHcXgdConsensusDirection(game);
     if (hcXgdConsensusDirection === "positive") {
       xgdCellClasses.push("hc-xgd-consensus-positive");
-      xgdCellNotes.push("HC + xGD is > 0.1 for S/5/3.");
+      xgdCellNotes.push(`HC + xGD is > ${xgThresholdLabel} for S/5/3.`);
     } else if (hcXgdConsensusDirection === "negative") {
       xgdCellClasses.push("hc-xgd-consensus-negative");
-      xgdCellNotes.push("HC + xGD is < -0.1 for S/5/3.");
+      xgdCellNotes.push(`HC + xGD is < -${xgThresholdLabel} for S/5/3.`);
     }
     const xgdCellClass = xgdCellClasses.join(" ");
     const xgdCellTitleAttr = xgdCellNotes.length ? ` title="${escapeHtml(xgdCellNotes.join(" | "))}"` : "";
@@ -2865,10 +2968,10 @@ function createGamesTable(sortedGames, isHistorical, options = {}) {
     const hcXgdPerfConsensusDirection = noXgMetrics ? null : getHcXgdPerfConsensusDirection(game);
     if (hcXgdPerfConsensusDirection === "positive") {
       xgdPerfCellClasses.push("hc-xgd-consensus-positive");
-      xgdPerfCellNotes.push("HC + xGD Perf is > 0.1 for S/5/3.");
+      xgdPerfCellNotes.push(`HC + xGD Perf is > ${xgThresholdLabel} for S/5/3.`);
     } else if (hcXgdPerfConsensusDirection === "negative") {
       xgdPerfCellClasses.push("hc-xgd-consensus-negative");
-      xgdPerfCellNotes.push("HC + xGD Perf is < -0.1 for S/5/3.");
+      xgdPerfCellNotes.push(`HC + xGD Perf is < -${xgThresholdLabel} for S/5/3.`);
     }
     const xgdPerfCellClass = xgdPerfCellClasses.join(" ");
     const xgdPerfCellTitleAttr = xgdPerfCellNotes.length ? ` title="${escapeHtml(xgdPerfCellNotes.join(" | "))}"` : "";
@@ -3144,11 +3247,45 @@ function closeTeamHcPerfPanel() {
   }
 }
 
+function renderTeamHcPerfDetailFromRows(teamName, competitionName, rows) {
+  if (!teamHcPerfContent || !teamHcPerfTitle || !teamHcPerfMeta) return;
+  const teamText = String(teamName || "").trim();
+  const competitionText = String(competitionName || "").trim();
+  const safeRows = Array.isArray(rows) ? rows : [];
+  const homeRows = safeRows.filter((row) => String(row?.venue || "").trim().toLowerCase() === "home");
+  const awayRows = safeRows.filter((row) => String(row?.venue || "").trim().toLowerCase() === "away");
+
+  teamHcPerfTitle.textContent = `${teamText} - HC Perf`;
+  teamHcPerfMeta.textContent = `${competitionText} | ${safeRows.length} games`;
+  if (!safeRows.length) {
+    teamHcPerfContent.innerHTML = "<p>No games found for this team in this league.</p>";
+    return;
+  }
+
+  const summaryHtml = buildHcPerfSummaryTableHtml(teamText, safeRows);
+  const generalGamesHtml = buildSeasonHandicapPerformanceTableHtml(teamText, safeRows, {
+    title: `${teamText} - General`,
+    relevantTeam: teamText,
+  });
+  const homeGamesHtml = buildSeasonHandicapPerformanceTableHtml(teamText, homeRows, {
+    title: `${teamText} - Home`,
+    relevantTeam: teamText,
+  });
+  const awayGamesHtml = buildSeasonHandicapPerformanceTableHtml(teamText, awayRows, {
+    title: `${teamText} - Away`,
+    relevantTeam: teamText,
+  });
+  teamHcPerfContent.innerHTML = `${summaryHtml}${generalGamesHtml}${homeGamesHtml}${awayGamesHtml}`;
+}
+
 async function loadTeamHcRankingTeamDetails(teamName, competitionName) {
   if (!teamHcPerfPanel || !teamHcPerfContent || !teamHcPerfTitle || !teamHcPerfMeta) return;
   const teamText = String(teamName || "").trim();
   const competitionText = String(competitionName || "").trim();
   if (!teamText || !competitionText) return;
+  teamHcPerfDetailTeam = teamText;
+  teamHcPerfDetailCompetition = competitionText;
+  teamHcPerfDetailRows = [];
   const requestKey = `${competitionText}::${teamText}`;
   teamHcPerfDetailLoadingKey = requestKey;
 
@@ -3166,36 +3303,15 @@ async function loadTeamHcRankingTeamDetails(teamName, competitionName) {
     const query = new URLSearchParams();
     query.set("team", teamText);
     query.set("competition", competitionText);
+    query.set("xg_threshold", String(getCurrentXgPushThreshold()));
     const res = await fetch(`/api/team-hc-rankings/details?${query.toString()}`);
     const payload = await parseApiResponse(res);
     if (!res.ok) throw new Error(payload.error || "Failed to load team handicap performance");
     if (teamHcPerfDetailLoadingKey !== requestKey) return;
 
     const rows = Array.isArray(payload?.rows) ? payload.rows : [];
-    const homeRows = rows.filter((row) => String(row?.venue || "").trim().toLowerCase() === "home");
-    const awayRows = rows.filter((row) => String(row?.venue || "").trim().toLowerCase() === "away");
-
-    teamHcPerfTitle.textContent = `${teamText} - HC Perf`;
-    teamHcPerfMeta.textContent = `${competitionText} | ${rows.length} games`;
-    if (!rows.length) {
-      teamHcPerfContent.innerHTML = "<p>No games found for this team in this league.</p>";
-      return;
-    }
-
-    const summaryHtml = buildHcPerfSummaryTableHtml(teamText, rows);
-    const generalGamesHtml = buildSeasonHandicapPerformanceTableHtml(teamText, rows, {
-      title: `${teamText} - General`,
-      relevantTeam: teamText,
-    });
-    const homeGamesHtml = buildSeasonHandicapPerformanceTableHtml(teamText, homeRows, {
-      title: `${teamText} - Home`,
-      relevantTeam: teamText,
-    });
-    const awayGamesHtml = buildSeasonHandicapPerformanceTableHtml(teamText, awayRows, {
-      title: `${teamText} - Away`,
-      relevantTeam: teamText,
-    });
-    teamHcPerfContent.innerHTML = `${summaryHtml}${generalGamesHtml}${homeGamesHtml}${awayGamesHtml}`;
+    teamHcPerfDetailRows = rows;
+    renderTeamHcPerfDetailFromRows(teamText, competitionText, rows);
   } catch (err) {
     if (teamHcPerfDetailLoadingKey !== requestKey) return;
     teamHcPerfMeta.textContent = `${competitionText} | Error`;
@@ -3341,7 +3457,9 @@ async function loadTeamHcRankings(options = {}) {
   }
   renderTeamHcRankings();
   try {
-    const res = await fetch("/api/team-hc-rankings");
+    const query = new URLSearchParams();
+    query.set("xg_threshold", String(getCurrentXgPushThreshold()));
+    const res = await fetch(`/api/team-hc-rankings?${query.toString()}`);
     const payload = await parseApiResponse(res);
     if (!res.ok) throw new Error(payload.error || "Failed to load team HC rankings");
     teamHcRankingsLeagues = Array.isArray(payload?.leagues) ? payload.leagues : [];
@@ -3646,11 +3764,17 @@ function renderXgd(payload) {
   const cachedHcPerfRows = normalizeSeasonHandicapRows(cachedHcPerfPayload?.season_handicap_rows);
   const activeSeasonRowsRaw = normalizeSeasonHandicapRows(activeView.season_handicap_rows);
   const fallbackSeasonRows = normalizeSeasonHandicapRows(payloadSeasonHandicapRows);
-  const seasonHandicapRows = (cachedHcPerfRows.home.length || cachedHcPerfRows.away.length)
-    ? cachedHcPerfRows
-    : ((activeSeasonRowsRaw.home.length || activeSeasonRowsRaw.away.length)
-    ? activeSeasonRowsRaw
-    : fallbackSeasonRows);
+  const hasCachedSeasonRows = cachedHcPerfRows.home.length > 0 || cachedHcPerfRows.away.length > 0;
+  const hasActiveSeasonRows = activeSeasonRowsRaw.home.length > 0 || activeSeasonRowsRaw.away.length > 0;
+  const hasMultipleXgdViews = xgdViews.length > 1;
+  let seasonHandicapRows = fallbackSeasonRows;
+  if (hasMultipleXgdViews && hasActiveSeasonRows) {
+    seasonHandicapRows = activeSeasonRowsRaw;
+  } else if (hasCachedSeasonRows) {
+    seasonHandicapRows = cachedHcPerfRows;
+  } else if (hasActiveSeasonRows) {
+    seasonHandicapRows = activeSeasonRowsRaw;
+  }
   const mappingHead = mappingRows[0] || {};
   const homeLabel = String(cachedHcPerfPayload?.home_label || mappingHead.home_sofa || mappingHead.home_raw || "Home team");
   const awayLabel = String(cachedHcPerfPayload?.away_label || mappingHead.away_sofa || mappingHead.away_raw || "Away team");
@@ -3702,29 +3826,59 @@ function renderXgd(payload) {
     ...(Array.isArray(statsActiveVenueRows?.home) ? statsActiveVenueRows.home : []),
     ...(Array.isArray(statsActiveVenueRows?.away) ? statsActiveVenueRows.away : []),
   ];
-  const statsMaxGamesShown = Math.max(1, homeRecentRows.length, awayRecentRows.length);
-  if (statsGamesShownAuto) {
-    statsGamesShownCount = statsMaxGamesShown;
-  } else if (!Number.isFinite(statsGamesShownCount) || statsGamesShownCount < 1) {
-    statsGamesShownCount = 1;
+  const statsVenueMaxGamesShown = Math.max(
+    1,
+    homeRecentRows.length,
+    awayRecentRows.length,
+    statsActiveRows.length
+  );
+  if (statsVenueGamesShownAuto) {
+    statsVenueGamesShownCount = statsVenueMaxGamesShown;
+  } else if (!Number.isFinite(statsVenueGamesShownCount) || statsVenueGamesShownCount < 1) {
+    statsVenueGamesShownCount = 1;
   }
-  statsGamesShownCount = Math.max(1, Math.min(statsMaxGamesShown, clampRecentMatchesCount(statsGamesShownCount)));
+  statsVenueGamesShownCount = Math.max(
+    1,
+    Math.min(statsVenueMaxGamesShown, clampRecentMatchesCount(statsVenueGamesShownCount))
+  );
+  const statsAllMaxGamesShown = Math.max(1, statsAllVenueRows.length);
+  if (statsAllGamesShownAuto) {
+    statsAllGamesShownCount = statsAllMaxGamesShown;
+  } else if (!Number.isFinite(statsAllGamesShownCount) || statsAllGamesShownCount < 1) {
+    statsAllGamesShownCount = 1;
+  }
+  statsAllGamesShownCount = Math.max(
+    1,
+    Math.min(statsAllMaxGamesShown, clampRecentMatchesCount(statsAllGamesShownCount))
+  );
   const cardsTabContent = `
     <h3 class="section-title">Cards & Corners</h3>
-    ${buildStatsGamesShownControlHtml(statsGamesShownCount, statsMaxGamesShown)}
-    ${buildCardsCornersAveragesTableHtml(homeRecentRows, awayRecentRows, homeLabel, awayLabel, statsGamesShownCount)}
-    ${buildGamestateTableHtml(homeRecentRows, awayRecentRows, homeLabel, awayLabel, statsGamesShownCount)}
+    ${buildStatsGamesShownControlHtml(statsVenueGamesShownCount, statsVenueMaxGamesShown, {
+      inputId: "statsVenueGamesShownInput",
+      label: "Venue games shown",
+    })}
+    ${buildCardsCornersAveragesTableHtml(homeRecentRows, awayRecentRows, homeLabel, awayLabel, statsVenueGamesShownCount)}
+    ${buildGamestateTableHtml(homeRecentRows, awayRecentRows, homeLabel, awayLabel, statsVenueGamesShownCount)}
     ${buildCardsCornersVenueTableHtml(
       homeFixtureVenueRows,
       awayFixtureVenueRows,
       homeLabel,
       awayLabel,
-      statsGamesShownCount
+      statsVenueGamesShownCount
     )}
     ${buildStatsSwitchHtml(homeLabel, awayLabel)}
-    ${buildCardsCornersMatchesTableHtml(statsActiveLabel, statsActiveRows, statsGamesShownCount, "Fixture-side matches")}
+    ${buildCardsCornersMatchesTableHtml(
+      statsActiveLabel,
+      statsActiveRows,
+      statsVenueGamesShownCount,
+      "Fixture-side matches"
+    )}
     <h3 class="section-title">${escapeHtml(statsActiveLabel)}: Home & Away Matches</h3>
-    ${buildCardsCornersMatchesTableHtml(statsActiveLabel, statsAllVenueRows, statsGamesShownCount, "All matches")}
+    ${buildStatsGamesShownControlHtml(statsAllGamesShownCount, statsAllMaxGamesShown, {
+      inputId: "statsAllGamesShownInput",
+      label: "All games shown",
+    })}
+    ${buildCardsCornersMatchesTableHtml(statsActiveLabel, statsAllVenueRows, statsAllGamesShownCount, "All matches")}
   `;
   const hcPerfTabContent = `
     <h3 class="section-title">Season Handicap Performance</h3>
@@ -3856,11 +4010,20 @@ function renderXgd(payload) {
     });
   }
 
-  const statsGamesShownInput = linesContainer.querySelector("#statsGamesShownInput");
-  if (statsGamesShownInput) {
-    statsGamesShownInput.addEventListener("change", () => {
-      statsGamesShownAuto = false;
-      statsGamesShownCount = clampRecentMatchesCount(statsGamesShownInput.value);
+  const statsVenueGamesShownInput = linesContainer.querySelector("#statsVenueGamesShownInput");
+  if (statsVenueGamesShownInput) {
+    statsVenueGamesShownInput.addEventListener("change", () => {
+      statsVenueGamesShownAuto = false;
+      statsVenueGamesShownCount = clampRecentMatchesCount(statsVenueGamesShownInput.value);
+      if (lastXgdPayload) renderXgd(lastXgdPayload);
+    });
+  }
+
+  const statsAllGamesShownInput = linesContainer.querySelector("#statsAllGamesShownInput");
+  if (statsAllGamesShownInput) {
+    statsAllGamesShownInput.addEventListener("change", () => {
+      statsAllGamesShownAuto = false;
+      statsAllGamesShownCount = clampRecentMatchesCount(statsAllGamesShownInput.value);
       if (lastXgdPayload) renderXgd(lastXgdPayload);
     });
   }
@@ -3916,8 +4079,10 @@ async function loadGameXgd(marketId) {
   showTrendCharts = false;
   detailsMainTab = "xgd";
   recentTeamView = "home";
-  statsGamesShownCount = 0;
-  statsGamesShownAuto = true;
+  statsVenueGamesShownCount = 0;
+  statsVenueGamesShownAuto = true;
+  statsAllGamesShownCount = 0;
+  statsAllGamesShownAuto = true;
   statsTeamView = "home";
   hcPerfTeamView = "home";
   activeXgdViewId = null;
@@ -4219,6 +4384,20 @@ recalcBtn.addEventListener("click", () => {
 if (saveGameBtn instanceof HTMLButtonElement) {
   saveGameBtn.addEventListener("click", () => {
     toggleSelectedGameSaved();
+  });
+}
+
+xgPushThreshold = getStoredXgPushThreshold();
+if (xgThresholdInput instanceof HTMLInputElement) {
+  xgThresholdInput.value = formatXgPushThresholdForInput(xgPushThreshold);
+  xgThresholdInput.addEventListener("change", () => {
+    applyGlobalXgPushThreshold(xgThresholdInput.value);
+  });
+  xgThresholdInput.addEventListener("keydown", (event) => {
+    if (event.key !== "Enter") return;
+    event.preventDefault();
+    applyGlobalXgPushThreshold(xgThresholdInput.value);
+    xgThresholdInput.blur();
   });
 }
 

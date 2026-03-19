@@ -171,7 +171,6 @@ class MappingService:
                 if row and str(row[0]).strip()
             }
             has_hist = "betfair_historical_prices" in table_names
-            has_team_map = "betfair_team_id_mappings" in table_names
             if not has_hist:
                 return []
 
@@ -199,58 +198,20 @@ class MappingService:
 
             comp_expr = f"TRIM(COALESCE({competition_col}, ''))" if competition_col else "''"
 
-            if has_team_map:
-                query = """
-                    WITH hist_names AS (
-                        SELECT DISTINCT TRIM(betfair_home_team_name) AS raw_name, {comp_expr} AS competition
-                        FROM betfair_historical_prices
-                        WHERE betfair_home_team_name IS NOT NULL AND TRIM(betfair_home_team_name) <> ''
-                        UNION
-                        SELECT DISTINCT TRIM(betfair_away_team_name) AS raw_name, {comp_expr} AS competition
-                        FROM betfair_historical_prices
-                        WHERE betfair_away_team_name IS NOT NULL AND TRIM(betfair_away_team_name) <> ''
-                    ),
-                    map_agg AS (
-                        SELECT
-                            LOWER(TRIM(betfair_team_name)) AS raw_key,
-                            MAX(CASE WHEN TRIM(COALESCE(sofascore_team_name, '')) <> '' THEN 1 ELSE 0 END) AS has_sofa,
-                            MAX(CASE
-                                WHEN LOWER(COALESCE(mapping_method, '')) IN ('missing', 'unmatched') THEN 1
-                                ELSE 0
-                            END) AS has_unmatched_method,
-                            MAX(COALESCE(seen_count, 0)) AS seen_count
-                        FROM betfair_team_id_mappings
-                        WHERE betfair_team_name IS NOT NULL AND TRIM(betfair_team_name) <> ''
-                        GROUP BY LOWER(TRIM(betfair_team_name))
-                    )
-                    SELECT
-                        h.raw_name,
-                        h.competition,
-                        COALESCE(m.seen_count, 0) AS seen_count
-                    FROM hist_names h
-                    LEFT JOIN map_agg m
-                        ON LOWER(TRIM(h.raw_name)) = m.raw_key
-                    WHERE
-                        m.raw_key IS NULL
-                        OR m.has_sofa = 0
-                        OR m.has_unmatched_method = 1
-                """.format(comp_expr=comp_expr)
-                params: list[Any] = []
-            else:
-                query = """
-                    SELECT DISTINCT TRIM(raw_name) AS raw_name, TRIM(competition) AS competition, 0 AS seen_count
-                    FROM (
-                        SELECT betfair_home_team_name AS raw_name, {comp_expr} AS competition
-                        FROM betfair_historical_prices
-                        WHERE betfair_home_team_name IS NOT NULL AND TRIM(betfair_home_team_name) <> ''
-                        UNION ALL
-                        SELECT betfair_away_team_name AS raw_name, {comp_expr} AS competition
-                        FROM betfair_historical_prices
-                        WHERE betfair_away_team_name IS NOT NULL AND TRIM(betfair_away_team_name) <> ''
-                    )
-                    WHERE raw_name IS NOT NULL AND TRIM(raw_name) <> ''
-                """.format(comp_expr=comp_expr)
-                params = []
+            query = """
+                SELECT DISTINCT TRIM(raw_name) AS raw_name, TRIM(competition) AS competition, 0 AS seen_count
+                FROM (
+                    SELECT betfair_home_team_name AS raw_name, {comp_expr} AS competition
+                    FROM betfair_historical_prices
+                    WHERE betfair_home_team_name IS NOT NULL AND TRIM(betfair_home_team_name) <> ''
+                    UNION ALL
+                    SELECT betfair_away_team_name AS raw_name, {comp_expr} AS competition
+                    FROM betfair_historical_prices
+                    WHERE betfair_away_team_name IS NOT NULL AND TRIM(betfair_away_team_name) <> ''
+                )
+                WHERE raw_name IS NOT NULL AND TRIM(raw_name) <> ''
+            """.format(comp_expr=comp_expr)
+            params: list[Any] = []
             rows = conn.execute(query, params).fetchall()
         except Exception:
             return []
