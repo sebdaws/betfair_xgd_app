@@ -179,14 +179,95 @@ class GamesService:
             or "invalid session" in msg.lower()
         )
 
+    def _tier_zero_market_ids(self, games_df: pd.DataFrame) -> set[str]:
+        if not isinstance(games_df, pd.DataFrame) or games_df.empty:
+            return set()
+        if "tier" not in games_df.columns or "market_id" not in games_df.columns:
+            return set()
+        tier_text = games_df["tier"].fillna("").astype(str).str.strip().str.casefold()
+        tier_zero_mask = tier_text.str.startswith("tier 0") | (tier_text == "tier0")
+        return {
+            str(value).strip()
+            for value in games_df.loc[tier_zero_mask, "market_id"].tolist()
+            if str(value).strip()
+        }
+
+    def _compute_period_metrics_for_market_ids(
+        self,
+        games_df: pd.DataFrame,
+        market_ids: set[str],
+    ) -> pd.DataFrame:
+        if not isinstance(games_df, pd.DataFrame) or games_df.empty or not market_ids:
+            return pd.DataFrame()
+        if "market_id" not in games_df.columns:
+            return pd.DataFrame()
+
+        target_games_df = games_df[games_df["market_id"].astype(str).isin(market_ids)].copy()
+        if target_games_df.empty:
+            return pd.DataFrame()
+
+        manual_mapping_lookup = self.state.get_manual_mapping_lookup_snapshot()
+        manual_competition_mapping_lookup = self.state.get_manual_competition_mapping_lookup_snapshot()
+        try:
+            prediction_df = self.build_predictions(
+                betfair_games_df=target_games_df,
+                form_df=self.state.form_df,
+                fixtures_df=self.state.fixtures_df,
+                team_matcher=self.state.team_matcher,
+                calc_wyscout_form_tables=self.state.form_model_module.calc_wyscout_form_tables,
+                periods=self.state.periods,
+                min_games=self.state.min_games,
+                manual_mapping_lookup=manual_mapping_lookup,
+                manual_competition_mapping_lookup=manual_competition_mapping_lookup,
+            )
+        except Exception:
+            return pd.DataFrame()
+
+        period_metrics_df = self.extract_period_metrics(prediction_df)
+        if period_metrics_df.empty:
+            return pd.DataFrame()
+        metric_cols = [col for col in self.period_metric_columns if col in period_metrics_df.columns]
+        if not metric_cols:
+            return pd.DataFrame()
+        return period_metrics_df[["market_id", *metric_cols]].drop_duplicates(subset=["market_id"], keep="first")
+
     def refresh(self, force: bool = False) -> None:
         now = dt.datetime.now(dt.timezone.utc)
         with self.state.lock:
-            if not force and self.state.last_refresh is not None:
-                delta = (now - self.state.last_refresh).total_seconds()
-                if delta < self.state.refresh_seconds:
-                    return
+            games_df_snapshot = self.state.games_df.copy()
+            last_refresh = self.state.last_refresh
             metrics_cache = dict(getattr(self.state, "upcoming_metrics_cache", {}))
+
+        if not force and last_refresh is not None:
+            delta = (now - last_refresh).total_seconds()
+            if delta < self.state.refresh_seconds:
+                tier_zero_market_ids = self._tier_zero_market_ids(games_df_snapshot)
+                metric_rows_df = self._compute_period_metrics_for_market_ids(
+                    games_df=games_df_snapshot,
+                    market_ids=tier_zero_market_ids,
+                )
+                if not metric_rows_df.empty:
+                    updated_games_df = games_df_snapshot.copy()
+                    updated_games_df["_market_id_key"] = updated_games_df["market_id"].astype(str).str.strip()
+                    for col in self.period_metric_columns:
+                        if col not in updated_games_df.columns:
+                            updated_games_df[col] = None
+                    for row in metric_rows_df.to_dict(orient="records"):
+                        market_id = str(row.get("market_id", "")).strip()
+                        if not market_id:
+                            continue
+                        mask = updated_games_df["_market_id_key"] == market_id
+                        if not bool(mask.any()):
+                            continue
+                        metrics_cache[market_id] = {col: row.get(col) for col in self.period_metric_columns}
+                        for col in self.period_metric_columns:
+                            if col in row:
+                                updated_games_df.loc[mask, col] = row.get(col)
+                    updated_games_df = updated_games_df.drop(columns=["_market_id_key"], errors="ignore")
+                    with self.state.lock:
+                        self.state.games_df = updated_games_df
+                        self.state.upcoming_metrics_cache = metrics_cache
+                return
 
         client = self._login_client()
         try:
@@ -402,14 +483,24 @@ class GamesService:
                 for market_id in market_ids
                 if market_id not in metrics_cache
             ]
+            tier_zero_market_ids: set[str] = set()
+            if "tier" in games_df.columns:
+                tier_text = games_df["tier"].fillna("").astype(str).str.strip().str.casefold()
+                tier_zero_mask = tier_text.str.startswith("tier 0") | (tier_text == "tier0")
+                tier_zero_market_ids = {
+                    str(value).strip()
+                    for value in games_df.loc[tier_zero_mask, "market_id"].tolist()
+                    if str(value).strip()
+                }
+            markets_to_compute = set(missing_market_ids) | tier_zero_market_ids
 
-            if missing_market_ids:
+            if markets_to_compute:
                 manual_mapping_lookup = self.state.get_manual_mapping_lookup_snapshot()
                 manual_competition_mapping_lookup = self.state.get_manual_competition_mapping_lookup_snapshot()
-                missing_games_df = games_df[games_df["market_id"].astype(str).isin(set(missing_market_ids))].copy()
+                target_games_df = games_df[games_df["market_id"].astype(str).isin(markets_to_compute)].copy()
                 try:
                     prediction_df = self.build_predictions(
-                        betfair_games_df=missing_games_df,
+                        betfair_games_df=target_games_df,
                         form_df=self.state.form_df,
                         fixtures_df=self.state.fixtures_df,
                         team_matcher=self.state.team_matcher,

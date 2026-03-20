@@ -115,6 +115,53 @@ def calc_wyscout_form_tables(games, data_df, periods=("Season", 5, 3), return_so
             period_dfs.append(metrics_90[ordered])
         return pd.concat(period_dfs, ignore_index=True)
 
+    def _format_season_id(value: Any) -> str:
+        try:
+            if value is None or pd.isna(value):
+                return "?"
+        except Exception:
+            pass
+        text = str(value).strip()
+        if not text:
+            return "?"
+        try:
+            numeric = float(text)
+            if np.isfinite(numeric) and abs(numeric - round(numeric)) <= 1e-9:
+                return str(int(round(numeric)))
+        except Exception:
+            return text
+        return text
+
+    def _select_preferred_season_rows(rows: pd.DataFrame, cutoff_value: Any) -> tuple[pd.DataFrame, Any]:
+        if not isinstance(rows, pd.DataFrame) or rows.empty:
+            return rows.iloc[0:0].copy(), np.nan
+
+        active_rows = rows.iloc[0:0].copy()
+        if (
+            pd.notna(cutoff_value)
+            and "season_start_date" in rows.columns
+            and "season_end_date" in rows.columns
+        ):
+            active_rows = rows[
+                (rows["season_start_date"] <= cutoff_value)
+                & (rows["season_end_date"] >= cutoff_value)
+            ].copy()
+
+        candidate_rows = active_rows if not active_rows.empty else rows.copy()
+        if "season_id" not in candidate_rows.columns:
+            return candidate_rows, np.nan
+
+        with_season = candidate_rows[candidate_rows["season_id"].notna()].copy()
+        if with_season.empty:
+            return candidate_rows, np.nan
+
+        sort_cols = [col for col in ("season_start_date", "date_time") if col in with_season.columns]
+        if sort_cols:
+            with_season = with_season.sort_values(sort_cols, kind="mergesort")
+        selected_season_id = with_season.iloc[-1]["season_id"]
+        selected_rows = candidate_rows[candidate_rows["season_id"] == selected_season_id].copy()
+        return selected_rows, selected_season_id
+
     col_names = [
         "Period",
         "xGD",
@@ -151,21 +198,47 @@ def calc_wyscout_form_tables(games, data_df, periods=("Season", 5, 3), return_so
         if season_ids:
             form_df = form_df[form_df["season_id"].isin(season_ids)].copy()
 
-    if (
-        "competition_name" in games.columns
-        and "area_name" in games.columns
-        and "competition_name" in form_df.columns
-        and "area_name" in form_df.columns
-    ):
-        comp_area_pairs = set(
-            zip(
-                games["competition_name"].dropna().tolist(),
-                games["area_name"].dropna().tolist(),
-            )
-        )
-        if comp_area_pairs:
-            pair_mask = list(zip(form_df["competition_name"], form_df["area_name"]))
-            form_df = form_df[[pair in comp_area_pairs for pair in pair_mask]].copy()
+    if "competition_name" in games.columns and "competition_name" in form_df.columns:
+        game_competitions = games["competition_name"].fillna("").astype(str).str.strip()
+        competition_values = {name for name in game_competitions.tolist() if name}
+        if "area_name" in games.columns and "area_name" in form_df.columns:
+            game_pairs_df = games[["competition_name", "area_name"]].copy()
+            game_pairs_df["competition_name"] = game_pairs_df["competition_name"].fillna("").astype(str).str.strip()
+            game_pairs_df["area_name"] = game_pairs_df["area_name"].fillna("").astype(str).str.strip()
+            competitions_without_area = {
+                row["competition_name"]
+                for _, row in game_pairs_df.iterrows()
+                if row["competition_name"] and not row["area_name"]
+            }
+            game_pairs_df = game_pairs_df[
+                (game_pairs_df["competition_name"] != "")
+                & (game_pairs_df["area_name"] != "")
+            ].drop_duplicates()
+            comp_area_pairs = {
+                (row["competition_name"], row["area_name"]) for _, row in game_pairs_df.iterrows()
+            }
+            if comp_area_pairs:
+                form_pairs = list(
+                    zip(
+                        form_df["competition_name"].fillna("").astype(str).str.strip(),
+                        form_df["area_name"].fillna("").astype(str).str.strip(),
+                    )
+                )
+                form_comp = form_df["competition_name"].fillna("").astype(str).str.strip().tolist()
+                form_df = form_df[
+                    [
+                        (pair in comp_area_pairs) or (competition in competitions_without_area)
+                        for pair, competition in zip(form_pairs, form_comp)
+                    ]
+                ].copy()
+            elif competition_values:
+                form_df = form_df[
+                    form_df["competition_name"].fillna("").astype(str).str.strip().isin(competition_values)
+                ].copy()
+        elif competition_values:
+            form_df = form_df[
+                form_df["competition_name"].fillna("").astype(str).str.strip().isin(competition_values)
+            ].copy()
 
     form_df = form_df.sort_values(["date_time", "match_id", "venue"], kind="mergesort").reset_index(drop=True)
     team_venue_cache = {}
@@ -186,6 +259,32 @@ def calc_wyscout_form_tables(games, data_df, periods=("Season", 5, 3), return_so
 
         home_perf = team_venue_cache.get((home, "Home"), form_df.iloc[0:0].copy())
         away_perf = team_venue_cache.get((away, "Away"), form_df.iloc[0:0].copy())
+
+        game_competition = str(game.get("competition_name", "")).strip() if "competition_name" in games.columns else ""
+        game_area = str(game.get("area_name", "")).strip() if "area_name" in games.columns else ""
+        if game_competition and "competition_name" in form_df.columns:
+            home_comp_rows = home_perf[
+                home_perf["competition_name"].fillna("").astype(str).str.strip() == game_competition
+            ].copy()
+            away_comp_rows = away_perf[
+                away_perf["competition_name"].fillna("").astype(str).str.strip() == game_competition
+            ].copy()
+            if game_area and "area_name" in form_df.columns:
+                home_comp_area_rows = home_comp_rows[
+                    home_comp_rows["area_name"].fillna("").astype(str).str.strip() == game_area
+                ].copy()
+                away_comp_area_rows = away_comp_rows[
+                    away_comp_rows["area_name"].fillna("").astype(str).str.strip() == game_area
+                ].copy()
+                if not home_comp_area_rows.empty and not away_comp_area_rows.empty:
+                    home_perf = home_comp_area_rows
+                    away_perf = away_comp_area_rows
+                elif not home_comp_rows.empty and not away_comp_rows.empty:
+                    home_perf = home_comp_rows
+                    away_perf = away_comp_rows
+            elif not home_comp_rows.empty and not away_comp_rows.empty:
+                home_perf = home_comp_rows
+                away_perf = away_comp_rows
 
         if pd.notna(cutoff):
             home_perf = home_perf[home_perf["date_time"] < cutoff]
@@ -227,11 +326,24 @@ def calc_wyscout_form_tables(games, data_df, periods=("Season", 5, 3), return_so
                 away_perf = away_active_rows[away_active_rows["season_id"] == season_used]
 
             if pd.isna(season_used):
-                warning_message = (
-                    f"{home} vs {away} on {cutoff.date()}: no common active season found from season boundaries."
-                )
-                home_perf = home_perf.iloc[0:0].copy()
-                away_perf = away_perf.iloc[0:0].copy()
+                fallback_home_rows, fallback_home_season = _select_preferred_season_rows(home_perf, cutoff)
+                fallback_away_rows, fallback_away_season = _select_preferred_season_rows(away_perf, cutoff)
+
+                if not fallback_home_rows.empty and not fallback_away_rows.empty:
+                    home_perf = fallback_home_rows
+                    away_perf = fallback_away_rows
+                    warning_message = (
+                        f"{home} vs {away} on {cutoff.date()}: no shared active season_id found; "
+                        "using team-specific active seasons "
+                        f"(home={_format_season_id(fallback_home_season)}, "
+                        f"away={_format_season_id(fallback_away_season)})."
+                    )
+                else:
+                    warning_message = (
+                        f"{home} vs {away} on {cutoff.date()}: no common active season found from season boundaries."
+                    )
+                    home_perf = home_perf.iloc[0:0].copy()
+                    away_perf = away_perf.iloc[0:0].copy()
             elif len(home_perf) < min_games or len(away_perf) < min_games:
                 warning_message = (
                     f"{home} vs {away} on {cutoff.date()}: same-season sample is small "

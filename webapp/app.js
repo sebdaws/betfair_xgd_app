@@ -1006,6 +1006,119 @@ function formatMetricValue(value, decimals = 2) {
   return num.toFixed(decimals);
 }
 
+function normalizePeriodForMainTable(periodValue) {
+  const text = String(periodValue ?? "").trim().toLowerCase();
+  if (!text) return "";
+  if (text === "season") return "season";
+  const numeric = Number(text);
+  if (!Number.isFinite(numeric)) return "";
+  const asInt = Math.trunc(numeric);
+  if (asInt === 5) return "last5";
+  if (asInt === 3) return "last3";
+  return "";
+}
+
+function metricNumberToTableText(value, decimals = 2) {
+  if (value == null || value === "") return "-";
+  const num = Number(value);
+  return Number.isFinite(num) ? num.toFixed(decimals) : "-";
+}
+
+function extractMainTableMetricsFromXgdPayload(payload) {
+  if (!payload || typeof payload !== "object") return null;
+  const xgdViews = Array.isArray(payload.xgd_views) ? payload.xgd_views : [];
+  const preferredView = xgdViews.length ? xgdViews[0] : payload;
+  const periodRows = Array.isArray(preferredView?.period_rows)
+    ? preferredView.period_rows
+    : (Array.isArray(payload.period_rows) ? payload.period_rows : []);
+  if (!periodRows.length) return null;
+
+  const rowsByPeriod = { season: null, last5: null, last3: null };
+  for (const row of periodRows) {
+    const periodKey = normalizePeriodForMainTable(row?.period);
+    if (!periodKey || rowsByPeriod[periodKey]) continue;
+    rowsByPeriod[periodKey] = row;
+  }
+
+  const pickMetric = (periodKey, metricKey) => {
+    const row = rowsByPeriod[periodKey];
+    if (!row || typeof row !== "object") return null;
+    const value = row[metricKey];
+    if (value == null || value === "") return null;
+    const num = Number(value);
+    return Number.isFinite(num) ? num : null;
+  };
+
+  return {
+    season_strength: pickMetric("season", "strength"),
+    last5_strength: pickMetric("last5", "strength"),
+    last3_strength: pickMetric("last3", "strength"),
+    season_xgd: pickMetric("season", "xgd"),
+    last5_xgd: pickMetric("last5", "xgd"),
+    last3_xgd: pickMetric("last3", "xgd"),
+    season_min_xg: pickMetric("season", "total_min_xg"),
+    last5_min_xg: pickMetric("last5", "total_min_xg"),
+    last3_min_xg: pickMetric("last3", "total_min_xg"),
+    season_max_xg: pickMetric("season", "total_max_xg"),
+    last5_max_xg: pickMetric("last5", "total_max_xg"),
+    last3_max_xg: pickMetric("last3", "total_max_xg"),
+    xgd_competition_mismatch: String(preferredView?.id || "").trim().toLowerCase() === "cup" ? false : null,
+  };
+}
+
+function applyMainTableMetricsForMarket(marketId, metrics) {
+  const key = String(marketId || "").trim();
+  if (!key || !metrics || typeof metrics !== "object") return false;
+  const metricKeys = [
+    "season_strength",
+    "last5_strength",
+    "last3_strength",
+    "season_xgd",
+    "last5_xgd",
+    "last3_xgd",
+    "season_min_xg",
+    "last5_min_xg",
+    "last3_min_xg",
+    "season_max_xg",
+    "last5_max_xg",
+    "last3_max_xg",
+  ];
+
+  let updated = false;
+  const applyToGame = (game) => {
+    if (!game || String(game.market_id || "").trim() !== key) return;
+    for (const metricKey of metricKeys) {
+      const metricValue = metrics[metricKey];
+      if (metricValue == null) continue;
+      game[metricKey] = metricNumberToTableText(metricValue, 2);
+    }
+    if (metrics.xgd_competition_mismatch != null) {
+      game.xgd_competition_mismatch = Boolean(metrics.xgd_competition_mismatch);
+    }
+    updated = true;
+  };
+
+  const applyToDays = (days) => {
+    if (!Array.isArray(days)) return;
+    for (const day of days) {
+      const dayGames = Array.isArray(day?.games) ? day.games : [];
+      for (const game of dayGames) applyToGame(game);
+    }
+  };
+
+  applyToGame(gamesById.get(key));
+  applyToDays(allDays);
+  applyToDays(rawDays);
+  applyToDays(savedDays);
+  return updated;
+}
+
+function applyCalculatedXgdToMainTable(marketId, payload) {
+  const metrics = extractMainTableMetricsFromXgdPayload(payload);
+  if (!metrics) return false;
+  return applyMainTableMetricsForMarket(marketId, metrics);
+}
+
 function buildXgdPeriodTableHtml(periodRows, title, warningText = "") {
   const rows = Array.isArray(periodRows) ? periodRows : [];
   if (!rows.length) return "";
@@ -1137,12 +1250,12 @@ function buildHistoricalResultSection(payload) {
   return `${resultHtml}${comparisonHtml}`;
 }
 
-function buildPeriodMetricStackCell(seasonValue, last5Value, last3Value, highlighted = false) {
+function buildPeriodMetricStackCell(seasonValue, last5Value, last3Value) {
   const isMissing = (value) => {
     const text = String(value ?? "").trim();
     return !text || text === "-";
   };
-  const stackClass = highlighted ? "metric-stack metric-stack-mismatch" : "metric-stack";
+  const stackClass = "metric-stack";
 
   const rows = [
     { label: "S", value: seasonValue },
@@ -1209,34 +1322,6 @@ function hasNoXgMetricSignal(game) {
   const rangeNumeric = rangeValues.map(toMetricNumberOrNull).filter((v) => v != null);
   if (!rangeNumeric.length) return true;
   return rangeNumeric.every((v) => Math.abs(v) < 1e-9);
-}
-
-function getHcMetricConsensusDirection(game, periodValues) {
-  const handicap = toMetricNumberOrNull(game?.mainline);
-  if (handicap == null) return null;
-  const metricValues = periodValues.map(toMetricNumberOrNull);
-  if (metricValues.some((value) => value == null)) return null;
-  const sums = metricValues.map((value) => handicap + value);
-  const threshold = getCurrentXgPushThreshold();
-  if (sums.every((value) => value > threshold)) return "positive";
-  if (sums.every((value) => value < -threshold)) return "negative";
-  return null;
-}
-
-function getHcXgdConsensusDirection(game) {
-  return getHcMetricConsensusDirection(game, [
-    game?.season_strength,
-    game?.last5_strength,
-    game?.last3_strength,
-  ]);
-}
-
-function getHcXgdPerfConsensusDirection(game) {
-  return getHcMetricConsensusDirection(game, [
-    game?.season_xgd,
-    game?.last5_xgd,
-    game?.last3_xgd,
-  ]);
 }
 
 function buildRecentMatchesTableHtml(title, rows, relevantTeamName = "") {
@@ -2931,50 +3016,17 @@ function createGamesTable(sortedGames, isHistorical, options = {}) {
     const tierClass = tierRowClass(game.tier);
     if (tierClass) row.classList.add(tierClass);
 
-    const xgdMismatch = Boolean(game.xgd_competition_mismatch);
     const noXgMetrics = hasNoXgMetricSignal(game);
-    const baseMetricCellClasses = ["metric-stack-cell"];
-    const baseMetricCellNotes = [];
-    if (xgdMismatch) {
-      baseMetricCellClasses.push("xgd-mismatch-cell");
-      baseMetricCellNotes.push("xGD derived from a different competition than this fixture.");
-    }
-    if (noXgMetrics) {
-      baseMetricCellClasses.push("no-xg-cell");
-      baseMetricCellNotes.push("No xG data available for this league; xGD/xGD Perf shown as -.");
-    }
+    const xgdCellClass = "metric-stack-cell";
+    const xgdPerfCellClass = "metric-stack-cell";
+    const xgdCellTitleAttr = "";
+    const xgdPerfCellTitleAttr = "";
     const seasonStrengthValue = noXgMetrics ? "-" : game.season_strength;
     const last5StrengthValue = noXgMetrics ? "-" : game.last5_strength;
     const last3StrengthValue = noXgMetrics ? "-" : game.last3_strength;
     const seasonXgdValue = noXgMetrics ? "-" : game.season_xgd;
     const last5XgdValue = noXgMetrics ? "-" : game.last5_xgd;
     const last3XgdValue = noXgMetrics ? "-" : game.last3_xgd;
-    const xgdCellClasses = [...baseMetricCellClasses];
-    const xgdCellNotes = [...baseMetricCellNotes];
-    const xgThresholdLabel = formatXgPushThresholdForLabel(getCurrentXgPushThreshold());
-    const hcXgdConsensusDirection = noXgMetrics ? null : getHcXgdConsensusDirection(game);
-    if (hcXgdConsensusDirection === "positive") {
-      xgdCellClasses.push("hc-xgd-consensus-positive");
-      xgdCellNotes.push(`HC + xGD is > ${xgThresholdLabel} for S/5/3.`);
-    } else if (hcXgdConsensusDirection === "negative") {
-      xgdCellClasses.push("hc-xgd-consensus-negative");
-      xgdCellNotes.push(`HC + xGD is < -${xgThresholdLabel} for S/5/3.`);
-    }
-    const xgdCellClass = xgdCellClasses.join(" ");
-    const xgdCellTitleAttr = xgdCellNotes.length ? ` title="${escapeHtml(xgdCellNotes.join(" | "))}"` : "";
-
-    const xgdPerfCellClasses = [...baseMetricCellClasses];
-    const xgdPerfCellNotes = [...baseMetricCellNotes];
-    const hcXgdPerfConsensusDirection = noXgMetrics ? null : getHcXgdPerfConsensusDirection(game);
-    if (hcXgdPerfConsensusDirection === "positive") {
-      xgdPerfCellClasses.push("hc-xgd-consensus-positive");
-      xgdPerfCellNotes.push(`HC + xGD Perf is > ${xgThresholdLabel} for S/5/3.`);
-    } else if (hcXgdPerfConsensusDirection === "negative") {
-      xgdPerfCellClasses.push("hc-xgd-consensus-negative");
-      xgdPerfCellNotes.push(`HC + xGD Perf is < -${xgThresholdLabel} for S/5/3.`);
-    }
-    const xgdPerfCellClass = xgdPerfCellClasses.join(" ");
-    const xgdPerfCellTitleAttr = xgdPerfCellNotes.length ? ` title="${escapeHtml(xgdPerfCellNotes.join(" | "))}"` : "";
 
     if (isHistorical) {
       row.innerHTML = `
@@ -2990,10 +3042,10 @@ function createGamesTable(sortedGames, isHistorical, options = {}) {
         <td class="xg-home-col">${escapeHtml(game.home_xg_actual || "-")}</td>
         <td class="line-col score-col">${escapeHtml(game.scoreline || "-")}</td>
         <td class="xg-away-col">${escapeHtml(game.away_xg_actual || "-")}</td>
-        <td class="${xgdCellClass}"${xgdCellTitleAttr}>${buildPeriodMetricStackCell(seasonStrengthValue, last5StrengthValue, last3StrengthValue, xgdMismatch)}</td>
-        <td class="${xgdPerfCellClass}"${xgdPerfCellTitleAttr}>${buildPeriodMetricStackCell(seasonXgdValue, last5XgdValue, last3XgdValue, xgdMismatch)}</td>
-        <td class="metric-stack-cell"${xgdMismatch ? ` title="xGD derived from a different competition than this fixture."` : ""}>${buildPeriodMetricStackCell(game.season_min_xg, game.last5_min_xg, game.last3_min_xg, xgdMismatch)}</td>
-        <td class="metric-stack-cell"${xgdMismatch ? ` title="xGD derived from a different competition than this fixture."` : ""}>${buildPeriodMetricStackCell(game.season_max_xg, game.last5_max_xg, game.last3_max_xg, xgdMismatch)}</td>
+        <td class="${xgdCellClass}"${xgdCellTitleAttr}>${buildPeriodMetricStackCell(seasonStrengthValue, last5StrengthValue, last3StrengthValue)}</td>
+        <td class="${xgdPerfCellClass}"${xgdPerfCellTitleAttr}>${buildPeriodMetricStackCell(seasonXgdValue, last5XgdValue, last3XgdValue)}</td>
+        <td class="metric-stack-cell">${buildPeriodMetricStackCell(game.season_min_xg, game.last5_min_xg, game.last3_min_xg)}</td>
+        <td class="metric-stack-cell">${buildPeriodMetricStackCell(game.season_max_xg, game.last5_max_xg, game.last3_max_xg)}</td>
       `;
     } else {
       row.innerHTML = `
@@ -3003,13 +3055,13 @@ function createGamesTable(sortedGames, isHistorical, options = {}) {
         <td class="home-price-col">${escapeHtml(game.home_price || "-")}</td>
         <td class="line-col handicap-line-col">${escapeHtml(game.mainline || "-")}</td>
         <td class="away-price-col">${escapeHtml(game.away_price || "-")}</td>
-        <td class="${xgdCellClass}"${xgdCellTitleAttr}>${buildPeriodMetricStackCell(seasonStrengthValue, last5StrengthValue, last3StrengthValue, xgdMismatch)}</td>
-        <td class="${xgdPerfCellClass}"${xgdPerfCellTitleAttr}>${buildPeriodMetricStackCell(seasonXgdValue, last5XgdValue, last3XgdValue, xgdMismatch)}</td>
+        <td class="${xgdCellClass}"${xgdCellTitleAttr}>${buildPeriodMetricStackCell(seasonStrengthValue, last5StrengthValue, last3StrengthValue)}</td>
+        <td class="${xgdPerfCellClass}"${xgdPerfCellTitleAttr}>${buildPeriodMetricStackCell(seasonXgdValue, last5XgdValue, last3XgdValue)}</td>
         <td class="goal-under-price-col">${escapeHtml(game.goal_under_price || "-")}</td>
         <td class="goal-line-col">${escapeHtml(game.goal_mainline || "-")}</td>
         <td class="goal-over-price-col">${escapeHtml(game.goal_over_price || "-")}</td>
-        <td class="metric-stack-cell"${xgdMismatch ? ` title="xGD derived from a different competition than this fixture."` : ""}>${buildPeriodMetricStackCell(game.season_min_xg, game.last5_min_xg, game.last3_min_xg, xgdMismatch)}</td>
-        <td class="metric-stack-cell"${xgdMismatch ? ` title="xGD derived from a different competition than this fixture."` : ""}>${buildPeriodMetricStackCell(game.season_max_xg, game.last5_max_xg, game.last3_max_xg, xgdMismatch)}</td>
+        <td class="metric-stack-cell">${buildPeriodMetricStackCell(game.season_min_xg, game.last5_min_xg, game.last3_min_xg)}</td>
+        <td class="metric-stack-cell">${buildPeriodMetricStackCell(game.season_max_xg, game.last5_max_xg, game.last3_max_xg)}</td>
       `;
     }
     row.addEventListener("click", () => loadGameXgd(game.market_id));
@@ -4097,6 +4149,14 @@ async function loadGameXgd(marketId) {
     const payload = await parseApiResponse(res);
     if (!res.ok) throw new Error(payload.error || "Failed to load xGD");
     renderXgd(payload);
+    const updatedMainTableMetrics = applyCalculatedXgdToMainTable(marketId, payload);
+    if (updatedMainTableMetrics) {
+      if (activeTab === "saved") {
+        renderSavedGames();
+      } else {
+        renderCurrentDay();
+      }
+    }
   } catch (err) {
     linesContainer.innerHTML = `<p>${escapeHtml(String(err.message || err))}</p>`;
   }

@@ -670,23 +670,6 @@ main {
   text-align: right;
 }
 
-.games-table td.xgd-mismatch-cell .metric-stack-value {
-  color: #b45309;
-}
-
-.games-table td.no-xg-cell .metric-stack-label,
-.games-table td.no-xg-cell .metric-stack-value {
-  color: #94a3b8;
-}
-
-.games-table td.hc-xgd-consensus-positive {
-  box-shadow: inset 0 0 0 1px rgba(22, 163, 74, 0.35);
-}
-
-.games-table td.hc-xgd-consensus-negative {
-  box-shadow: inset 0 0 0 1px rgba(220, 38, 38, 0.35);
-}
-
 .details-panel {
   position: fixed;
   left: 0;

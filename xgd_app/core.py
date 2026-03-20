@@ -429,6 +429,8 @@ def map_betfair_games(
 
         if not home_team or not away_team:
             continue
+        fallback_competition = str(row.get("competition", "")).strip() or None
+        fallback_area = "Europe" if is_european_competition_name(fallback_competition) else None
 
         model_games.append(
             {
@@ -436,8 +438,8 @@ def map_betfair_games(
                 "away": away_team,
                 "match_date": row["kickoff_time"],
                 "season_id": fixture.get("season_id") if fixture else None,
-                "competition_name": fixture.get("competition_name") if fixture else None,
-                "area_name": fixture.get("area_name") if fixture else None,
+                "competition_name": fixture.get("competition_name") if fixture else fallback_competition,
+                "area_name": fixture.get("area_name") if fixture else fallback_area,
             }
         )
 
@@ -489,7 +491,63 @@ def build_predictions(
                 out[col] = default_value
         return out
 
-    model_games_df = pd.DataFrame(model_games)
+    sofa_competitions: list[str] = []
+    sofa_competition_by_norm: dict[str, str] = {}
+    sofa_competition_set: set[str] = set()
+    if "competition_name" in form_df.columns:
+        sofa_competitions = sorted(
+            {
+                str(value).strip()
+                for value in form_df["competition_name"].dropna().tolist()
+                if str(value).strip()
+            }
+        )
+        sofa_competition_set = set(sofa_competitions)
+        for competition_name in sofa_competitions:
+            key = normalize_competition_key(competition_name)
+            if key and key not in sofa_competition_by_norm:
+                sofa_competition_by_norm[key] = competition_name
+
+    adjusted_model_games: list[dict[str, Any]] = []
+    model_game_idx = 0
+    for mapped in mapped_games:
+        if not mapped.get("home_sofa") or not mapped.get("away_sofa"):
+            continue
+        model_row = dict(model_games[model_game_idx])
+        model_game_idx += 1
+
+        raw_competition = str(mapped.get("competition", "")).strip()
+        tier_text = str(mapped.get("tier", "")).strip().casefold()
+        is_tier_zero = tier_text.startswith("tier 0") or tier_text == "tier0"
+        should_prefer_cup_view = bool(raw_competition) and (
+            is_tier_zero or is_european_competition_name(raw_competition)
+        )
+        if should_prefer_cup_view and sofa_competition_set:
+            resolved_competition = resolve_sofa_competition_name(
+                raw_competition=raw_competition,
+                manual_competition_mapping_lookup=manual_competition_mapping_lookup,
+                sofa_competitions=sofa_competitions,
+                sofa_competition_by_norm=sofa_competition_by_norm,
+                sofa_competition_set=sofa_competition_set,
+            )
+            if resolved_competition:
+                model_row["competition_name"] = resolved_competition
+                # Fixture season ids can be domestic-specific; avoid filtering out cup rows.
+                model_row["season_id"] = None
+                fallback_area = model_row.get("area_name")
+                if not str(fallback_area or "").strip() and is_european_competition_name(raw_competition):
+                    fallback_area = "Europe"
+                resolved_area = infer_area_for_competition(
+                    form_df=form_df,
+                    competition_name=resolved_competition,
+                    fallback_area=fallback_area,
+                )
+                if resolved_area:
+                    model_row["area_name"] = resolved_area
+
+        adjusted_model_games.append(model_row)
+
+    model_games_df = pd.DataFrame(adjusted_model_games if adjusted_model_games else model_games)
     game_tables, source_games = calc_wyscout_form_tables(
         model_games_df,
         form_df,
@@ -516,7 +574,11 @@ def build_predictions(
         home_used = len(sources.get("home_source_games", []))
         away_used = len(sources.get("away_source_games", []))
         warning = sources.get("warning")
-        no_common_season = "no common active season found" in str(warning or "").lower()
+        no_common_season = should_blank_xgd_for_warning(
+            warning=warning,
+            home_games_used=home_used,
+            away_games_used=away_used,
+        )
 
         for _, period_row in reduced.iterrows():
             home_xg = first_numeric_value(period_row, ("Team Home Real xG", "Avg Home Real xG"), default=0.0)
@@ -575,6 +637,13 @@ def to_native(value: Any) -> Any:
     return str(value)
 
 
+def should_blank_xgd_for_warning(warning: Any, home_games_used: int = 0, away_games_used: int = 0) -> bool:
+    lowered = str(warning or "").lower()
+    if "no common active season found" not in lowered:
+        return False
+    return int(home_games_used) <= 0 or int(away_games_used) <= 0
+
+
 def simplify_model_warning(messages: list[str]) -> str | None:
     cleaned = [str(msg).strip() for msg in messages if str(msg).strip()]
     if not cleaned:
@@ -584,6 +653,13 @@ def simplify_model_warning(messages: list[str]) -> str | None:
     no_common_idx = next((i for i, msg in enumerate(lowered) if "no common active season found" in msg), None)
     if no_common_idx is not None:
         return "Season warning: no common active season found. xGD may be less reliable."
+
+    team_specific_idx = next(
+        (i for i, msg in enumerate(lowered) if "using team-specific active seasons" in msg),
+        None,
+    )
+    if team_specific_idx is not None:
+        return "Season warning: shared season_id unavailable; using team-specific active seasons."
 
     boundaries_idx = next((i for i, msg in enumerate(lowered) if "season boundaries unavailable" in msg), None)
     if boundaries_idx is not None:
@@ -638,7 +714,11 @@ def period_rows_from_reduced_table(
     if not isinstance(reduced_df, pd.DataFrame) or reduced_df.empty:
         return []
 
-    no_common_season = "no common active season found" in str(warning or "").lower()
+    no_common_season = should_blank_xgd_for_warning(
+        warning=warning,
+        home_games_used=home_games_used,
+        away_games_used=away_games_used,
+    )
     period_rows: list[dict[str, Any]] = []
     for _, period_row in reduced_df.iterrows():
         home_xg = first_numeric_value(period_row, ("Team Home Real xG", "Avg Home Real xG"), default=0.0)
