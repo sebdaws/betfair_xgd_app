@@ -10,8 +10,7 @@ from typing import Any
 
 import pandas as pd
 
-APP_DIR = Path(__file__).resolve().parents[2]
-WORKSPACE_DIR = APP_DIR.parent
+from xgd_app.default_paths import get_external_path
 
 FINISHED_STATUSES = {
     "ended",
@@ -290,10 +289,13 @@ def _sqlite_table_names(path: Path) -> set[str]:
 
 def resolve_sofascore_db_path(db_path: str) -> Path:
     requested = Path(db_path).expanduser().resolve()
-    fallback = (WORKSPACE_DIR / "Sofascore_scraper" / "sofascore_local.db").resolve()
+    configured_fallback = get_external_path("sofascore_db")
 
     candidates: list[Path] = []
-    for candidate in (requested, fallback):
+    candidate_values: list[Path | None] = [requested, configured_fallback]
+    for candidate in candidate_values:
+        if candidate is None:
+            continue
         if candidate not in candidates:
             candidates.append(candidate)
 

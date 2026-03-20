@@ -4,12 +4,12 @@ Fetch pre-match football handicap prices from Betfair Exchange API.
 
 League selection workflow:
 1) Run once with --export-leagues-only to discover competitions.
-2) Open all_leagues.txt and copy leagues you want into selected_leagues.txt.
-3) Run normally; only leagues in selected_leagues.txt are tracked.
+2) Open app_data/all_leagues.txt and copy leagues you want into app_data/selected_leagues.txt.
+3) Run normally; only leagues in app_data/selected_leagues.txt are tracked.
 
 Usage:
   python betfair_scraper.py --export-leagues-only
-  python betfair_scraper.py --selected-leagues-file selected_leagues.txt
+  python betfair_scraper.py --selected-leagues-file app_data/selected_leagues.txt
   python betfair_scraper.py --market-types ASIAN_HANDICAP,HANDICAP
 """
 
@@ -40,6 +40,9 @@ DEFAULT_MAIN_LEAGUES = [
     "Ligue 1",
     "UEFA Champions League",
 ]
+DEFAULT_APP_DATA_DIR = "app_data"
+DEFAULT_SELECTED_LEAGUES_FILE = os.path.join(DEFAULT_APP_DATA_DIR, "selected_leagues.txt")
+DEFAULT_ALL_LEAGUES_FILE = os.path.join(DEFAULT_APP_DATA_DIR, "all_leagues.txt")
 
 
 @dataclass
@@ -477,6 +480,9 @@ def parse_list_csv(value: str) -> list[str]:
 
 
 def write_all_leagues_file(path: str, competitions: list[Competition]) -> None:
+    parent_dir = os.path.dirname(path)
+    if parent_dir:
+        os.makedirs(parent_dir, exist_ok=True)
     with open(path, "w", encoding="utf-8") as f:
         f.write("# Auto-generated from Betfair listCompetitions\n")
         f.write("# Format: competition_id|competition_name\n")
@@ -487,6 +493,9 @@ def write_all_leagues_file(path: str, competitions: list[Competition]) -> None:
 def ensure_selected_leagues_file(path: str) -> None:
     if os.path.exists(path):
         return
+    parent_dir = os.path.dirname(path)
+    if parent_dir:
+        os.makedirs(parent_dir, exist_ok=True)
 
     with open(path, "w", encoding="utf-8") as f:
         f.write("# Format: competition_id|competition_name\n")
@@ -557,8 +566,8 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--max-markets", type=int, default=40)
     parser.add_argument("--include-live", action="store_true")
     parser.add_argument("--market-types", default="ASIAN_HANDICAP")
-    parser.add_argument("--selected-leagues-file", default="selected_leagues.txt")
-    parser.add_argument("--all-leagues-file", default="all_leagues.txt")
+    parser.add_argument("--selected-leagues-file", default=DEFAULT_SELECTED_LEAGUES_FILE)
+    parser.add_argument("--all-leagues-file", default=DEFAULT_ALL_LEAGUES_FILE)
     parser.add_argument("--export-leagues-only", action="store_true")
     return parser.parse_args()
 

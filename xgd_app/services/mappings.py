@@ -65,6 +65,7 @@ class MappingService:
     def _save_mapping_file(path: Path, mappings: dict[str, str]) -> None:
         ordered = {key: mappings[key] for key in sorted(mappings, key=str.lower)}
         body = json.dumps(ordered, indent=2, ensure_ascii=True)
+        path.parent.mkdir(parents=True, exist_ok=True)
         tmp_path = path.with_suffix(path.suffix + ".tmp")
         tmp_path.write_text(body + "\n", encoding="utf-8")
         tmp_path.replace(path)
@@ -295,9 +296,6 @@ class MappingService:
                 existing["kickoff_raw"] = kickoff_raw
 
         return list(collapsed.values())
-
-    def list_manual_mappings(self) -> dict[str, Any]:
-        return self.list_manual_team_mappings()
 
     def list_manual_team_mappings(self) -> dict[str, Any]:
         self.state.refresh_games(force=False)
@@ -708,18 +706,6 @@ class MappingService:
             "manual_competition_count": len(competition_mappings),
             "auto_competition_count": len(auto_competition_rows),
         }
-
-    def upsert_team_mapping(self, raw_name: str, sofa_name: str) -> None:
-        self.upsert_manual_team_mapping(raw_name=raw_name, sofa_name=sofa_name)
-
-    def delete_team_mapping(self, raw_name: str) -> bool:
-        return self.delete_manual_team_mapping(raw_name=raw_name)
-
-    def upsert_competition_mapping(self, raw_name: str, sofa_name: str) -> None:
-        self.upsert_manual_competition_mapping(raw_name=raw_name, sofa_name=sofa_name)
-
-    def delete_competition_mapping(self, raw_name: str) -> bool:
-        return self.delete_manual_competition_mapping(raw_name=raw_name)
 
     def upsert_manual_team_mapping(self, raw_name: str, sofa_name: str) -> None:
         raw_team = str(raw_name).strip()

@@ -427,7 +427,7 @@ def calc_wyscout_form_tables(games, data_df, periods=("Season", 5, 3), return_so
         ]
         ex_calcs_out = ex_calcs[important_cols].copy()
 
-        reduced_cols = ["Period", "Avg Home Real xG", "Avg Away Real xG", "Avg Real xGD"]
+        reduced_cols = ["Period", "Avg Home Real xG", "Avg Away Real xG", "Avg Real xGD", "Team Real xGD"]
         ex_calcs_reduced = ex_calcs[reduced_cols].copy()
         ex_calcs_reduced.insert(1, "Strength", final_df["Strength"].values)
         ex_calcs_reduced["Total Avg Real xG"] = ex_calcs_reduced["Avg Home Real xG"] + ex_calcs_reduced["Avg Away Real xG"]

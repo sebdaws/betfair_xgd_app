@@ -2,8 +2,11 @@
 
 from __future__ import annotations
 
+from http.server import ThreadingHTTPServer
+
 from xgd_app.app_state import AppState
-from xgd_app.core import AppHandler, ThreadingHTTPServer, parse_args
+from xgd_app.core import parse_args
+from xgd_app.web.handler import AppHandler
 
 
 def main() -> None:
@@ -13,7 +16,7 @@ def main() -> None:
 
     AppHandler.state = state
     server = ThreadingHTTPServer((args.host, args.port), AppHandler)
-    print(f"xGD web app running on http://{args.host}:{args.port}")
+    print(f"Football Handicap Viewer running on http://{args.host}:{args.port}")
     try:
         server.serve_forever()
     except KeyboardInterrupt:

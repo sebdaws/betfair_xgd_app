@@ -1,0 +1,8 @@
+{
+  "external_paths": {
+    "sofascore_db": "../Sofascore_scraper/sofascore_local.db",
+    "betfair_scraper": "../Bot Finder/betfair_scraper.py",
+    "xgd_form_model": "../XGD Model/xgd_form_model.py",
+    "betfair_credentials": "../Bot Finder/betfair_credentials.py"
+  }
+}

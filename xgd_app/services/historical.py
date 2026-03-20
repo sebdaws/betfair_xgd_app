@@ -108,6 +108,7 @@ class HistoricalService:
                         "market_id": mapped["market_id"],
                         "period": row.get("period"),
                         "xgd": row.get("xgd"),
+                        "xgd_perf": row.get("xgd_perf"),
                         "strength": row.get("strength"),
                         "total_min_xg": row.get("total_min_xg"),
                         "total_max_xg": row.get("total_max_xg"),
@@ -176,12 +177,5 @@ class HistoricalService:
             "games_count": int(len(day_games_df)),
             "computed_games": computed_games,
         }
-
-    def list_grouped_by_day(self) -> dict[str, Any]:
-        return self.state.list_games_grouped_by_day(mode="historical")
-
-    def get_game_xgd(self, market_id: str, recent_n: int = 5, venue_recent_n: int = 5) -> dict[str, Any]:
-        return self.state.get_game_xgd(market_id=market_id, recent_n=recent_n, venue_recent_n=venue_recent_n)
-
 
 __all__ = ["HistoricalService"]

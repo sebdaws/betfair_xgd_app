@@ -482,12 +482,12 @@ def main() -> int:
     if not home_team:
         raise RuntimeError(
             f"Could not resolve home team {args.home!r} via exact Sofa name or manual mapping file "
-            f"{name_match_meta['team_mappings_path']}. Add mapping in manual_team_mappings.json."
+            f"{name_match_meta['team_mappings_path']}. Add mapping to that file and retry."
         )
     if not away_team:
         raise RuntimeError(
             f"Could not resolve away team {args.away!r} via exact Sofa name or manual mapping file "
-            f"{name_match_meta['team_mappings_path']}. Add mapping in manual_team_mappings.json."
+            f"{name_match_meta['team_mappings_path']}. Add mapping to that file and retry."
         )
 
     game_row: dict[str, Any] = {

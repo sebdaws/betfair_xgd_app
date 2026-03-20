@@ -12,6 +12,7 @@ from typing import Any, Callable
 
 import pandas as pd
 
+from xgd_app.default_paths import get_external_path
 from xgd_app.markets.goals import event_goal_mainline_snapshot, is_goal_line_market
 from xgd_app.markets.handicap import market_mainline_snapshot
 
@@ -34,7 +35,6 @@ class GamesService:
         state: Any,
         *,
         app_dir: Path,
-        workspace_dir: Path,
         default_selected_leagues: Path,
         default_all_leagues: Path,
         default_league_tier: str,
@@ -51,7 +51,6 @@ class GamesService:
     ) -> None:
         self.state = state
         self.app_dir = app_dir
-        self.workspace_dir = workspace_dir
         self.default_selected_leagues = default_selected_leagues
         self.default_all_leagues = default_all_leagues
         self.default_league_tier = default_league_tier
@@ -87,11 +86,19 @@ class GamesService:
     def resolve_credentials(self, args: argparse.Namespace) -> dict[str, str | None]:
         cfg_filename = f"{args.config_module}.py"
         local_cfg = self.app_dir / cfg_filename
-        workspace_cfg = self.workspace_dir / "Bot Finder" / cfg_filename
+        configured_cfg_base = get_external_path("betfair_credentials")
+        configured_cfg: Path | None = None
+        if configured_cfg_base is not None:
+            if configured_cfg_base.is_dir():
+                configured_cfg = configured_cfg_base / cfg_filename
+            elif configured_cfg_base.name == cfg_filename:
+                configured_cfg = configured_cfg_base
+            else:
+                configured_cfg = configured_cfg_base.parent / cfg_filename
         if local_cfg.exists():
             module_path = local_cfg
-        elif workspace_cfg.exists():
-            module_path = workspace_cfg
+        elif configured_cfg is not None and configured_cfg.exists():
+            module_path = configured_cfg
         else:
             module_path = local_cfg
         settings = self.load_module_settings(module_path)
@@ -583,6 +590,9 @@ class GamesService:
             "season_xgd": self.format_float_value(row.get("season_xgd"), decimals=2),
             "last5_xgd": self.format_float_value(row.get("last5_xgd"), decimals=2),
             "last3_xgd": self.format_float_value(row.get("last3_xgd"), decimals=2),
+            "season_xgd_perf": self.format_float_value(row.get("season_xgd_perf"), decimals=2),
+            "last5_xgd_perf": self.format_float_value(row.get("last5_xgd_perf"), decimals=2),
+            "last3_xgd_perf": self.format_float_value(row.get("last3_xgd_perf"), decimals=2),
             "season_strength": self.format_float_value(row.get("season_strength"), decimals=2),
             "last5_strength": self.format_float_value(row.get("last5_strength"), decimals=2),
             "last3_strength": self.format_float_value(row.get("last3_strength"), decimals=2),
@@ -726,9 +736,5 @@ class GamesService:
             loaded_end_day=loaded_end_day,
             saved_market_ids=saved_market_ids,
         )
-
-    def get_game_xgd(self, market_id: str, recent_n: int = 5, venue_recent_n: int = 5) -> dict[str, Any]:
-        return self.state.get_game_xgd(market_id=market_id, recent_n=recent_n, venue_recent_n=venue_recent_n)
-
 
 __all__ = ["GamesService"]

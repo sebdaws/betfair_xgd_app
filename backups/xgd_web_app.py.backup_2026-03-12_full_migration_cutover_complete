@@ -1,9 +1,0 @@
-#!/usr/bin/env python3
-"""Compatibility wrapper for the migrated xGD app package."""
-
-from xgd_app.core import *  # noqa: F401,F403
-from xgd_app.runtime import AppState, main
-
-
-if __name__ == "__main__":
-    main()

@@ -6,3 +6,5 @@ betfair_credentials.py
 historical_data/
 saved_games.json
 all_leagues.txt
+app_data/saved_games.json
+app_data/all_leagues.txt

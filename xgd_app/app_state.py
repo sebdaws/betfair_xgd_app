@@ -2,9 +2,52 @@
 
 from __future__ import annotations
 
-from xgd_app.core import *  # noqa: F401,F403
+import argparse
+import datetime as dt
+import json
+import threading
+from pathlib import Path
+from typing import Any
+
+import pandas as pd
+
+from xgd_app.core import (
+    APP_DIR,
+    ASIAN_GOAL_MARKET_TYPES,
+    DEFAULT_ALL_LEAGUES,
+    DEFAULT_BETFAIR_HISTORICAL_DIR,
+    DEFAULT_LEAGUE_TIER,
+    DEFAULT_MANUAL_COMPETITION_MAPPINGS,
+    DEFAULT_MANUAL_TEAM_MAPPINGS,
+    DEFAULT_SAVED_GAMES,
+    DEFAULT_SELECTED_LEAGUES,
+    PERIOD_METRIC_COLUMNS,
+    TeamMatcher,
+    build_predictions,
+    ensure_selected_leagues_file,
+    extract_period_metrics,
+    format_day_label,
+    format_float_value,
+    load_module_from_path,
+    load_selected_league_entries,
+    map_betfair_games,
+    match_competition_name,
+    normalize_competition_key,
+    normalize_team_name,
+    parse_iso_utc,
+    parse_list_csv,
+    parse_periods,
+    period_rows_from_reduced_table,
+    source_competitions_differ_from_betfair_competition,
+    split_event_teams,
+)
+from xgd_app.data.sofascore_loader import load_sofascore_inputs
+from xgd_app.default_paths import get_external_path
 from xgd_app.data.historical_betfair import HistoricalBetfairDataService
+from xgd_app.services.games import GamesService
 from xgd_app.services.game_xgd import GameXgdService
+from xgd_app.services.historical import HistoricalService
+from xgd_app.services.mappings import MappingService
 
 
 class AppState:
@@ -13,11 +56,23 @@ class AppState:
         self.lock = threading.Lock()
 
         betfair_scraper_path = APP_DIR / "betfair_scraper.py"
-        if not betfair_scraper_path.exists():
-            betfair_scraper_path = WORKSPACE_DIR / "Bot Finder" / "betfair_scraper.py"
+        configured_betfair_scraper_path = get_external_path("betfair_scraper")
+        if (not betfair_scraper_path.exists()) and configured_betfair_scraper_path is not None:
+            betfair_scraper_path = configured_betfair_scraper_path
+
         form_model_path = APP_DIR / "xgd_form_model.py"
+        configured_form_model_path = get_external_path("xgd_form_model")
+        if (not form_model_path.exists()) and configured_form_model_path is not None:
+            form_model_path = configured_form_model_path
+
+        if not betfair_scraper_path.exists():
+            raise RuntimeError(
+                "Missing betfair_scraper.py. Set external_paths.betfair_scraper in app_data/default_paths.json."
+            )
         if not form_model_path.exists():
-            form_model_path = WORKSPACE_DIR / "XGD Model" / "xgd_form_model.py"
+            raise RuntimeError(
+                "Missing xgd_form_model.py. Set external_paths.xgd_form_model in app_data/default_paths.json."
+            )
 
         self.betfair_module = load_module_from_path(betfair_scraper_path, "xgd_betfair_scraper")
         self.form_model_module = load_module_from_path(form_model_path, "xgd_form_model")
@@ -35,7 +90,6 @@ class AppState:
         self.games_service = GamesService(
             state=self,
             app_dir=APP_DIR,
-            workspace_dir=WORKSPACE_DIR,
             default_selected_leagues=DEFAULT_SELECTED_LEAGUES,
             default_all_leagues=DEFAULT_ALL_LEAGUES,
             default_league_tier=DEFAULT_LEAGUE_TIER,
@@ -57,7 +111,7 @@ class AppState:
 
         self.manual_mappings_path = DEFAULT_MANUAL_TEAM_MAPPINGS
         self.manual_competition_mappings_path = DEFAULT_MANUAL_COMPETITION_MAPPINGS
-        self.saved_games_path = APP_DIR / "saved_games.json"
+        self.saved_games_path = DEFAULT_SAVED_GAMES
 
         sofa_competitions = []
         if "competition_name" in self.fixtures_df.columns:
@@ -146,13 +200,82 @@ class AppState:
 
     def _persist_saved_market_ids_locked(self) -> None:
         path = Path(self.saved_games_path)
+        path.parent.mkdir(parents=True, exist_ok=True)
         payload = {"saved_market_ids": list(self.saved_market_ids)}
         tmp_path = path.with_suffix(f"{path.suffix}.tmp")
         tmp_path.write_text(json.dumps(payload, indent=2), encoding="utf-8")
         tmp_path.replace(path)
 
+    def _prune_played_saved_market_ids_locked(self) -> int:
+        if not self.saved_market_ids:
+            return 0
+
+        saved_lookup = set(self.saved_market_ids)
+        played_market_ids: set[str] = set()
+        now_utc = pd.Timestamp(dt.datetime.now(dt.timezone.utc))
+
+        historical_df = self.historical_games_df
+        if isinstance(historical_df, pd.DataFrame) and not historical_df.empty and "market_id" in historical_df.columns:
+            hist_ids = (
+                historical_df["market_id"]
+                .dropna()
+                .astype(str)
+                .str.strip()
+            )
+            played_market_ids.update({value for value in hist_ids.tolist() if value in saved_lookup})
+
+        upcoming_df = self.games_df
+        if (
+            isinstance(upcoming_df, pd.DataFrame)
+            and not upcoming_df.empty
+            and "market_id" in upcoming_df.columns
+            and "kickoff_time" in upcoming_df.columns
+        ):
+            upcoming_subset = upcoming_df.copy()
+            upcoming_subset["market_id"] = upcoming_subset["market_id"].astype(str).str.strip()
+            upcoming_subset = upcoming_subset[upcoming_subset["market_id"].isin(saved_lookup)].copy()
+            if not upcoming_subset.empty:
+                kickoff_ts = pd.to_datetime(upcoming_subset["kickoff_time"], errors="coerce", utc=True)
+                played_mask = kickoff_ts.notna() & (kickoff_ts <= now_utc)
+                if bool(played_mask.any()):
+                    played_market_ids.update(upcoming_subset.loc[played_mask, "market_id"].tolist())
+
+        if not played_market_ids:
+            return 0
+
+        original_count = len(self.saved_market_ids)
+        self.saved_market_ids = [market_id for market_id in self.saved_market_ids if market_id not in played_market_ids]
+        removed_count = original_count - len(self.saved_market_ids)
+        if removed_count > 0:
+            self._persist_saved_market_ids_locked()
+        return removed_count
+
+    def _prune_missing_saved_market_ids_locked(self, available_market_ids: set[str]) -> int:
+        if not self.saved_market_ids:
+            return 0
+        if not isinstance(available_market_ids, set):
+            available_market_ids = set()
+        available_norm = {str(value or "").strip() for value in available_market_ids if str(value or "").strip()}
+        original_count = len(self.saved_market_ids)
+        self.saved_market_ids = [market_id for market_id in self.saved_market_ids if market_id in available_norm]
+        removed_count = original_count - len(self.saved_market_ids)
+        if removed_count > 0:
+            self._persist_saved_market_ids_locked()
+        return removed_count
+
+    def _collect_available_market_ids_locked(self) -> set[str]:
+        available_market_ids: set[str] = set()
+        for frame in (self.games_df, self.historical_games_df):
+            if not isinstance(frame, pd.DataFrame) or frame.empty or "market_id" not in frame.columns:
+                continue
+            values = frame["market_id"].dropna().astype(str).str.strip().tolist()
+            available_market_ids.update({value for value in values if value})
+        return available_market_ids
+
     def list_saved_market_ids(self) -> list[str]:
         with self.lock:
+            self._prune_played_saved_market_ids_locked()
+            self._prune_missing_saved_market_ids_locked(self._collect_available_market_ids_locked())
             return list(self.saved_market_ids)
 
     def save_game(self, market_id: str) -> dict[str, Any]:
@@ -160,6 +283,7 @@ class AppState:
         if not market_id_norm:
             raise ValueError("market_id is required")
         with self.lock:
+            self._prune_played_saved_market_ids_locked()
             if market_id_norm not in self.saved_market_ids:
                 self.saved_market_ids.append(market_id_norm)
                 self._persist_saved_market_ids_locked()
@@ -185,6 +309,8 @@ class AppState:
 
     def list_saved_games_grouped_by_day(self) -> dict[str, Any]:
         with self.lock:
+            self._prune_played_saved_market_ids_locked()
+            self._prune_missing_saved_market_ids_locked(self._collect_available_market_ids_locked())
             saved_market_ids = list(self.saved_market_ids)
             games_df = self.games_df.copy()
             historical_games_df = self.historical_games_df.copy()
@@ -233,120 +359,6 @@ class AppState:
 
     def get_manual_competition_mapping_lookup_snapshot(self) -> dict[str, str]:
         return self.mapping_service.get_manual_competition_mapping_lookup_snapshot()
-
-    def _recompute_cached_model_metrics(self) -> None:
-        with self.lock:
-            games_df = self.games_df.copy()
-            manual_mapping_lookup = dict(self.manual_mapping_lookup)
-            manual_competition_mapping_lookup = dict(self.manual_competition_mapping_lookup)
-        if games_df.empty:
-            return
-        try:
-            prediction_df = build_predictions(
-                betfair_games_df=games_df,
-                form_df=self.form_df,
-                fixtures_df=self.fixtures_df,
-                team_matcher=self.team_matcher,
-                calc_wyscout_form_tables=self.form_model_module.calc_wyscout_form_tables,
-                periods=self.periods,
-                min_games=self.min_games,
-                manual_mapping_lookup=manual_mapping_lookup,
-                manual_competition_mapping_lookup=manual_competition_mapping_lookup,
-            )
-        except Exception:
-            prediction_df = pd.DataFrame()
-
-        metrics_df = extract_period_metrics(prediction_df)
-        for col in PERIOD_METRIC_COLUMNS:
-            if col in games_df.columns:
-                games_df = games_df.drop(columns=[col])
-        if not metrics_df.empty:
-            games_df = games_df.merge(metrics_df, on="market_id", how="left")
-        for col in PERIOD_METRIC_COLUMNS:
-            if col not in games_df.columns:
-                games_df[col] = None
-
-        cache_updates: dict[str, dict[str, Any]] = {}
-        if "market_id" in games_df.columns:
-            metric_cols = [col for col in PERIOD_METRIC_COLUMNS if col in games_df.columns]
-            if metric_cols:
-                metric_rows_df = games_df[["market_id", *metric_cols]].dropna(subset=["market_id"])
-                for row in metric_rows_df.to_dict(orient="records"):
-                    market_id = str(row.get("market_id", "")).strip()
-                    if not market_id:
-                        continue
-                    cache_updates[market_id] = {col: row.get(col) for col in metric_cols}
-
-        with self.lock:
-            self.games_df = games_df
-            if cache_updates:
-                self.upcoming_metrics_cache.update(cache_updates)
-
-    # Compatibility wrappers for migrated historical-data helpers.
-    @staticmethod
-    def _build_historical_event_day_index(base_dir: Path) -> dict[str, list[Path]]:
-        return HistoricalBetfairDataService._build_historical_event_day_index(base_dir)
-
-    @staticmethod
-    def _historical_default_price_snapshot() -> dict[str, str]:
-        return HistoricalBetfairDataService._historical_default_price_snapshot()
-
-    @staticmethod
-    def _stream_ltp_key(selection_id: int, handicap: float | None) -> tuple[int, float | None]:
-        return HistoricalBetfairDataService._stream_ltp_key(selection_id, handicap)
-
-    @staticmethod
-    def _lookup_stream_ltp(
-        ltp_by_key: dict[tuple[int, float | None], float],
-        selection_id: int,
-        handicap: float | None,
-    ) -> float | None:
-        return HistoricalBetfairDataService._lookup_stream_ltp(ltp_by_key, selection_id, handicap)
-
-    def _read_historical_event_metadata(self, event_dir: Path) -> dict[str, Any] | None:
-        return self.historical_data_service._read_historical_event_metadata(event_dir)
-
-    def _read_historical_event_stream_cache(self, event_dir: Path) -> dict[str, Any]:
-        return self.historical_data_service._read_historical_event_stream_cache(event_dir)
-
-    def _load_historical_day_events(self, day_iso: str) -> list[dict[str, Any]]:
-        return self.historical_data_service._load_historical_day_events(day_iso)
-
-    def _historical_market_mainline_snapshot_from_stream(
-        self,
-        event_name: str,
-        market_def: dict[str, Any] | None,
-        ltp_by_key: dict[tuple[int, float | None], float],
-    ) -> dict[str, Any]:
-        return self.historical_data_service._historical_market_mainline_snapshot_from_stream(
-            event_name,
-            market_def,
-            ltp_by_key,
-        )
-
-    def _historical_goal_mainline_snapshot_from_stream(
-        self,
-        market_def: dict[str, Any] | None,
-        ltp_by_key: dict[tuple[int, float | None], float],
-    ) -> dict[str, Any]:
-        return self.historical_data_service._historical_goal_mainline_snapshot_from_stream(market_def, ltp_by_key)
-
-    def _historical_event_closing_prices(self, event_meta: dict[str, Any]) -> dict[str, str]:
-        return self.historical_data_service._historical_event_closing_prices(event_meta)
-
-    def _lookup_historical_betfair_prices(self, home_team: str, away_team: str, kickoff_ts: Any) -> dict[str, str]:
-        return self.historical_data_service._lookup_historical_betfair_prices(home_team, away_team, kickoff_ts)
-
-    @staticmethod
-    def _historical_market_id_from_match_id(match_id: Any) -> str:
-        return HistoricalBetfairDataService._historical_market_id_from_match_id(match_id)
-
-    @staticmethod
-    def _parse_historical_match_id(market_id: Any) -> int | None:
-        return HistoricalBetfairDataService._parse_historical_match_id(market_id)
-
-    def _build_historical_games_df(self) -> pd.DataFrame:
-        return self.historical_data_service._build_historical_games_df()
 
     def list_manual_team_mappings(self) -> dict[str, Any]:
         return self.mapping_service.list_manual_team_mappings()

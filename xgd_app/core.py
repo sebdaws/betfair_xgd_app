@@ -34,6 +34,7 @@ from xgd_app.data.sofascore_loader import (
     gamestate_for_perspective,
     load_sofascore_inputs,
 )
+from xgd_app.default_paths import get_external_path
 from xgd_app.services.games import GamesService
 from xgd_app.services.historical import HistoricalService
 from xgd_app.services.mappings import MappingService
@@ -41,18 +42,19 @@ from xgd_app.web.handler import AppHandler
 
 
 APP_DIR = Path(__file__).resolve().parents[1]
-WORKSPACE_DIR = APP_DIR.parent
 WEBAPP_DIR = APP_DIR / "webapp"
+APP_DATA_DIR = APP_DIR / "app_data"
 
 DEFAULT_SOFASCORE_DB = APP_DIR / "sofascore_local.db"
-_fallback_db = WORKSPACE_DIR / "Sofascore_scraper" / "sofascore_local.db"
-if (not DEFAULT_SOFASCORE_DB.exists()) and _fallback_db.exists():
-    DEFAULT_SOFASCORE_DB = _fallback_db
+_configured_sofascore_db = get_external_path("sofascore_db")
+if (not DEFAULT_SOFASCORE_DB.exists()) and _configured_sofascore_db is not None:
+    DEFAULT_SOFASCORE_DB = _configured_sofascore_db
 
-DEFAULT_SELECTED_LEAGUES = APP_DIR / "selected_leagues.txt"
-DEFAULT_ALL_LEAGUES = APP_DIR / "all_leagues.txt"
-DEFAULT_MANUAL_TEAM_MAPPINGS = APP_DIR / "manual_team_mappings.json"
-DEFAULT_MANUAL_COMPETITION_MAPPINGS = APP_DIR / "manual_competition_mappings.json"
+DEFAULT_SELECTED_LEAGUES = APP_DATA_DIR / "selected_leagues.txt"
+DEFAULT_ALL_LEAGUES = APP_DATA_DIR / "all_leagues.txt"
+DEFAULT_MANUAL_TEAM_MAPPINGS = APP_DATA_DIR / "manual_team_mappings.json"
+DEFAULT_MANUAL_COMPETITION_MAPPINGS = APP_DATA_DIR / "manual_competition_mappings.json"
+DEFAULT_SAVED_GAMES = APP_DATA_DIR / "saved_games.json"
 DEFAULT_LEAGUE_TIER = "Unassigned"
 DEFAULT_BETFAIR_HISTORICAL_DIR = APP_DIR / "data" / "BASIC"
 _fallback_historical_dir = APP_DIR / "historical_data" / "BASIC"
@@ -78,6 +80,9 @@ PERIOD_METRIC_COLUMNS = (
     "season_xgd",
     "last5_xgd",
     "last3_xgd",
+    "season_xgd_perf",
+    "last5_xgd_perf",
+    "last3_xgd_perf",
     "season_strength",
     "last5_strength",
     "last3_strength",
@@ -164,6 +169,7 @@ def parse_list_csv(value: str) -> list[str]:
 def ensure_selected_leagues_file(path: Path) -> None:
     if path.exists():
         return
+    path.parent.mkdir(parents=True, exist_ok=True)
     with path.open("w", encoding="utf-8") as f:
         f.write("# Format: competition_id|competition_name|tier\n")
         f.write("# Tier is optional, but recommended for UI filtering.\n")
@@ -478,6 +484,7 @@ def build_predictions(
             "away_xg": None,
             "total_xg": None,
             "xgd": None,
+            "xgd_perf": None,
             "strength": None,
             "total_min_xg": None,
             "total_max_xg": None,
@@ -584,7 +591,8 @@ def build_predictions(
             home_xg = first_numeric_value(period_row, ("Team Home Real xG", "Avg Home Real xG"), default=0.0)
             away_xg = first_numeric_value(period_row, ("Team Away Real xG", "Avg Away Real xG"), default=0.0)
             total_xg = first_numeric_value(period_row, ("Total Team Real xG", "Total Avg Real xG"), default=0.0)
-            xgd = first_numeric_value(period_row, ("Team Real xGD", "Avg Real xGD"), default=0.0)
+            xgd = first_numeric_value(period_row, ("Avg Real xGD", "Team Real xGD"), default=0.0)
+            xgd_perf = first_numeric_value(period_row, ("Team Real xGD", "Avg Real xGD"), default=0.0)
             strength = first_numeric_value(period_row, ("Strength",), default=0.0)
             total_min_xg = first_numeric_value(period_row, ("Total Min Real xG",), default=0.0)
             total_max_xg = first_numeric_value(period_row, ("Total Max Real xG",), default=0.0)
@@ -596,6 +604,7 @@ def build_predictions(
                     "away_xg": away_xg,
                     "total_xg": total_xg,
                     "xgd": (None if no_common_season else xgd),
+                    "xgd_perf": (None if no_common_season else xgd_perf),
                     "strength": (None if no_common_season else strength),
                     "total_min_xg": (None if no_common_season else total_min_xg),
                     "total_max_xg": (None if no_common_season else total_max_xg),
@@ -724,7 +733,8 @@ def period_rows_from_reduced_table(
         home_xg = first_numeric_value(period_row, ("Team Home Real xG", "Avg Home Real xG"), default=0.0)
         away_xg = first_numeric_value(period_row, ("Team Away Real xG", "Avg Away Real xG"), default=0.0)
         total_xg = first_numeric_value(period_row, ("Total Team Real xG", "Total Avg Real xG"), default=0.0)
-        xgd = first_numeric_value(period_row, ("Team Real xGD", "Avg Real xGD"), default=0.0)
+        xgd = first_numeric_value(period_row, ("Avg Real xGD", "Team Real xGD"), default=0.0)
+        xgd_perf = first_numeric_value(period_row, ("Team Real xGD", "Avg Real xGD"), default=0.0)
         strength = first_numeric_value(period_row, ("Strength",), default=0.0)
         total_min_xg = first_numeric_value(period_row, ("Total Min Real xG",), default=0.0)
         total_max_xg = first_numeric_value(period_row, ("Total Max Real xG",), default=0.0)
@@ -735,6 +745,7 @@ def period_rows_from_reduced_table(
                 "away_xg": away_xg,
                 "total_xg": total_xg,
                 "xgd": (None if no_common_season else xgd),
+                "xgd_perf": (None if no_common_season else xgd_perf),
                 "strength": (None if no_common_season else strength),
                 "total_min_xg": (None if no_common_season else total_min_xg),
                 "total_max_xg": (None if no_common_season else total_max_xg),
@@ -756,6 +767,7 @@ def summary_from_period_rows(period_rows: list[dict[str, Any]]) -> dict[str, Any
         "away_xg": to_native(chosen.get("away_xg")),
         "total_xg": to_native(chosen.get("total_xg")),
         "xgd": to_native(chosen.get("xgd")),
+        "xgd_perf": to_native(chosen.get("xgd_perf")),
         "strength": to_native(chosen.get("strength")),
     }
 
@@ -1335,6 +1347,9 @@ def extract_period_metrics(prediction_df: pd.DataFrame) -> pd.DataFrame:
         "season_xgd",
         "last5_xgd",
         "last3_xgd",
+        "season_xgd_perf",
+        "last5_xgd_perf",
+        "last3_xgd_perf",
         "season_strength",
         "last5_strength",
         "last3_strength",
@@ -1359,6 +1374,7 @@ def extract_period_metrics(prediction_df: pd.DataFrame) -> pd.DataFrame:
 
     metric_specs = [
         ("xgd", "xgd"),
+        ("xgd_perf", "xgd_perf"),
         ("strength", "strength"),
         ("total_min_xg", "min_xg"),
         ("total_max_xg", "max_xg"),

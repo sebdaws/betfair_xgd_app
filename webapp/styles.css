@@ -784,6 +784,18 @@ main {
   font-size: 0.98rem;
 }
 
+.xgd-team-summary-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 12px;
+  margin-bottom: 10px;
+}
+
+.xgd-team-summary-panel h4 {
+  margin: 0 0 6px;
+  font-size: 0.9rem;
+}
+
 .xgd-view-tabs {
   margin: 0 0 10px;
 }
@@ -1098,5 +1110,9 @@ main {
 
   .metric-grid {
     grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
+  .xgd-team-summary-grid {
+    grid-template-columns: 1fr;
   }
 }

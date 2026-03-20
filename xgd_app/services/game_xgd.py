@@ -1039,6 +1039,7 @@ class GameXgdService:
             "away_xg": to_native(summary_row.get("away_xg")),
             "total_xg": to_native(summary_row.get("total_xg")),
             "xgd": to_native(summary_row.get("xgd")),
+            "xgd_perf": to_native(summary_row.get("xgd_perf")),
             "strength": to_native(summary_row.get("strength")),
         }
 
@@ -1048,6 +1049,7 @@ class GameXgdService:
             "away_xg",
             "total_xg",
             "xgd",
+            "xgd_perf",
             "strength",
             "total_min_xg",
             "total_max_xg",
