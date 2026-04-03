@@ -104,6 +104,13 @@ class AppHandler(BaseHTTPRequestHandler):
             team_name = (query.get("team") or [""])[0]
             competition_name = (query.get("competition") or [""])[0]
             return self._serve_team_hc_ranking_details(team_name=team_name, competition_name=competition_name)
+        if path == "/api/team-page":
+            query = parse_qs(parsed.query)
+            team_name = (query.get("team") or [""])[0]
+            competition_name = (query.get("competition") or [""])[0]
+            return self._serve_team_page(team_name=team_name, competition_name=competition_name)
+        if path == "/api/teams":
+            return self._serve_teams_directory()
 
         self._json({"error": "Not found"}, status=HTTPStatus.NOT_FOUND)
 
@@ -223,6 +230,29 @@ class AppHandler(BaseHTTPRequestHandler):
             self._json(payload)
         except ValueError as exc:
             self._json({"error": str(exc)}, status=HTTPStatus.BAD_REQUEST)
+        except Exception as exc:
+            self._json({"error": str(exc)}, status=HTTPStatus.INTERNAL_SERVER_ERROR)
+
+    def _serve_team_page(self, team_name: str, competition_name: str) -> None:
+        team_text = str(team_name or "").strip()
+        if not team_text:
+            self._json({"error": "team is required"}, status=HTTPStatus.BAD_REQUEST)
+            return
+        try:
+            payload = self.state.get_team_page(
+                team_name=team_text,
+                competition_name=str(competition_name or "").strip() or None,
+            )
+            self._json(payload)
+        except ValueError as exc:
+            self._json({"error": str(exc)}, status=HTTPStatus.BAD_REQUEST)
+        except Exception as exc:
+            self._json({"error": str(exc)}, status=HTTPStatus.INTERNAL_SERVER_ERROR)
+
+    def _serve_teams_directory(self) -> None:
+        try:
+            payload = self.state.list_teams_directory()
+            self._json(payload)
         except Exception as exc:
             self._json({"error": str(exc)}, status=HTTPStatus.INTERNAL_SERVER_ERROR)
 

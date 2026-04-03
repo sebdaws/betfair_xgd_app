@@ -29,6 +29,7 @@ FormatDayLabelFn = Callable[[str], str]
 
 class GamesService:
     """Owns Betfair credential resolution and upcoming-game refresh flow."""
+    XGD_CACHE_VERSION = 4
 
     def __init__(
         self,
@@ -485,10 +486,18 @@ class GamesService:
         games_df = pd.DataFrame(rows)
         if not games_df.empty:
             market_ids = [str(value).strip() for value in games_df["market_id"].tolist() if str(value).strip()]
+            def _has_complete_cached_metrics(market_id: str) -> bool:
+                cached = metrics_cache.get(market_id)
+                if not isinstance(cached, dict):
+                    return False
+                if int(cached.get("_xgd_cache_version", 0) or 0) != int(self.XGD_CACHE_VERSION):
+                    return False
+                return all(col in cached for col in self.period_metric_columns)
+
             missing_market_ids = [
                 market_id
                 for market_id in market_ids
-                if market_id not in metrics_cache
+                if not _has_complete_cached_metrics(market_id)
             ]
             tier_zero_market_ids: set[str] = set()
             if "tier" in games_df.columns:
@@ -535,11 +544,15 @@ class GamesService:
                             metrics_cache[market_id] = {
                                 col: row.get(col) for col in self.period_metric_columns
                             }
+                            metrics_cache[market_id]["_xgd_cache_version"] = int(self.XGD_CACHE_VERSION)
                 # Cache explicit empty metrics for unresolved markets so we don't recompute every refresh.
                 for market_id in missing_market_ids:
                     metrics_cache.setdefault(
                         market_id,
-                        {col: None for col in self.period_metric_columns},
+                        {
+                            **{col: None for col in self.period_metric_columns},
+                            "_xgd_cache_version": int(self.XGD_CACHE_VERSION),
+                        },
                     )
 
             cached_metric_rows: list[dict[str, Any]] = []
@@ -575,6 +588,8 @@ class GamesService:
         return {
             "market_id": str(row.get("market_id", "")),
             "event_name": str(row.get("event_name", "")),
+            "home_team": str(row.get("home_raw") or row.get("home_sofa") or "").strip(),
+            "away_team": str(row.get("away_raw") or row.get("away_sofa") or "").strip(),
             "competition": str(row.get("competition", "")),
             "tier": str(row.get("tier", self.default_league_tier) or self.default_league_tier),
             "market_name": str(row.get("market_name", "")),
@@ -599,6 +614,11 @@ class GamesService:
             "xgd_competition_mismatch": (
                 bool(row.get("xgd_competition_mismatch"))
                 if not pd.isna(row.get("xgd_competition_mismatch"))
+                else False
+            ),
+            "xgd_domestic_fallback": (
+                bool(row.get("xgd_domestic_fallback"))
+                if not pd.isna(row.get("xgd_domestic_fallback"))
                 else False
             ),
             "season_min_xg": self.format_float_value(row.get("season_min_xg"), decimals=2),

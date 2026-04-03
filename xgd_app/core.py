@@ -77,6 +77,15 @@ MONTH_ABBR_TO_NUM = {
 }
 
 PERIOD_METRIC_COLUMNS = (
+    "season_home_xg",
+    "last5_home_xg",
+    "last3_home_xg",
+    "season_away_xg",
+    "last5_away_xg",
+    "last3_away_xg",
+    "season_total_xg",
+    "last5_total_xg",
+    "last3_total_xg",
     "season_xgd",
     "last5_xgd",
     "last3_xgd",
@@ -93,6 +102,7 @@ PERIOD_METRIC_COLUMNS = (
     "last5_max_xg",
     "last3_max_xg",
     "xgd_competition_mismatch",
+    "xgd_domestic_fallback",
 )
 
 GAMESTATES = ("drawing", "winning", "losing")
@@ -492,6 +502,7 @@ def build_predictions(
             "away_games_used": 0,
             "model_warning": "No model games available for this fixture.",
             "xgd_competition_mismatch": False,
+            "xgd_domestic_fallback": False,
         }
         for col, default_value in default_cols.items():
             if col not in out.columns:
@@ -526,8 +537,18 @@ def build_predictions(
         raw_competition = str(mapped.get("competition", "")).strip()
         tier_text = str(mapped.get("tier", "")).strip().casefold()
         is_tier_zero = tier_text.startswith("tier 0") or tier_text == "tier0"
+        fixture_competition = str(model_row.get("competition_name") or "").strip()
+        fixture_area = str(model_row.get("area_name") or "").strip()
+        fixture_is_european = bool(fixture_competition) and (
+            is_european_competition_name(fixture_competition)
+            or fixture_area.casefold() == "europe"
+        )
         should_prefer_cup_view = bool(raw_competition) and (
-            is_tier_zero or is_european_competition_name(raw_competition)
+            is_tier_zero
+            or (
+                is_european_competition_name(raw_competition)
+                and (not fixture_competition or fixture_is_european)
+            )
         )
         if should_prefer_cup_view and sofa_competition_set:
             resolved_competition = resolve_sofa_competition_name(
@@ -564,14 +585,415 @@ def build_predictions(
     )
 
     pred_rows: list[dict[str, Any]] = []
+
+    def _season_values_equal(left: Any, right: Any) -> bool:
+        left_num = pd.to_numeric(pd.Series([left]), errors="coerce").iloc[0]
+        right_num = pd.to_numeric(pd.Series([right]), errors="coerce").iloc[0]
+        if pd.notna(left_num) and pd.notna(right_num):
+            return float(left_num) == float(right_num)
+        return str(left).strip() == str(right).strip()
+
+    def _filter_rows_by_season(rows: pd.DataFrame, season_id_value: Any) -> pd.DataFrame:
+        if rows.empty or ("season_id" not in rows.columns):
+            return rows.copy()
+        season_num = pd.to_numeric(pd.Series([season_id_value]), errors="coerce").iloc[0]
+        if pd.notna(season_num):
+            mask = pd.to_numeric(rows["season_id"], errors="coerce") == season_num
+            return rows[mask].copy()
+        season_text = str(season_id_value).strip()
+        return rows[rows["season_id"].astype(str).str.strip() == season_text].copy()
+
+    def _infer_common_competition_season_id(
+        *,
+        home_team_name: str,
+        away_team_name: str,
+        competition_name: str,
+        area_name: str,
+        cutoff_time: Any,
+    ) -> Any:
+        if not competition_name:
+            return None
+        rows = form_df.copy()
+        if rows.empty or ("team" not in rows.columns) or ("competition_name" not in rows.columns):
+            return None
+        rows = rows[
+            rows["team"].astype(str).isin({str(home_team_name), str(away_team_name)})
+            & (rows["competition_name"].astype(str) == str(competition_name))
+        ].copy()
+        if area_name and ("area_name" in rows.columns):
+            rows = rows[rows["area_name"].astype(str) == str(area_name)].copy()
+        if rows.empty or ("season_id" not in rows.columns):
+            return None
+        if not pd.isna(cutoff_time) and ("date_time" in rows.columns):
+            rows["date_time"] = pd.to_datetime(rows["date_time"], errors="coerce", utc=True)
+            rows = rows[rows["date_time"] < cutoff_time].copy()
+        rows = rows[rows["season_id"].notna()].copy()
+        if rows.empty:
+            return None
+
+        home_ids = set(
+            rows.loc[rows["team"].astype(str) == str(home_team_name), "season_id"]
+            .dropna()
+            .tolist()
+        )
+        away_ids = set(
+            rows.loc[rows["team"].astype(str) == str(away_team_name), "season_id"]
+            .dropna()
+            .tolist()
+        )
+        common_ids = [
+            season_id
+            for season_id in home_ids
+            if any(_season_values_equal(season_id, other) for other in away_ids)
+        ]
+        if not common_ids:
+            return None
+
+        def is_common(season_val: Any) -> bool:
+            return any(_season_values_equal(season_val, common_val) for common_val in common_ids)
+
+        common_rows = rows[rows["season_id"].apply(is_common)].copy()
+        sort_cols = [col for col in ("season_start_date", "date_time") if col in common_rows.columns]
+        for col in ("season_start_date", "date_time"):
+            if col in common_rows.columns:
+                common_rows[col] = pd.to_datetime(common_rows[col], errors="coerce", utc=True)
+        if sort_cols:
+            common_rows = common_rows.sort_values(sort_cols, kind="mergesort")
+        return common_rows.iloc[-1]["season_id"] if not common_rows.empty else common_ids[0]
+
+    def _append_empty_period_rows_for_market(
+        mapped_row: dict[str, Any],
+        *,
+        warning: str,
+        home_games_used: int,
+        away_games_used: int,
+    ) -> None:
+        period_values = list(periods) if periods else ["season", 5, 3]
+        for period_value in period_values:
+            pred_rows.append(
+                {
+                    **mapped_row,
+                    "period": period_value,
+                    "home_xg": None,
+                    "away_xg": None,
+                    "total_xg": None,
+                    "xgd": None,
+                    "xgd_perf": None,
+                    "strength": None,
+                    "total_min_xg": None,
+                    "total_max_xg": None,
+                    "home_games_used": int(home_games_used),
+                    "away_games_used": int(away_games_used),
+                    "model_warning": warning,
+                    "xgd_competition_mismatch": False,
+                    "xgd_domestic_fallback": False,
+                }
+            )
+
     model_idx = 0
     for mapped in mapped_games:
         if not mapped.get("home_sofa") or not mapped.get("away_sofa"):
-            pred_rows.append({**mapped, "period": None, "xgd_competition_mismatch": False})
+            pred_rows.append({
+                **mapped,
+                "period": None,
+                "xgd_competition_mismatch": False,
+                "xgd_domestic_fallback": False,
+            })
+            continue
+        if model_idx >= len(game_tables):
+            pred_rows.append({
+                **mapped,
+                "period": None,
+                "xgd_competition_mismatch": False,
+                "xgd_domestic_fallback": False,
+            })
             continue
 
         _, _, _, _, reduced = game_tables[model_idx]
-        sources = source_games[model_idx]
+        sources = source_games[model_idx] if model_idx < len(source_games) else {}
+        model_idx += 1
+
+        home_sofa = str(mapped.get("home_sofa") or "").strip()
+        away_sofa = str(mapped.get("away_sofa") or "").strip()
+        kickoff_time = mapped.get("kickoff_time")
+        tier_text = str(mapped.get("tier", "")).strip().casefold()
+        is_tier_zero = tier_text.startswith("tier 0") or tier_text == "tier0"
+
+        if is_tier_zero and home_sofa and away_sofa and (not pd.isna(kickoff_time)):
+            fixture_competition_text = str(mapped.get("fixture_competition") or "").strip()
+            betfair_competition_text = str(mapped.get("competition", "")).strip()
+            if not fixture_competition_text:
+                fallback_competition = resolve_sofa_competition_name(
+                    raw_competition=betfair_competition_text,
+                    manual_competition_mapping_lookup=manual_competition_mapping_lookup,
+                    sofa_competitions=sofa_competitions,
+                    sofa_competition_by_norm=sofa_competition_by_norm,
+                    sofa_competition_set=sofa_competition_set,
+                )
+                if fallback_competition:
+                    fixture_competition_text = str(fallback_competition).strip()
+
+            fixture_competition_in_db = False
+            if fixture_competition_text:
+                fixture_competition_norm = normalize_competition_key(fixture_competition_text)
+                if fixture_competition_text in sofa_competition_set:
+                    fixture_competition_in_db = True
+                elif fixture_competition_norm and fixture_competition_norm in sofa_competition_by_norm:
+                    fixture_competition_text = str(
+                        sofa_competition_by_norm.get(fixture_competition_norm) or fixture_competition_text
+                    ).strip()
+                    fixture_competition_in_db = True
+
+            if not fixture_competition_in_db:
+                home_domestic_comp, home_domestic_area = infer_team_domestic_competition(
+                    form_df=form_df,
+                    team_name=home_sofa,
+                    kickoff_time=kickoff_time,
+                )
+                away_domestic_comp, away_domestic_area = infer_team_domestic_competition(
+                    form_df=form_df,
+                    team_name=away_sofa,
+                    kickoff_time=kickoff_time,
+                )
+                if home_domestic_comp and away_domestic_comp:
+                    home_domestic_rows, home_domestic_season = select_team_competition_rows(
+                        form_df=form_df,
+                        team_name=home_sofa,
+                        competition_name=home_domestic_comp,
+                        area_name=home_domestic_area,
+                        kickoff_time=kickoff_time,
+                    )
+                    away_domestic_rows, away_domestic_season = select_team_competition_rows(
+                        form_df=form_df,
+                        team_name=away_sofa,
+                        competition_name=away_domestic_comp,
+                        area_name=away_domestic_area,
+                        kickoff_time=kickoff_time,
+                    )
+                    if not home_domestic_rows.empty and not away_domestic_rows.empty:
+                        domestic_calc_form_df = pd.concat([home_domestic_rows, away_domestic_rows], ignore_index=True)
+                        same_domestic_competition = (
+                            normalize_competition_key(home_domestic_comp) == normalize_competition_key(away_domestic_comp)
+                            and normalize_competition_key(home_domestic_area) == normalize_competition_key(away_domestic_area)
+                        )
+                        if not same_domestic_competition:
+                            if "season_id" in domestic_calc_form_df.columns:
+                                domestic_calc_form_df["season_id"] = "__tier0_domestic__"
+                            if "season_start_date" in domestic_calc_form_df.columns:
+                                domestic_calc_form_df["season_start_date"] = pd.Timestamp("1900-01-01", tz="UTC")
+                            if "season_end_date" in domestic_calc_form_df.columns:
+                                domestic_calc_form_df["season_end_date"] = pd.Timestamp("2100-12-31 23:59:59", tz="UTC")
+
+                        domestic_view = build_xgd_view_from_form_df(
+                            view_id="domestic",
+                            label="Domestic",
+                            home_sofa=home_sofa,
+                            away_sofa=away_sofa,
+                            kickoff_time=kickoff_time,
+                            calc_form_df=domestic_calc_form_df,
+                            full_form_df=form_df,
+                            calc_wyscout_form_tables=calc_wyscout_form_tables,
+                            periods=periods,
+                            min_games=min_games,
+                            home_venue_filter={
+                                "season_id": home_domestic_season,
+                                "competition_name": home_domestic_comp,
+                                "area_name": home_domestic_area,
+                            },
+                            away_venue_filter={
+                                "season_id": away_domestic_season,
+                                "competition_name": away_domestic_comp,
+                                "area_name": away_domestic_area,
+                            },
+                        )
+                        domestic_period_rows = (
+                            domestic_view.get("period_rows")
+                            if isinstance(domestic_view, dict)
+                            else None
+                        )
+                        if isinstance(domestic_period_rows, list) and domestic_period_rows:
+                            for domestic_period_row in domestic_period_rows:
+                                pred_rows.append(
+                                    {
+                                        **mapped,
+                                        "period": domestic_period_row.get("period"),
+                                        "home_xg": domestic_period_row.get("home_xg"),
+                                        "away_xg": domestic_period_row.get("away_xg"),
+                                        "total_xg": domestic_period_row.get("total_xg"),
+                                        "xgd": domestic_period_row.get("xgd"),
+                                        "xgd_perf": domestic_period_row.get("xgd_perf"),
+                                        "strength": domestic_period_row.get("strength"),
+                                        "total_min_xg": domestic_period_row.get("total_min_xg"),
+                                        "total_max_xg": domestic_period_row.get("total_max_xg"),
+                                        "home_games_used": int(domestic_period_row.get("home_games_used", 0) or 0),
+                                        "away_games_used": int(domestic_period_row.get("away_games_used", 0) or 0),
+                                        "model_warning": (
+                                            domestic_period_row.get("model_warning")
+                                            or (domestic_view.get("warning") if isinstance(domestic_view, dict) else None)
+                                        ),
+                                        "xgd_competition_mismatch": False,
+                                        "xgd_domestic_fallback": True,
+                                    }
+                                )
+                            continue
+
+        if (not is_tier_zero) and home_sofa and away_sofa and (not pd.isna(kickoff_time)):
+            fixture_competition_text = str(mapped.get("fixture_competition") or "").strip()
+            fixture_area_text = str(mapped.get("fixture_area") or "").strip()
+            fixture_season_id = mapped.get("fixture_season_id")
+            try:
+                if pd.isna(fixture_season_id):
+                    fixture_season_id = None
+            except Exception:
+                pass
+            betfair_competition_text = str(mapped.get("competition", "")).strip()
+
+            if not fixture_competition_text:
+                fallback_competition = resolve_sofa_competition_name(
+                    raw_competition=betfair_competition_text,
+                    manual_competition_mapping_lookup=manual_competition_mapping_lookup,
+                    sofa_competitions=sofa_competitions,
+                    sofa_competition_by_norm=sofa_competition_by_norm,
+                    sofa_competition_set=sofa_competition_set,
+                )
+                if fallback_competition:
+                    fixture_competition_text = str(fallback_competition).strip()
+
+            if fixture_competition_text and not fixture_area_text:
+                inferred_area = infer_area_for_competition(
+                    form_df=form_df,
+                    competition_name=fixture_competition_text,
+                    fallback_area=None,
+                )
+                fixture_area_text = str(inferred_area or "").strip()
+
+            home_comp_rows, home_comp_season = select_team_competition_rows(
+                form_df=form_df,
+                team_name=home_sofa,
+                competition_name=fixture_competition_text,
+                area_name=(fixture_area_text or None),
+                kickoff_time=kickoff_time,
+            )
+            away_comp_rows, away_comp_season = select_team_competition_rows(
+                form_df=form_df,
+                team_name=away_sofa,
+                competition_name=fixture_competition_text,
+                area_name=(fixture_area_text or None),
+                kickoff_time=kickoff_time,
+            )
+
+            if fixture_season_id is None:
+                if (home_comp_season is not None) and (away_comp_season is not None):
+                    if _season_values_equal(home_comp_season, away_comp_season):
+                        fixture_season_id = home_comp_season
+                    else:
+                        fixture_season_id = _infer_common_competition_season_id(
+                            home_team_name=home_sofa,
+                            away_team_name=away_sofa,
+                            competition_name=fixture_competition_text,
+                            area_name=fixture_area_text,
+                            cutoff_time=kickoff_time,
+                        )
+                elif home_comp_season is not None:
+                    fixture_season_id = home_comp_season
+                elif away_comp_season is not None:
+                    fixture_season_id = away_comp_season
+
+            strict_home_rows = _filter_rows_by_season(home_comp_rows, fixture_season_id)
+            strict_away_rows = _filter_rows_by_season(away_comp_rows, fixture_season_id)
+
+            home_team_venue_rows = build_team_venue_recent_rows(
+                form_df=form_df,
+                team_name=home_sofa,
+                kickoff_time=kickoff_time,
+                recent_n=None,
+                season_id=fixture_season_id,
+                competition_name=(fixture_competition_text or None),
+                area_name=(fixture_area_text or None),
+            )
+            away_team_venue_rows = build_team_venue_recent_rows(
+                form_df=form_df,
+                team_name=away_sofa,
+                kickoff_time=kickoff_time,
+                recent_n=None,
+                season_id=fixture_season_id,
+                competition_name=(fixture_competition_text or None),
+                area_name=(fixture_area_text or None),
+            )
+            home_fixture_rows = list(home_team_venue_rows.get("home") or [])
+            away_fixture_rows = list(away_team_venue_rows.get("away") or [])
+
+            if not home_fixture_rows or not away_fixture_rows:
+                _append_empty_period_rows_for_market(
+                    mapped,
+                    warning="Season warning: one team has no matches in this competition season.",
+                    home_games_used=len(home_fixture_rows),
+                    away_games_used=len(away_fixture_rows),
+                )
+                continue
+
+            strict_calc_form_df = pd.concat([strict_home_rows, strict_away_rows], ignore_index=True)
+            strict_fixture_view = build_xgd_view_from_form_df(
+                view_id="fixture",
+                label="Fixture",
+                home_sofa=home_sofa,
+                away_sofa=away_sofa,
+                kickoff_time=kickoff_time,
+                calc_form_df=strict_calc_form_df,
+                full_form_df=form_df,
+                calc_wyscout_form_tables=calc_wyscout_form_tables,
+                periods=periods,
+                min_games=min_games,
+                home_venue_filter={
+                    "season_id": fixture_season_id,
+                    "competition_name": fixture_competition_text,
+                    "area_name": fixture_area_text,
+                },
+                away_venue_filter={
+                    "season_id": fixture_season_id,
+                    "competition_name": fixture_competition_text,
+                    "area_name": fixture_area_text,
+                },
+            )
+            strict_period_rows = (
+                strict_fixture_view.get("period_rows")
+                if isinstance(strict_fixture_view, dict)
+                else None
+            )
+            if isinstance(strict_period_rows, list) and strict_period_rows:
+                for strict_period_row in strict_period_rows:
+                    pred_rows.append(
+                        {
+                            **mapped,
+                            "period": strict_period_row.get("period"),
+                            "home_xg": strict_period_row.get("home_xg"),
+                            "away_xg": strict_period_row.get("away_xg"),
+                            "total_xg": strict_period_row.get("total_xg"),
+                            "xgd": strict_period_row.get("xgd"),
+                            "xgd_perf": strict_period_row.get("xgd_perf"),
+                            "strength": strict_period_row.get("strength"),
+                            "total_min_xg": strict_period_row.get("total_min_xg"),
+                            "total_max_xg": strict_period_row.get("total_max_xg"),
+                            "home_games_used": int(strict_period_row.get("home_games_used", 0) or 0),
+                            "away_games_used": int(strict_period_row.get("away_games_used", 0) or 0),
+                            "model_warning": (
+                                strict_period_row.get("model_warning")
+                                or (strict_fixture_view.get("warning") if isinstance(strict_fixture_view, dict) else None)
+                            ),
+                            "xgd_competition_mismatch": False,
+                            "xgd_domestic_fallback": False,
+                        }
+                    )
+                continue
+
+            _append_empty_period_rows_for_market(
+                mapped,
+                warning="No xGD output produced for this competition-season sample.",
+                home_games_used=len(home_fixture_rows),
+                away_games_used=len(away_fixture_rows),
+            )
+            continue
+
         xgd_competition_mismatch = source_competitions_differ_from_betfair_competition(
             betfair_competition=mapped.get("competition"),
             home_source_games=sources.get("home_source_games"),
@@ -581,6 +1003,16 @@ def build_predictions(
         home_used = len(sources.get("home_source_games", []))
         away_used = len(sources.get("away_source_games", []))
         warning = sources.get("warning")
+        xg_missing = sources_indicate_missing_xg_data(
+            sources.get("home_source_games"),
+            sources.get("away_source_games"),
+        )
+        xgot_missing = (not xg_missing) and sources_indicate_missing_xgot_data(
+            sources.get("home_source_games"),
+            sources.get("away_source_games"),
+        )
+        if xg_missing:
+            warning = xg_data_warning_message()
         no_common_season = should_blank_xgd_for_warning(
             warning=warning,
             home_games_used=home_used,
@@ -600,21 +1032,21 @@ def build_predictions(
                 {
                     **mapped,
                     "period": period_row.get("Period"),
-                    "home_xg": home_xg,
-                    "away_xg": away_xg,
-                    "total_xg": total_xg,
-                    "xgd": (None if no_common_season else xgd),
-                    "xgd_perf": (None if no_common_season else xgd_perf),
-                    "strength": (None if no_common_season else strength),
-                    "total_min_xg": (None if no_common_season else total_min_xg),
-                    "total_max_xg": (None if no_common_season else total_max_xg),
+                    "home_xg": (None if (xg_missing or xgot_missing) else home_xg),
+                    "away_xg": (None if (xg_missing or xgot_missing) else away_xg),
+                    "total_xg": (None if xg_missing else total_xg),
+                    "xgd": (None if (xg_missing or no_common_season) else xgd),
+                    "xgd_perf": (None if (xg_missing or xgot_missing or no_common_season) else xgd_perf),
+                    "strength": (None if (xg_missing or no_common_season) else strength),
+                    "total_min_xg": (None if (xg_missing or xgot_missing or no_common_season) else total_min_xg),
+                    "total_max_xg": (None if (xg_missing or xgot_missing or no_common_season) else total_max_xg),
                     "home_games_used": int(home_used),
                     "away_games_used": int(away_used),
                     "model_warning": warning,
                     "xgd_competition_mismatch": bool(xgd_competition_mismatch),
+                    "xgd_domestic_fallback": False,
                 }
             )
-        model_idx += 1
 
     out = pd.DataFrame(pred_rows)
     if "period" in out.columns:
@@ -653,11 +1085,89 @@ def should_blank_xgd_for_warning(warning: Any, home_games_used: int = 0, away_ga
     return int(home_games_used) <= 0 or int(away_games_used) <= 0
 
 
+def _all_rows_zero_for_metric_pair(
+    source_df: Any,
+    left_col: str,
+    right_col: str,
+    tolerance: float = 1e-9,
+) -> bool:
+    if not isinstance(source_df, pd.DataFrame) or source_df.empty:
+        return False
+    if left_col not in source_df.columns or right_col not in source_df.columns:
+        return False
+    left_vals = pd.to_numeric(source_df[left_col], errors="coerce")
+    right_vals = pd.to_numeric(source_df[right_col], errors="coerce")
+    if left_vals.isna().all() and right_vals.isna().all():
+        return True
+    zero_mask = (
+        (left_vals.fillna(0.0).abs() <= float(tolerance))
+        & (right_vals.fillna(0.0).abs() <= float(tolerance))
+    )
+    return bool(zero_mask.all())
+
+
+def _coerce_source_games_to_df(source_df: Any) -> pd.DataFrame | None:
+    if isinstance(source_df, pd.DataFrame):
+        return source_df
+    elif isinstance(source_df, dict):
+        return pd.DataFrame([source_df])
+    elif isinstance(source_df, (list, tuple)):
+        return pd.DataFrame(source_df)
+    return None
+
+
+def source_team_has_missing_xg_data(source_df: Any) -> bool:
+    parsed_df = _coerce_source_games_to_df(source_df)
+    if parsed_df is None:
+        return False
+    return _all_rows_zero_for_metric_pair(parsed_df, "xG", "xGA")
+
+
+def source_team_has_missing_xgot_data(source_df: Any) -> bool:
+    parsed_df = _coerce_source_games_to_df(source_df)
+    if parsed_df is None:
+        return False
+    return _all_rows_zero_for_metric_pair(parsed_df, "xGoT", "xGoTA")
+
+
+def sources_indicate_missing_xg_data(
+    home_source_games: Any,
+    away_source_games: Any,
+) -> bool:
+    return (
+        source_team_has_missing_xg_data(home_source_games)
+        or source_team_has_missing_xg_data(away_source_games)
+    )
+
+
+def sources_indicate_missing_xgot_data(
+    home_source_games: Any,
+    away_source_games: Any,
+) -> bool:
+    return (
+        source_team_has_missing_xgot_data(home_source_games)
+        or source_team_has_missing_xgot_data(away_source_games)
+    )
+
+
+def xg_data_warning_message() -> str:
+    return "Data warning: xG unavailable for this competition. xGD output disabled."
+
+
 def simplify_model_warning(messages: list[str]) -> str | None:
     cleaned = [str(msg).strip() for msg in messages if str(msg).strip()]
     if not cleaned:
         return None
     lowered = [msg.lower() for msg in cleaned]
+
+    xg_missing_idx = next(
+        (i for i, msg in enumerate(lowered) if ("xg/xgot unavailable" in msg) or ("xgd output disabled" in msg)),
+        None,
+    )
+    if xg_missing_idx is not None:
+        if "xg unavailable for this competition" in lowered[xg_missing_idx]:
+            return "Data warning: xG unavailable for this competition. xGD output disabled."
+        return "Data warning: xG/xGoT unavailable for this competition. xGD output disabled."
 
     no_common_idx = next((i for i, msg in enumerate(lowered) if "no common active season found" in msg), None)
     if no_common_idx is not None:
@@ -719,6 +1229,8 @@ def period_rows_from_reduced_table(
     warning: str | None = None,
     home_games_used: int = 0,
     away_games_used: int = 0,
+    blank_all_metrics: bool = False,
+    blank_xgot_derived_metrics: bool = False,
 ) -> list[dict[str, Any]]:
     if not isinstance(reduced_df, pd.DataFrame) or reduced_df.empty:
         return []
@@ -741,14 +1253,24 @@ def period_rows_from_reduced_table(
         period_rows.append(
             {
                 "period": period_row.get("Period"),
-                "home_xg": home_xg,
-                "away_xg": away_xg,
-                "total_xg": total_xg,
-                "xgd": (None if no_common_season else xgd),
-                "xgd_perf": (None if no_common_season else xgd_perf),
-                "strength": (None if no_common_season else strength),
-                "total_min_xg": (None if no_common_season else total_min_xg),
-                "total_max_xg": (None if no_common_season else total_max_xg),
+                "home_xg": (None if (blank_all_metrics or blank_xgot_derived_metrics) else home_xg),
+                "away_xg": (None if (blank_all_metrics or blank_xgot_derived_metrics) else away_xg),
+                "total_xg": (None if blank_all_metrics else total_xg),
+                "xgd": (None if (blank_all_metrics or no_common_season) else xgd),
+                "xgd_perf": (
+                    None if (blank_all_metrics or blank_xgot_derived_metrics or no_common_season) else xgd_perf
+                ),
+                "strength": (None if (blank_all_metrics or no_common_season) else strength),
+                "total_min_xg": (
+                    None
+                    if (blank_all_metrics or blank_xgot_derived_metrics or no_common_season)
+                    else total_min_xg
+                ),
+                "total_max_xg": (
+                    None
+                    if (blank_all_metrics or blank_xgot_derived_metrics or no_common_season)
+                    else total_max_xg
+                ),
                 "home_games_used": int(home_games_used),
                 "away_games_used": int(away_games_used),
                 "model_warning": warning,
@@ -1036,12 +1558,18 @@ def build_xgd_view_from_form_df(
     home_used = int(len(home_source)) if isinstance(home_source, pd.DataFrame) else int(len(home_source or []))
     away_used = int(len(away_source)) if isinstance(away_source, pd.DataFrame) else int(len(away_source or []))
     warning_raw = str(source.get("warning") or "").strip() or None
+    xg_missing = sources_indicate_missing_xg_data(home_source, away_source)
+    xgot_missing = (not xg_missing) and sources_indicate_missing_xgot_data(home_source, away_source)
+    if xg_missing:
+        warning_raw = xg_data_warning_message()
 
     period_rows = period_rows_from_reduced_table(
         reduced_df=reduced,
         warning=warning_raw,
         home_games_used=home_used,
         away_games_used=away_used,
+        blank_all_metrics=xg_missing,
+        blank_xgot_derived_metrics=xgot_missing,
     )
     if not period_rows:
         return None
@@ -1157,12 +1685,18 @@ def build_competition_specific_xgd_section(
     home_used = int(len(home_source)) if isinstance(home_source, pd.DataFrame) else int(len(home_source or []))
     away_used = int(len(away_source)) if isinstance(away_source, pd.DataFrame) else int(len(away_source or []))
     warning = str(source.get("warning") or "").strip() or None
+    xg_missing = sources_indicate_missing_xg_data(home_source, away_source)
+    xgot_missing = (not xg_missing) and sources_indicate_missing_xgot_data(home_source, away_source)
+    if xg_missing:
+        warning = xg_data_warning_message()
 
     period_rows = period_rows_from_reduced_table(
         reduced_df=reduced,
         warning=warning,
         home_games_used=home_used,
         away_games_used=away_used,
+        blank_all_metrics=xg_missing,
+        blank_xgot_derived_metrics=xgot_missing,
     )
     if not period_rows:
         return None
@@ -1344,6 +1878,15 @@ def coerce_bool(value: Any) -> bool:
 def extract_period_metrics(prediction_df: pd.DataFrame) -> pd.DataFrame:
     out_cols = [
         "market_id",
+        "season_home_xg",
+        "last5_home_xg",
+        "last3_home_xg",
+        "season_away_xg",
+        "last5_away_xg",
+        "last3_away_xg",
+        "season_total_xg",
+        "last5_total_xg",
+        "last3_total_xg",
         "season_xgd",
         "last5_xgd",
         "last3_xgd",
@@ -1360,6 +1903,7 @@ def extract_period_metrics(prediction_df: pd.DataFrame) -> pd.DataFrame:
         "last5_max_xg",
         "last3_max_xg",
         "xgd_competition_mismatch",
+        "xgd_domestic_fallback",
     ]
     if prediction_df.empty or "market_id" not in prediction_df.columns:
         return pd.DataFrame(columns=out_cols)
@@ -1371,8 +1915,15 @@ def extract_period_metrics(prediction_df: pd.DataFrame) -> pd.DataFrame:
         out["xgd_competition_mismatch"] = base["xgd_competition_mismatch"].map(coerce_bool)
     else:
         out["xgd_competition_mismatch"] = False
+    if "xgd_domestic_fallback" in base.columns:
+        out["xgd_domestic_fallback"] = base["xgd_domestic_fallback"].map(coerce_bool)
+    else:
+        out["xgd_domestic_fallback"] = False
 
     metric_specs = [
+        ("home_xg", "home_xg"),
+        ("away_xg", "away_xg"),
+        ("total_xg", "total_xg"),
         ("xgd", "xgd"),
         ("xgd_perf", "xgd_perf"),
         ("strength", "strength"),
@@ -1509,7 +2060,13 @@ def build_team_venue_recent_rows(
         df = df[df["date_time"] < kickoff_ts]
 
     if season_id is not None and not pd.isna(season_id) and "season_id" in df.columns:
-        df = df[df["season_id"] == season_id]
+        season_target_num = pd.to_numeric(pd.Series([season_id]), errors="coerce").iloc[0]
+        if pd.notna(season_target_num):
+            season_col_num = pd.to_numeric(df["season_id"], errors="coerce")
+            df = df[season_col_num == season_target_num]
+        else:
+            season_target_text = str(season_id).strip()
+            df = df[df["season_id"].astype(str).str.strip() == season_target_text]
 
     if competition_name and "competition_name" in df.columns:
         df = df[df["competition_name"] == competition_name]

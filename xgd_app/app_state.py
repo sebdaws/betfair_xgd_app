@@ -5,6 +5,7 @@ from __future__ import annotations
 import argparse
 import datetime as dt
 import json
+import sqlite3
 import threading
 from pathlib import Path
 from typing import Any
@@ -113,15 +114,7 @@ class AppState:
         self.manual_competition_mappings_path = DEFAULT_MANUAL_COMPETITION_MAPPINGS
         self.saved_games_path = DEFAULT_SAVED_GAMES
 
-        sofa_competitions = []
-        if "competition_name" in self.fixtures_df.columns:
-            sofa_competitions = sorted(
-                {
-                    str(value).strip()
-                    for value in self.fixtures_df["competition_name"].dropna().tolist()
-                    if str(value).strip()
-                }
-            )
+        sofa_competitions = sorted(self._load_sofa_competitions_from_db())
         self.sofa_competitions = sofa_competitions
         self.sofa_competition_set = set(self.sofa_competitions)
         self.sofa_competition_by_norm: dict[str, str] = {}
@@ -171,6 +164,32 @@ class AppState:
         self.saved_market_ids = self._load_saved_market_ids()
         self.historical_data_service.initialize_historical_games(initial_days=7)
         self.last_refresh: dt.datetime | None = None
+
+    def _load_sofa_competitions_from_db(self) -> set[str]:
+        db_path = Path(self.sofascore_db_path).expanduser().resolve()
+        if not db_path.exists():
+            return set()
+        conn: sqlite3.Connection | None = None
+        try:
+            conn = sqlite3.connect(str(db_path))
+            rows = conn.execute(
+                """
+                SELECT DISTINCT TRIM(name) AS competition_name
+                FROM competitions
+                WHERE name IS NOT NULL
+                  AND TRIM(name) <> ''
+                """
+            ).fetchall()
+        except Exception:
+            return set()
+        finally:
+            if conn is not None:
+                conn.close()
+        return {
+            str(row[0]).strip()
+            for row in rows
+            if row and str(row[0]).strip()
+        }
 
     def _load_saved_market_ids(self) -> list[str]:
         path = Path(self.saved_games_path)
@@ -398,6 +417,12 @@ class AppState:
 
     def get_team_hc_ranking_details(self, team_name: str, competition_name: str | None = None) -> dict[str, Any]:
         return self.game_xgd_service.get_team_hc_ranking_details(team_name=team_name, competition_name=competition_name)
+
+    def get_team_page(self, team_name: str, competition_name: str | None = None) -> dict[str, Any]:
+        return self.game_xgd_service.get_team_page(team_name=team_name, competition_name=competition_name)
+
+    def list_teams_directory(self) -> dict[str, Any]:
+        return self.game_xgd_service.list_teams_directory()
 
     def _get_historical_game_xgd(self, match_id: int, recent_n: int, venue_recent_n: int) -> dict[str, Any]:
         return self.game_xgd_service._get_historical_game_xgd(match_id=match_id, recent_n=recent_n, venue_recent_n=venue_recent_n)

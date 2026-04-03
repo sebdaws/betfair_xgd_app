@@ -13,12 +13,17 @@ const tableControls = document.querySelector(".table-controls");
 const gamesTabBtn = document.getElementById("gamesTabBtn");
 const savedGamesTabBtn = document.getElementById("savedGamesTabBtn");
 const teamHcRankingsTabBtn = document.getElementById("teamHcRankingsTabBtn");
+const teamsTabBtn = document.getElementById("teamsTabBtn");
 const manualMappingTabBtn = document.getElementById("manualMappingTabBtn");
 const gamesTabPane = document.getElementById("gamesTabPane");
 const savedGamesTabPane = document.getElementById("savedGamesTabPane");
 const savedGamesView = document.getElementById("savedGamesView");
 const teamHcRankingsTabPane = document.getElementById("teamHcRankingsTabPane");
 const teamHcRankingsView = document.getElementById("teamHcRankingsView");
+const teamsTabPane = document.getElementById("teamsTabPane");
+const teamsView = document.getElementById("teamsView");
+const teamsSearchInput = document.getElementById("teamsSearchInput");
+const teamsRefreshBtn = document.getElementById("teamsRefreshBtn");
 const teamHcRankingsGeneralTabBtn = document.getElementById("teamHcRankingsGeneralTabBtn");
 const teamHcRankingsHomeTabBtn = document.getElementById("teamHcRankingsHomeTabBtn");
 const teamHcRankingsAwayTabBtn = document.getElementById("teamHcRankingsAwayTabBtn");
@@ -46,10 +51,15 @@ const competitionMappingsPane = document.getElementById("competitionMappingsPane
 const detailsPanel = document.getElementById("detailsPanel");
 const closeDetails = document.getElementById("closeDetails");
 const saveGameBtn = document.getElementById("saveGameBtn");
-const recalcBtn = document.getElementById("recalcBtn");
 const detailsTitle = document.getElementById("detailsTitle");
 const detailsMeta = document.getElementById("detailsMeta");
 const linesContainer = document.getElementById("linesContainer");
+const teamDetailsPanel = document.getElementById("teamDetailsPanel");
+const teamDetailsTitle = document.getElementById("teamDetailsTitle");
+const teamDetailsMeta = document.getElementById("teamDetailsMeta");
+const teamDetailsContent = document.getElementById("teamDetailsContent");
+const teamDetailsCloseBtn = document.getElementById("teamDetailsCloseBtn");
+const teamDetailsCompetitionSelect = document.getElementById("teamDetailsCompetitionSelect");
 const prevDayBtn = document.getElementById("prevDayBtn");
 const todayBtn = document.getElementById("todayBtn");
 const nextDayBtn = document.getElementById("nextDayBtn");
@@ -57,6 +67,8 @@ const dayLabel = document.getElementById("dayLabel");
 const upcomingModeBtn = document.getElementById("upcomingModeBtn");
 const historicalModeBtn = document.getElementById("historicalModeBtn");
 const xgThresholdInput = document.getElementById("xgThresholdInput");
+const xgdHcHighlightToggleBtn = document.getElementById("xgdHcHighlightToggleBtn");
+const noHandicapGamesToggleBtn = document.getElementById("noHandicapGamesToggleBtn");
 
 let gamesById = new Map();
 let rawDays = [];
@@ -75,7 +87,7 @@ let leagueFilterSearch = "";
 let teamSearchQuery = "";
 let gamesShownCount = 0;
 let gamesShownAuto = true;
-let rollingWindowCount = 3;
+let rollingWindowCount = 10;
 let showTrendCharts = false;
 let recentTeamView = "home";
 let statsVenueGamesShownCount = 0;
@@ -86,6 +98,7 @@ let statsTeamView = "home";
 let hcPerfTeamView = "home";
 const hcPerfPayloadByMarket = new Map();
 const xgdPayloadByMarket = new Map();
+const teamPagePayloadByKey = new Map();
 let hcPerfLoadingMarketId = null;
 let hcPerfRescanInFlight = false;
 let lastXgdPayload = null;
@@ -107,6 +120,11 @@ let teamHcRankingsVenueMode = "overall";
 let teamHcRankingsSortMetric = "result";
 let selectedTeamHcRankingsLeague = "";
 let teamHcRankingsLeagueSearch = "";
+let teamsDirectoryRows = [];
+let teamsDirectoryLoaded = false;
+let teamsDirectoryLoading = false;
+let teamsDirectoryErrorText = "";
+let teamsDirectorySearchQuery = "";
 let mappingSubTab = "teams";
 let lastManualMappingPayload = null;
 let teamMappingSearchBetfair = "";
@@ -116,11 +134,24 @@ let teamHcPerfDetailLoadingKey = "";
 let teamHcPerfDetailTeam = "";
 let teamHcPerfDetailCompetition = "";
 let teamHcPerfDetailRows = [];
+let teamDetailsLoadingKey = "";
+let teamDetailsTeam = "";
+let teamDetailsCompetition = "";
+let teamDetailsMainTab = "xg";
+let teamDetailsPayload = null;
+const TEAM_DETAILS_XG_GAMES_DEFAULT = 9999; // effectively "all games"
+const TEAM_DETAILS_XG_ROLLING_DEFAULT = 10;
+let teamDetailsXgGamesShownCount = TEAM_DETAILS_XG_GAMES_DEFAULT;
+let teamDetailsXgRollingWindowCount = TEAM_DETAILS_XG_ROLLING_DEFAULT;
 const DEFAULT_XG_PUSH_THRESHOLD = 0.1;
 const MIN_XG_PUSH_THRESHOLD = 0.0;
 const MAX_XG_PUSH_THRESHOLD = 5.0;
 const XG_PUSH_THRESHOLD_STORAGE_KEY = "xgd_hc_xg_threshold";
+const XGD_HC_HIGHLIGHT_ENABLED_STORAGE_KEY = "xgd_hc_highlight_enabled";
+const SHOW_GAMES_WITHOUT_HC_STORAGE_KEY = "show_games_without_hc_pricing";
 let xgPushThreshold = DEFAULT_XG_PUSH_THRESHOLD;
+let xgdHcHighlightEnabled = false;
+let showGamesWithoutHandicap = true;
 const AUTO_REFRESH_MS = 2 * 60 * 1000;
 const MAPPING_UNMATCHED_TEAM_RENDER_LIMIT = 250;
 const MAPPING_SAVED_TEAM_RENDER_LIMIT = 400;
@@ -134,6 +165,96 @@ function escapeHtml(value) {
     .replaceAll(">", "&gt;")
     .replaceAll('"', "&quot;")
     .replaceAll("'", "&#39;");
+}
+
+function decodeURIComponentSafe(value) {
+  try {
+    return decodeURIComponent(String(value || ""));
+  } catch (_err) {
+    return String(value || "");
+  }
+}
+
+function splitEventTeamsLabel(eventName) {
+  const eventText = String(eventName || "").trim();
+  if (!eventText) return { home: "", away: "" };
+  const separators = [" v ", " vs ", " @ "];
+  const lowered = eventText.toLowerCase();
+  for (const separator of separators) {
+    const idx = lowered.indexOf(separator);
+    if (idx < 0) continue;
+    const home = eventText.slice(0, idx).trim();
+    const away = eventText.slice(idx + separator.length).trim();
+    if (home && away) return { home, away };
+  }
+  return { home: "", away: "" };
+}
+
+function resolveGameTeams(game) {
+  const homeRaw = String(game?.home_team || "").trim();
+  const awayRaw = String(game?.away_team || "").trim();
+  if (homeRaw && awayRaw) {
+    return { home: homeRaw, away: awayRaw };
+  }
+  const parsed = splitEventTeamsLabel(game?.event_name);
+  return {
+    home: parsed.home || homeRaw,
+    away: parsed.away || awayRaw,
+  };
+}
+
+function buildTeamLinkHtml(teamName, competitionName = "", options = {}) {
+  const teamText = String(teamName || "").trim();
+  if (!teamText) return "-";
+  const competitionText = String(competitionName || "").trim();
+  const isStrong = Boolean(options?.strong);
+  const className = isStrong ? "team-link-btn team-link-btn-strong" : "team-link-btn";
+  return `
+    <button
+      type="button"
+      class="${className}"
+      data-team-link="1"
+      data-team="${encodeURIComponent(teamText)}"
+      data-competition="${encodeURIComponent(competitionText)}"
+    >${escapeHtml(teamText)}</button>
+  `;
+}
+
+function bindTeamLinkButtons(rootNode = null) {
+  const root = rootNode || document;
+  if (!root || typeof root.querySelectorAll !== "function") return;
+  const teamButtons = root.querySelectorAll("button[data-team-link='1']");
+  teamButtons.forEach((button) => {
+    if (!(button instanceof HTMLButtonElement)) return;
+    if (button.dataset.teamLinkBound === "1") return;
+    button.dataset.teamLinkBound = "1";
+    button.addEventListener("click", (event) => {
+      event.preventDefault();
+      event.stopPropagation();
+      const teamText = decodeURIComponentSafe(button.dataset.team || "").trim();
+      const competitionText = decodeURIComponentSafe(button.dataset.competition || "").trim();
+      if (!teamText) return;
+      openTeamPage(teamText, competitionText || null);
+    });
+  });
+}
+
+function buildGameNameCellHtml(game) {
+  const teams = resolveGameTeams(game);
+  const competition = String(game?.competition || "").trim();
+  if (!teams.home && !teams.away) {
+    return escapeHtml(String(game?.event_name || "-"));
+  }
+  if (!teams.home || !teams.away) {
+    return escapeHtml(String(game?.event_name || `${teams.home || teams.away || "-"}`));
+  }
+  return `
+    <span class="game-team-pair">
+      ${buildTeamLinkHtml(teams.home, competition)}
+      <span>v</span>
+      ${buildTeamLinkHtml(teams.away, competition)}
+    </span>
+  `;
 }
 
 async function parseApiResponse(res) {
@@ -196,6 +317,110 @@ function getCurrentXgPushThreshold() {
   return normalizeXgPushThreshold(xgPushThreshold, DEFAULT_XG_PUSH_THRESHOLD);
 }
 
+function persistXgdHcHighlightEnabled(value) {
+  try {
+    window.localStorage.setItem(
+      XGD_HC_HIGHLIGHT_ENABLED_STORAGE_KEY,
+      value ? "1" : "0"
+    );
+  } catch (_err) {
+    // Ignore storage failures.
+  }
+}
+
+function getStoredShowGamesWithoutHandicap() {
+  try {
+    const raw = window.localStorage.getItem(SHOW_GAMES_WITHOUT_HC_STORAGE_KEY);
+    if (raw == null) return true;
+    const text = String(raw).trim().toLowerCase();
+    if (!text) return true;
+    return text === "1" || text === "true" || text === "yes" || text === "on";
+  } catch (_err) {
+    return true;
+  }
+}
+
+function persistShowGamesWithoutHandicap(value) {
+  try {
+    window.localStorage.setItem(
+      SHOW_GAMES_WITHOUT_HC_STORAGE_KEY,
+      value ? "1" : "0"
+    );
+  } catch (_err) {
+    // Ignore storage failures.
+  }
+}
+
+function updateXgdHcHighlightToggleButton() {
+  if (!(xgdHcHighlightToggleBtn instanceof HTMLButtonElement)) return;
+  xgdHcHighlightToggleBtn.textContent = xgdHcHighlightEnabled ? "Highlight: On" : "Highlight: Off";
+  xgdHcHighlightToggleBtn.classList.toggle("is-off", !xgdHcHighlightEnabled);
+  xgdHcHighlightToggleBtn.setAttribute("aria-pressed", xgdHcHighlightEnabled ? "true" : "false");
+  xgdHcHighlightToggleBtn.title = xgdHcHighlightEnabled ? "Highlight is On" : "Highlight is Off";
+}
+
+function updateNoHandicapGamesToggleButton() {
+  if (!(noHandicapGamesToggleBtn instanceof HTMLButtonElement)) return;
+  noHandicapGamesToggleBtn.textContent = showGamesWithoutHandicap
+    ? "No-HC Games: Show"
+    : "No-HC Games: Hide";
+  noHandicapGamesToggleBtn.classList.toggle("is-off", !showGamesWithoutHandicap);
+  noHandicapGamesToggleBtn.setAttribute("aria-pressed", showGamesWithoutHandicap ? "true" : "false");
+  noHandicapGamesToggleBtn.title = showGamesWithoutHandicap
+    ? "Showing games without handicap prices"
+    : "Hiding games without handicap prices";
+}
+
+function hasVisibleHandicapPricing(game) {
+  const hasTextValue = (value) => {
+    const text = String(value ?? "").trim();
+    return text !== "" && text !== "-";
+  };
+  return hasTextValue(game?.mainline) && hasTextValue(game?.home_price) && hasTextValue(game?.away_price);
+}
+
+function setShowGamesWithoutHandicap(value, options = {}) {
+  const silent = Boolean(options?.silent);
+  const nextValue = Boolean(value);
+  const changed = nextValue !== showGamesWithoutHandicap;
+  showGamesWithoutHandicap = nextValue;
+  persistShowGamesWithoutHandicap(nextValue);
+  updateNoHandicapGamesToggleButton();
+  if (!changed) return;
+
+  applyGameFilters();
+  if (activeTab === "games") {
+    renderCurrentDay();
+  } else if (activeTab === "saved") {
+    renderSavedGames();
+  }
+  if (!silent) {
+    statusText.textContent = showGamesWithoutHandicap
+      ? "Showing games without handicap pricing"
+      : "Hiding games without handicap pricing";
+  }
+}
+
+function setXgdHcHighlightEnabled(value, options = {}) {
+  const silent = Boolean(options?.silent);
+  const nextValue = Boolean(value);
+  const changed = nextValue !== xgdHcHighlightEnabled;
+  xgdHcHighlightEnabled = nextValue;
+  persistXgdHcHighlightEnabled(nextValue);
+  updateXgdHcHighlightToggleButton();
+  if (!changed) return;
+
+  if (activeTab === "games") {
+    renderCurrentDay();
+  } else if (activeTab === "saved") {
+    renderSavedGames();
+  }
+
+  if (!silent) {
+    statusText.textContent = `xGD+HC highlighting ${xgdHcHighlightEnabled ? "enabled" : "disabled"}`;
+  }
+}
+
 function applyGlobalXgPushThreshold(nextValue) {
   const normalized = normalizeXgPushThreshold(nextValue, getCurrentXgPushThreshold());
   const changed = Math.abs(normalized - getCurrentXgPushThreshold()) > 1e-9;
@@ -240,6 +465,8 @@ function setActiveTab(tabName) {
     activeTab = "saved";
   } else if (tabRaw === "rankings") {
     activeTab = "rankings";
+  } else if (tabRaw === "teams") {
+    activeTab = "teams";
   } else if (tabRaw === "mapping") {
     activeTab = "mapping";
   } else {
@@ -248,6 +475,7 @@ function setActiveTab(tabName) {
   const gamesActive = activeTab === "games";
   const savedActive = activeTab === "saved";
   const rankingsActive = activeTab === "rankings";
+  const teamsActive = activeTab === "teams";
   const mappingActive = activeTab === "mapping";
   gamesTabBtn.classList.toggle("active", gamesActive);
   if (savedGamesTabBtn) {
@@ -256,6 +484,9 @@ function setActiveTab(tabName) {
   if (teamHcRankingsTabBtn instanceof HTMLButtonElement) {
     teamHcRankingsTabBtn.classList.toggle("active", rankingsActive);
   }
+  if (teamsTabBtn instanceof HTMLButtonElement) {
+    teamsTabBtn.classList.toggle("active", teamsActive);
+  }
   manualMappingTabBtn.classList.toggle("active", mappingActive);
   gamesTabPane.classList.toggle("hidden", !gamesActive);
   if (savedGamesTabPane) {
@@ -263,6 +494,9 @@ function setActiveTab(tabName) {
   }
   if (teamHcRankingsTabPane) {
     teamHcRankingsTabPane.classList.toggle("hidden", !rankingsActive);
+  }
+  if (teamsTabPane) {
+    teamsTabPane.classList.toggle("hidden", !teamsActive);
   }
   manualMappingTabPane.classList.toggle("hidden", !mappingActive);
   if (activeTab !== "games") {
@@ -285,6 +519,9 @@ function setActiveTab(tabName) {
   }
   if (rankingsActive && !teamHcRankingsLoading) {
     loadTeamHcRankings({ silent: teamHcRankingsLoaded });
+  }
+  if (teamsActive && !teamsDirectoryLoading) {
+    loadTeamsDirectory({ silent: teamsDirectoryLoaded });
   }
 }
 
@@ -431,17 +668,21 @@ function renderManualMappingSections(payload) {
   const autoCompetitionCount = Number.isFinite(autoCompetitionCountRaw)
     ? autoCompetitionCountRaw
     : autoCompetitionMappings.length;
-  const mappedSofaCompetitionNames = new Set(
-    competitionMappings
-      .map((row) => String(row?.sofa_name || "").trim())
+  const mappedManualSofaCompetitionNames = new Set(
+    manualCompetitionMappings
+      .map((row) => String(row?.sofa_name || "").trim().toLowerCase())
       .filter((name) => !!name)
   );
-  const normalizedSofaCompetitions = sofaCompetitions
-    .map((competition) => String(competition || "").trim())
-    .filter((competition) => !!competition);
-  const availableSofaCompetitions = normalizedSofaCompetitions
-    .map((competition) => String(competition || "").trim())
-    .filter((competition) => !!competition && !mappedSofaCompetitionNames.has(competition));
+  const normalizedSofaCompetitions = Array.from(
+    new Set(
+      sofaCompetitions
+        .map((competition) => String(competition || "").trim())
+        .filter((competition) => !!competition)
+    )
+  );
+  const availableSofaCompetitions = normalizedSofaCompetitions.filter(
+    (competition) => !mappedManualSofaCompetitionNames.has(competition.toLowerCase())
+  );
   const availableSofaCompetitionLookup = new Map(
     availableSofaCompetitions.map((competition) => [competition.toLowerCase(), competition])
   );
@@ -759,7 +1000,7 @@ function renderManualMappingSections(payload) {
   unmatchedCompetitionsContainer.innerHTML = "";
   const visibleUnmatchedCompetitions = unmatchedCompetitions.slice(0, MAPPING_UNMATCHED_COMPETITION_RENDER_LIMIT);
   if (!unmatchedCompetitions.length) {
-    unmatchedCompetitionsContainer.innerHTML = `<p class="mapping-empty">No unmatched competitions in current games.</p>`;
+    unmatchedCompetitionsContainer.innerHTML = `<p class="mapping-empty">No unmatched competitions in selected leagues.</p>`;
   } else if (!visibleUnmatchedCompetitions.length) {
     unmatchedCompetitionsContainer.innerHTML = `<p class="mapping-empty">No unmatched competitions available to render.</p>`;
   } else {
@@ -1028,7 +1269,47 @@ function metricNumberToTableText(value, decimals = 2) {
 function extractMainTableMetricsFromXgdPayload(payload) {
   if (!payload || typeof payload !== "object") return null;
   const xgdViews = Array.isArray(payload.xgd_views) ? payload.xgd_views : [];
-  const preferredView = xgdViews.length ? xgdViews[0] : payload;
+  const viewHasAnyNumericMetrics = (view) => {
+    const rows = Array.isArray(view?.period_rows) ? view.period_rows : [];
+    if (!rows.length) return false;
+    for (const row of rows) {
+      const metricValues = [
+        row?.strength,
+        row?.xgd,
+        row?.xgd_perf,
+        row?.total_min_xg,
+        row?.total_max_xg,
+        row?.home_xg,
+        row?.away_xg,
+      ];
+      for (const value of metricValues) {
+        const num = Number(value);
+        if (Number.isFinite(num)) return true;
+      }
+    }
+    return false;
+  };
+
+  let preferredView = xgdViews.length ? xgdViews[0] : payload;
+  let usedDomesticFallback = false;
+  if (xgdViews.length) {
+    const fixtureView = xgdViews.find((view) => String(view?.id || "").trim().toLowerCase() === "fixture")
+      || xgdViews[0];
+    const fixtureWarning = String(fixtureView?.warning || payload?.warning || "").trim().toLowerCase();
+    const fixtureMissingCompetition = fixtureWarning.includes("fixture competition not found in database");
+    const fixtureHasMetrics = viewHasAnyNumericMetrics(fixtureView);
+    if (fixtureMissingCompetition || !fixtureHasMetrics) {
+      const domesticView = xgdViews.find((view) => String(view?.id || "").trim().toLowerCase() === "domestic");
+      if (domesticView && viewHasAnyNumericMetrics(domesticView)) {
+        preferredView = domesticView;
+        usedDomesticFallback = true;
+      } else {
+        preferredView = fixtureView;
+      }
+    } else {
+      preferredView = fixtureView;
+    }
+  }
   const periodRows = Array.isArray(preferredView?.period_rows)
     ? preferredView.period_rows
     : (Array.isArray(payload.period_rows) ? payload.period_rows : []);
@@ -1067,6 +1348,7 @@ function extractMainTableMetricsFromXgdPayload(payload) {
     last5_max_xg: pickMetric("last5", "total_max_xg"),
     last3_max_xg: pickMetric("last3", "total_max_xg"),
     xgd_competition_mismatch: String(preferredView?.id || "").trim().toLowerCase() === "cup" ? false : null,
+    xgd_domestic_fallback: usedDomesticFallback,
   };
 }
 
@@ -1101,6 +1383,9 @@ function applyMainTableMetricsForMarket(marketId, metrics) {
     }
     if (metrics.xgd_competition_mismatch != null) {
       game.xgd_competition_mismatch = Boolean(metrics.xgd_competition_mismatch);
+    }
+    if (metrics.xgd_domestic_fallback != null) {
+      game.xgd_domestic_fallback = Boolean(metrics.xgd_domestic_fallback);
     }
     updated = true;
   };
@@ -1222,42 +1507,58 @@ function buildTeamXgdSummaryTableHtml(teamLabel, rows) {
       }
       return count ? (total / count) : null;
     };
+    const hasXgotData = sourceRows.some((row) => {
+      const xgot = toMetricNumber(row?.xGoT);
+      const xgota = toMetricNumber(row?.xGoTA);
+      return (
+        (xgot != null && Math.abs(xgot) > 1e-9)
+        || (xgota != null && Math.abs(xgota) > 1e-9)
+      );
+    });
+    const hasXgData = sourceRows.some((row) => {
+      const xg = toMetricNumber(row?.xG);
+      const xga = toMetricNumber(row?.xGA);
+      return (
+        (xg != null && Math.abs(xg) > 1e-9)
+        || (xga != null && Math.abs(xga) > 1e-9)
+      );
+    });
 
     return {
-      xgd: averageOf((row) => {
+      xgd: hasXgData ? averageOf((row) => {
         const xg = toMetricNumber(row?.xG);
         const xga = toMetricNumber(row?.xGA);
         if (xg == null || xga == null) return null;
         return xg - xga;
-      }),
-      xgd_perf: averageOf((row) => {
+      }) : null,
+      xg_for: hasXgData ? averageOf((row) => toMetricNumber(row?.xG)) : null,
+      xg_against: hasXgData ? averageOf((row) => toMetricNumber(row?.xGA)) : null,
+      xgd_perf: (hasXgData && hasXgotData) ? averageOf((row) => {
         const gf = toMetricNumber(row?.GF);
         const ga = toMetricNumber(row?.GA);
         const xg = toMetricNumber(row?.xG);
         const xga = toMetricNumber(row?.xGA);
         if (gf == null || ga == null || xg == null || xga == null) return null;
         return (gf - ga) - (xg - xga);
-      }),
-      xg_for: averageOf((row) => toMetricNumber(row?.xG)),
-      xg_against: averageOf((row) => toMetricNumber(row?.xGA)),
-      xgot_minus_xg: averageOf((row) => {
+      }) : null,
+      xgot_minus_xg: hasXgotData ? averageOf((row) => {
         const xgot = toMetricNumber(row?.xGoT);
         const xg = toMetricNumber(row?.xG);
         if (xgot == null || xg == null) return null;
         return xgot - xg;
-      }),
-      ga_minus_xgota: averageOf((row) => {
+      }) : null,
+      ga_minus_xgota: hasXgotData ? averageOf((row) => {
         const ga = toMetricNumber(row?.GA);
         const xgotAgainst = toMetricNumber(row?.xGoTA);
         if (ga == null || xgotAgainst == null) return null;
         return ga - xgotAgainst;
-      }),
+      }) : null,
     };
   };
 
   const seasonMetrics = computeMetrics(safeRows);
-  const last3Metrics = computeMetrics(safeRows.slice(0, 3));
   const last5Metrics = computeMetrics(safeRows.slice(0, 5));
+  const last3Metrics = computeMetrics(safeRows.slice(0, 3));
   const rowSpecs = [
     { label: "xGD", key: "xgd" },
     { label: "xG For", key: "xg_for" },
@@ -1275,8 +1576,8 @@ function buildTeamXgdSummaryTableHtml(teamLabel, rows) {
           <tr>
             <th></th>
             <th>Season</th>
-            <th>Last 3</th>
             <th>Last 5</th>
+            <th>Last 3</th>
           </tr>
         </thead>
         <tbody>
@@ -1286,8 +1587,8 @@ function buildTeamXgdSummaryTableHtml(teamLabel, rows) {
             <tr>
               <td>${escapeHtml(metric.label)}</td>
               <td>${formatMetricValue(seasonMetrics[metric.key], 2)}</td>
-              <td>${formatMetricValue(last3Metrics[metric.key], 2)}</td>
               <td>${formatMetricValue(last5Metrics[metric.key], 2)}</td>
+              <td>${formatMetricValue(last3Metrics[metric.key], 2)}</td>
             </tr>
           `
             )
@@ -1473,10 +1774,39 @@ function hasNoXgMetricSignal(game) {
   return rangeNumeric.every((v) => Math.abs(v) < 1e-9);
 }
 
+function getMainTableXgdHcHighlightClass(periodValues, handicap, threshold) {
+  const values = Array.isArray(periodValues) ? periodValues : [];
+  if (values.length !== 3 || values.some((value) => value == null)) return "";
+  if (handicap == null || threshold == null) return "";
+
+  const combined = values.map((value) => Number(value) + Number(handicap));
+  const allAbove = combined.every((value) => value > threshold);
+  const allBelow = combined.every((value) => value < (-threshold));
+  if (allAbove) return "xgd-hc-highlight-green";
+  if (allBelow) return "xgd-hc-highlight-red";
+  return "";
+}
+
 function buildRecentMatchesTableHtml(title, rows, relevantTeamName = "") {
   const headingPrefix = relevantTeamName
     ? `<strong>${escapeHtml(relevantTeamName)}</strong> - `
     : "";
+  const hasXgData = rows.some((r) => {
+    const xg = toMetricNumber(r?.xG);
+    const xga = toMetricNumber(r?.xGA);
+    return (
+      (xg != null && Math.abs(xg) > 1e-9)
+      || (xga != null && Math.abs(xga) > 1e-9)
+    );
+  });
+  const hasXgotData = rows.some((r) => {
+    const xgot = toMetricNumber(r?.xGoT);
+    const xgota = toMetricNumber(r?.xGoTA);
+    return (
+      (xgot != null && Math.abs(xgot) > 1e-9)
+      || (xgota != null && Math.abs(xgota) > 1e-9)
+    );
+  });
   if (!rows.length) {
     return `
       <section class="recent-team-block">
@@ -1515,8 +1845,13 @@ function buildRecentMatchesTableHtml(title, rows, relevantTeamName = "") {
                   const opponentTeam = String(r.opponent || "").trim();
                   const homeTeam = isHome ? relevantTeam : opponentTeam;
                   const awayTeam = isHome ? opponentTeam : relevantTeam;
-                  const homeTeamCell = isHome ? `<strong>${escapeHtml(homeTeam || "-")}</strong>` : escapeHtml(homeTeam || "-");
-                  const awayTeamCell = isHome ? escapeHtml(awayTeam || "-") : `<strong>${escapeHtml(awayTeam || "-")}</strong>`;
+                  const competitionName = String(r.competition_name || "").trim();
+                  const homeTeamCell = homeTeam
+                    ? buildTeamLinkHtml(homeTeam, competitionName, { strong: isHome })
+                    : "-";
+                  const awayTeamCell = awayTeam
+                    ? buildTeamLinkHtml(awayTeam, competitionName, { strong: !isHome })
+                    : "-";
                   const gHome = isHome ? r.GF : r.GA;
                   const gAway = isHome ? r.GA : r.GF;
                   const xgHome = isHome ? r.xG : r.xGA;
@@ -1533,11 +1868,11 @@ function buildRecentMatchesTableHtml(title, rows, relevantTeamName = "") {
                 <td>${awayTeamCell}</td>
                 <td>${formatMetricValue(gHome, 0)}</td>
                 <td>${formatMetricValue(gAway, 0)}</td>
-                <td>${formatMetricValue(xgHome, 2)}</td>
-                <td>${formatMetricValue(xgAway, 2)}</td>
-                <td>${formatMetricValue(xgd, 2)}</td>
-                <td>${formatMetricValue(xgotHome, 2)}</td>
-                <td>${formatMetricValue(xgotAway, 2)}</td>
+                <td>${hasXgData ? formatMetricValue(xgHome, 2) : "-"}</td>
+                <td>${hasXgData ? formatMetricValue(xgAway, 2) : "-"}</td>
+                <td>${hasXgData ? formatMetricValue(xgd, 2) : "-"}</td>
+                <td>${hasXgotData ? formatMetricValue(xgotHome, 2) : "-"}</td>
+                <td>${hasXgotData ? formatMetricValue(xgotAway, 2) : "-"}</td>
               </tr>
             `;
                 }
@@ -1551,11 +1886,12 @@ function buildRecentMatchesTableHtml(title, rows, relevantTeamName = "") {
 }
 
 function toMetricNumber(value) {
+  if (value == null || value === "") return null;
   const num = Number(value);
   return Number.isFinite(num) ? num : null;
 }
 
-function buildMetricTrendPlotHtml(rows, title, relevantTeamName = "", rollingWindowGames = 5) {
+function buildMetricTrendPlotHtml(rows, title, relevantTeamName = "", rollingWindowGames = 10) {
   const headingPrefix = relevantTeamName ? `<strong>${escapeHtml(relevantTeamName)}</strong> - ` : "";
   const safeRows = Array.isArray(rows) ? rows : [];
   if (!safeRows.length) {
@@ -1614,38 +1950,16 @@ function buildMetricTrendPlotHtml(rows, title, relevantTeamName = "", rollingWin
     `;
   }
 
-  let yMin = Math.min(...values);
-  let yMax = Math.max(...values);
-  if (yMin === yMax) {
-    yMin -= 1;
-    yMax += 1;
-  }
-
-  const width = 860;
-  const height = 220;
-  const padLeft = 44;
-  const padRight = 14;
-  const padTop = 12;
-  const padBottom = 30;
-  const plotWidth = width - padLeft - padRight;
-  const plotHeight = height - padTop - padBottom;
-
-  const xForIndex = (index) => {
-    if (points.length <= 1) return padLeft + (plotWidth / 2);
-    return padLeft + ((index / (points.length - 1)) * plotWidth);
-  };
-  const yForValue = (value) => padTop + (((yMax - value) / (yMax - yMin)) * plotHeight);
-
-  const buildSmoothedTrendPath = (metricKey) => {
+  const windowSize = Math.max(1, Math.min(points.length, clampRecentMatchesCount(rollingWindowGames)));
+  const buildSmoothedSeries = (metricKey) => {
     const rawValues = points.map((point) => {
       const value = point[metricKey];
       return Number.isFinite(value) ? value : null;
     });
     const validCount = rawValues.reduce((count, value) => (value == null ? count : count + 1), 0);
-    if (!validCount) return "";
+    if (!validCount) return [];
 
-    const windowSize = Math.max(1, Math.min(points.length, clampRecentMatchesCount(rollingWindowGames)));
-    const smoothed = rawValues.map((_, index) => {
+    return rawValues.map((_, index) => {
       let sum = 0;
       let count = 0;
       const start = Math.max(0, index - windowSize + 1);
@@ -1659,7 +1973,46 @@ function buildMetricTrendPlotHtml(rows, title, relevantTeamName = "", rollingWin
       if (!count) return null;
       return sum / count;
     });
+  };
 
+  const xgSmoothed = buildSmoothedSeries("xg");
+  const xgaSmoothed = buildSmoothedSeries("xga");
+  const plottedValues = [...xgSmoothed, ...xgaSmoothed].filter((value) => Number.isFinite(value));
+  if (!plottedValues.length) {
+    return `
+      <section class="recent-team-block">
+        <h4>${headingPrefix}${escapeHtml(title)}</h4>
+        <p class="recent-empty">No trend data available.</p>
+      </section>
+    `;
+  }
+
+  let yMin = Math.min(...plottedValues);
+  let yMax = Math.max(...plottedValues);
+  if (yMin === yMax) {
+    const delta = Math.max(0.01, Math.abs(yMin || 0) * 0.05);
+    yMin -= delta;
+    yMax += delta;
+  }
+
+  const width = 860;
+  const height = 260;
+  const padLeft = 44;
+  const padRight = 14;
+  const padTop = 8;
+  const padBottom = 24;
+  const plotWidth = width - padLeft - padRight;
+  const plotHeight = height - padTop - padBottom;
+
+  const xForIndex = (index) => {
+    if (points.length <= 1) return padLeft + (plotWidth / 2);
+    return padLeft + ((index / (points.length - 1)) * plotWidth);
+  };
+  const yRange = yMax - yMin;
+  const yForValue = (value) => padTop + (((yMax - value) / yRange) * plotHeight);
+
+  const buildTrendPathFromSeries = (series) => {
+    const smoothed = Array.isArray(series) ? series : [];
     const parts = [];
     let drawMode = "M";
     for (let i = 0; i < smoothed.length; i += 1) {
@@ -1680,8 +2033,8 @@ function buildMetricTrendPlotHtml(rows, title, relevantTeamName = "", rollingWin
 
   const xgColor = "#0f766e";
   const xgaColor = "#b91c1c";
-  const xgTrendPath = buildSmoothedTrendPath("xg");
-  const xgaTrendPath = buildSmoothedTrendPath("xga");
+  const xgTrendPath = buildTrendPathFromSeries(xgSmoothed);
+  const xgaTrendPath = buildTrendPathFromSeries(xgaSmoothed);
 
   return `
     <section class="recent-team-block">
@@ -2070,12 +2423,13 @@ function buildCardsCornersMatchesTableHtml(teamLabel, rows, sampleSize = null, t
                   const opponentTeam = String(row?.opponent || "").trim();
                   const homeTeam = isHome ? relevantTeam : opponentTeam;
                   const awayTeam = isHome ? opponentTeam : relevantTeam;
-                  const homeTeamCell = isHome
-                    ? `<strong>${escapeHtml(homeTeam || "-")}</strong>`
-                    : escapeHtml(homeTeam || "-");
-                  const awayTeamCell = isHome
-                    ? escapeHtml(awayTeam || "-")
-                    : `<strong>${escapeHtml(awayTeam || "-")}</strong>`;
+                  const competitionName = String(row?.competition_name || "").trim();
+                  const homeTeamCell = homeTeam
+                    ? buildTeamLinkHtml(homeTeam, competitionName, { strong: isHome })
+                    : "-";
+                  const awayTeamCell = awayTeam
+                    ? buildTeamLinkHtml(awayTeam, competitionName, { strong: !isHome })
+                    : "-";
                   const goalsHome = isHome ? row?.GF : row?.GA;
                   const goalsAway = isHome ? row?.GA : row?.GF;
                   const cornersHome = isHome ? row?.corners_for : row?.corners_against;
@@ -2340,8 +2694,13 @@ function buildSeasonHandicapPerformanceTableHtml(teamLabel, rows, options = {}) 
                   const awayTeam = String(row?.away_team || "-");
                   const homeIsRelevant = relevantTeam && homeTeam === relevantTeam;
                   const awayIsRelevant = relevantTeam && awayTeam === relevantTeam;
-                  const homeCell = homeIsRelevant ? `<strong>${escapeHtml(homeTeam)}</strong>` : escapeHtml(homeTeam);
-                  const awayCell = awayIsRelevant ? `<strong>${escapeHtml(awayTeam)}</strong>` : escapeHtml(awayTeam);
+                  const competitionName = String(row?.competition_name || "").trim();
+                  const homeCell = homeTeam && homeTeam !== "-"
+                    ? buildTeamLinkHtml(homeTeam, competitionName, { strong: homeIsRelevant })
+                    : "-";
+                  const awayCell = awayTeam && awayTeam !== "-"
+                    ? buildTeamLinkHtml(awayTeam, competitionName, { strong: awayIsRelevant })
+                    : "-";
                   const homeGoalsNum = Number(row?.home_goals);
                   const awayGoalsNum = Number(row?.away_goals);
                   const homeXgNum = Number(row?.home_xg);
@@ -2520,7 +2879,7 @@ function buildHcPerfSwitchHtml(homeLabel, awayLabel) {
   `;
 }
 
-function buildVenueSplitSectionHtml(teamLabel, homeRows, awayRows, rollingWindowGames = 5, includeChart = true) {
+function buildVenueSplitSectionHtml(teamLabel, homeRows, awayRows, rollingWindowGames = 10, includeChart = true) {
   const mergedRows = [...homeRows, ...awayRows].sort((a, b) =>
     String(b.date_time || "").localeCompare(String(a.date_time || ""))
   );
@@ -2752,7 +3111,8 @@ function applyGameFilters() {
           .join(" ")
           .toLowerCase();
         const teamPass = !normalizedTeamQuery || teamText.includes(normalizedTeamQuery);
-        return leaguePass && tierPass && teamPass;
+        const handicapPass = showGamesWithoutHandicap || hasVisibleHandicapPricing(game);
+        return leaguePass && tierPass && teamPass && handicapPass;
       }),
     }))
     .sort((a, b) => String(a.date || "").localeCompare(String(b.date || "")));
@@ -2867,6 +3227,7 @@ function tierRowClass(tierValue) {
   if (tierNum === 1) return "tier-row-1";
   if (tierNum === 2) return "tier-row-2";
   if (tierNum === 3) return "tier-row-3";
+  if (tierNum === 4) return "tier-row-4";
   return "";
 }
 
@@ -2967,6 +3328,8 @@ async function loadGames(options = {}) {
       loadManualMappings();
     } else if (activeTab === "rankings" && teamHcRankingsLoaded) {
       loadTeamHcRankings({ silent: true });
+    } else if (activeTab === "teams" && teamsDirectoryLoaded) {
+      loadTeamsDirectory({ silent: true });
     } else if (activeTab === "saved" && savedGamesLoaded) {
       loadSavedGames({ silent: true });
     }
@@ -3112,7 +3475,9 @@ function createGamesTable(sortedGames, isHistorical, options = {}) {
         <tr>
           <th>Kickoff (UTC)</th>
           <th>League</th>
-          <th>Game</th>
+          <th class="home-team-col">Home</th>
+          <th class="vs-team-col">v</th>
+          <th class="away-team-col">Away</th>
           <th class="home-price-col">Home</th>
           <th class="line-col handicap-line-col">HC</th>
           <th class="away-price-col">Away</th>
@@ -3136,7 +3501,9 @@ function createGamesTable(sortedGames, isHistorical, options = {}) {
         <tr>
           <th>Kickoff (UTC)</th>
           <th>League</th>
-          <th>Game</th>
+          <th class="home-team-col">Home</th>
+          <th class="vs-team-col">v</th>
+          <th class="away-team-col">Away</th>
           <th class="home-price-col">Home</th>
           <th class="line-col handicap-line-col">HC</th>
           <th class="away-price-col">Away</th>
@@ -3156,7 +3523,7 @@ function createGamesTable(sortedGames, isHistorical, options = {}) {
   const tbody = table.querySelector("tbody");
   if (!sortedGames.length) {
     const row = document.createElement("tr");
-    row.innerHTML = `<td class="no-games-row" colspan="${isHistorical ? "16" : "13"}">${escapeHtml(emptyMessage)}</td>`;
+    row.innerHTML = `<td class="no-games-row" colspan="${isHistorical ? "18" : "15"}">${escapeHtml(emptyMessage)}</td>`;
     tbody.appendChild(row);
     return table;
   }
@@ -3170,8 +3537,33 @@ function createGamesTable(sortedGames, isHistorical, options = {}) {
     if (tierClass) row.classList.add(tierClass);
 
     const noXgMetrics = hasNoXgMetricSignal(game);
-    const xgdCellClass = "metric-stack-cell";
-    const xgdPerfCellClass = "metric-stack-cell";
+    const handicap = toMetricNumberOrNull(game?.mainline);
+    const threshold = getCurrentXgPushThreshold();
+    const xgdPeriodValues = [
+      toMetricNumberOrNull(game?.season_strength),
+      toMetricNumberOrNull(game?.last5_strength),
+      toMetricNumberOrNull(game?.last3_strength),
+    ];
+    const xgdPerfPeriodValues = [
+      toMetricNumberOrNull(game?.season_xgd_perf),
+      toMetricNumberOrNull(game?.last5_xgd_perf),
+      toMetricNumberOrNull(game?.last3_xgd_perf),
+    ];
+    const xgdHcHighlightClass = (xgdHcHighlightEnabled && !noXgMetrics)
+      ? getMainTableXgdHcHighlightClass(xgdPeriodValues, handicap, threshold)
+      : "";
+    const xgdPerfHcHighlightClass = (xgdHcHighlightEnabled && !noXgMetrics)
+      ? getMainTableXgdHcHighlightClass(xgdPerfPeriodValues, handicap, threshold)
+      : "";
+    const domesticFallbackClass = Boolean(game?.xgd_domestic_fallback) ? "xgd-domestic-fallback" : "";
+    const xgdCellClassParts = ["metric-stack-cell"];
+    if (xgdHcHighlightClass) xgdCellClassParts.push(xgdHcHighlightClass);
+    if (domesticFallbackClass) xgdCellClassParts.push(domesticFallbackClass);
+    const xgdCellClass = xgdCellClassParts.join(" ");
+    const xgdPerfCellClassParts = ["metric-stack-cell"];
+    if (xgdPerfHcHighlightClass) xgdPerfCellClassParts.push(xgdPerfHcHighlightClass);
+    if (domesticFallbackClass) xgdPerfCellClassParts.push(domesticFallbackClass);
+    const xgdPerfCellClass = xgdPerfCellClassParts.join(" ");
     const xgdCellTitleAttr = "";
     const xgdPerfCellTitleAttr = "";
     const seasonXgdValue = noXgMetrics ? "-" : game.season_strength;
@@ -3180,12 +3572,18 @@ function createGamesTable(sortedGames, isHistorical, options = {}) {
     const seasonXgdPerfValue = noXgMetrics ? "-" : game.season_xgd_perf;
     const last5XgdPerfValue = noXgMetrics ? "-" : game.last5_xgd_perf;
     const last3XgdPerfValue = noXgMetrics ? "-" : game.last3_xgd_perf;
+    const teams = resolveGameTeams(game);
+    const competitionName = String(game?.competition || "").trim();
+    const homeTeamCell = teams.home ? buildTeamLinkHtml(teams.home, competitionName) : "-";
+    const awayTeamCell = teams.away ? buildTeamLinkHtml(teams.away, competitionName) : "-";
 
     if (isHistorical) {
       row.innerHTML = `
         <td>${escapeHtml(game.kickoff_utc)}</td>
         <td>${escapeHtml(game.competition)}</td>
-        <td>${escapeHtml(game.event_name)}</td>
+        <td class="home-team-col">${homeTeamCell}</td>
+        <td class="vs-team-col">v</td>
+        <td class="away-team-col">${awayTeamCell}</td>
         <td class="home-price-col">${escapeHtml(game.home_price || "-")}</td>
         <td class="line-col handicap-line-col">${escapeHtml(game.mainline || "-")}</td>
         <td class="away-price-col">${escapeHtml(game.away_price || "-")}</td>
@@ -3204,7 +3602,9 @@ function createGamesTable(sortedGames, isHistorical, options = {}) {
       row.innerHTML = `
         <td>${escapeHtml(game.kickoff_utc)}</td>
         <td>${escapeHtml(game.competition)}</td>
-        <td>${escapeHtml(game.event_name)}</td>
+        <td class="home-team-col">${homeTeamCell}</td>
+        <td class="vs-team-col">v</td>
+        <td class="away-team-col">${awayTeamCell}</td>
         <td class="home-price-col">${escapeHtml(game.home_price || "-")}</td>
         <td class="line-col handicap-line-col">${escapeHtml(game.mainline || "-")}</td>
         <td class="away-price-col">${escapeHtml(game.away_price || "-")}</td>
@@ -3220,6 +3620,7 @@ function createGamesTable(sortedGames, isHistorical, options = {}) {
     row.addEventListener("click", () => loadGameXgd(game.market_id));
     tbody.appendChild(row);
   }
+  bindTeamLinkButtons(table);
   return table;
 }
 
@@ -3240,10 +3641,30 @@ function renderSavedGames() {
     return;
   }
 
+  const visibleDays = savedDays
+    .map((day) => {
+      const rawGames = Array.isArray(day?.games) ? day.games : [];
+      const visibleGames = showGamesWithoutHandicap
+        ? rawGames
+        : rawGames.filter((game) => hasVisibleHandicapPricing(game));
+      return {
+        day,
+        games: sortGamesForDay(visibleGames),
+      };
+    })
+    .filter((entry) => Array.isArray(entry.games) && entry.games.length > 0);
+
+  if (!visibleDays.length) {
+    savedGamesView.innerHTML = showGamesWithoutHandicap
+      ? "<p>No saved games yet.</p>"
+      : "<p>No saved games with handicap pricing.</p>";
+    return;
+  }
+
   gamesById = new Map();
-  for (const day of savedDays) {
-    const dayGames = Array.isArray(day?.games) ? day.games : [];
-    const sortedDayGames = sortGamesForDay(dayGames);
+  for (const entry of visibleDays) {
+    const day = entry.day;
+    const sortedDayGames = entry.games;
     const useHistoricalLayout = sortedDayGames.some((game) => Boolean(game?.is_historical));
 
     const block = document.createElement("section");
@@ -3481,6 +3902,7 @@ function renderTeamHcPerfDetailFromRows(teamName, competitionName, rows) {
     relevantTeam: teamText,
   });
   teamHcPerfContent.innerHTML = `${summaryHtml}${generalGamesHtml}${homeGamesHtml}${awayGamesHtml}`;
+  bindTeamLinkButtons(teamHcPerfContent);
 }
 
 async function loadTeamHcRankingTeamDetails(teamName, competitionName) {
@@ -3631,7 +4053,7 @@ function renderTeamHcRankings() {
       teamBtn.addEventListener("click", () => {
         const teamName = decodeURIComponent(String(teamBtn.dataset.team || ""));
         const leagueName = decodeURIComponent(String(teamBtn.dataset.league || ""));
-        loadTeamHcRankingTeamDetails(teamName, leagueName);
+        openTeamPage(teamName, leagueName || null);
       });
     }
     tbody.appendChild(tr);
@@ -3696,6 +4118,114 @@ async function loadTeamHcRankings(options = {}) {
   } finally {
     teamHcRankingsLoading = false;
     renderTeamHcRankings();
+  }
+}
+
+function renderTeamsDirectory() {
+  if (!teamsView) return;
+
+  if (teamsDirectoryLoading && !teamsDirectoryLoaded) {
+    teamsView.innerHTML = "<p>Loading teams...</p>";
+    return;
+  }
+  if (teamsDirectoryErrorText) {
+    teamsView.innerHTML = `<p>${escapeHtml(teamsDirectoryErrorText)}</p>`;
+    return;
+  }
+  if (!teamsDirectoryRows.length) {
+    teamsView.innerHTML = "<p>No teams available.</p>";
+    return;
+  }
+
+  const query = String(teamsDirectorySearchQuery || "").trim().toLowerCase();
+  const filteredRows = query
+    ? teamsDirectoryRows.filter((row) => {
+      const teamText = String(row?.team || "").toLowerCase();
+      const primaryComp = String(row?.primary_competition || "").toLowerCase();
+      const competitions = Array.isArray(row?.competitions) ? row.competitions : [];
+      const matchesCompetition = competitions.some((entry) => String(entry?.competition || "").toLowerCase().includes(query));
+      return teamText.includes(query) || primaryComp.includes(query) || matchesCompetition;
+    })
+    : teamsDirectoryRows;
+
+  if (!filteredRows.length) {
+    teamsView.innerHTML = "<p>No teams match this search.</p>";
+    return;
+  }
+
+  const table = document.createElement("table");
+  table.className = "games-table recent-lines-table";
+  table.innerHTML = `
+    <thead>
+      <tr>
+        <th>Team</th>
+        <th>Primary League</th>
+        <th>Games</th>
+        <th>Leagues</th>
+      </tr>
+    </thead>
+    <tbody>
+      ${filteredRows
+        .map((row) => {
+          const teamName = String(row?.team || "").trim();
+          const primaryCompetition = String(row?.primary_competition || "").trim();
+          const gamesCount = Number(row?.games_count) || 0;
+          const competitionsCount = Number(row?.competitions_count) || 0;
+          return `
+            <tr>
+              <td>${buildTeamLinkHtml(teamName, primaryCompetition || "")}</td>
+              <td>${escapeHtml(primaryCompetition || "-")}</td>
+              <td>${gamesCount}</td>
+              <td>${competitionsCount}</td>
+            </tr>
+          `;
+        })
+        .join("")}
+    </tbody>
+  `;
+  teamsView.innerHTML = "";
+  teamsView.appendChild(table);
+  bindTeamLinkButtons(teamsView);
+}
+
+async function loadTeamsDirectory(options = {}) {
+  if (teamsDirectoryLoading) return false;
+  const silent = Boolean(options?.silent);
+  teamsDirectoryLoading = true;
+  if (!silent) {
+    statusText.textContent = "Loading teams...";
+  }
+  if (activeTab === "teams") {
+    renderTeamsDirectory();
+  }
+  try {
+    const res = await fetch("/api/teams");
+    const payload = await parseApiResponse(res);
+    if (!res.ok) throw new Error(payload.error || "Failed to load teams");
+    teamsDirectoryRows = Array.isArray(payload?.teams) ? payload.teams : [];
+    teamsDirectoryLoaded = true;
+    teamsDirectoryErrorText = "";
+    if (activeTab === "teams" && !silent) {
+      statusText.textContent = `Loaded ${Number(payload?.total_teams) || teamsDirectoryRows.length} teams`;
+    }
+    if (activeTab === "teams") {
+      renderTeamsDirectory();
+    }
+    return true;
+  } catch (err) {
+    teamsDirectoryErrorText = String(err.message || err);
+    if (!silent) {
+      statusText.textContent = teamsDirectoryErrorText;
+    }
+    if (activeTab === "teams") {
+      renderTeamsDirectory();
+    }
+    return false;
+  } finally {
+    teamsDirectoryLoading = false;
+    if (activeTab === "teams") {
+      renderTeamsDirectory();
+    }
   }
 }
 
@@ -3827,6 +4357,7 @@ function renderXgd(payload) {
     summary: payload.summary || null,
     period_rows: payloadPeriodRows,
     warning: payload.warning || "",
+    context_note: String(payload.context_note || ""),
     home_recent_rows: payloadHomeRecentRows,
     away_recent_rows: payloadAwayRecentRows,
     home_team_venue_rows: payloadHomeVenueRows,
@@ -3842,6 +4373,7 @@ function renderXgd(payload) {
     summary: view?.summary || null,
     period_rows: Array.isArray(view?.period_rows) ? view.period_rows : [],
     warning: String(view?.warning || ""),
+    context_note: String(view?.context_note || ""),
     home_recent_rows: Array.isArray(view?.home_recent_rows) ? view.home_recent_rows : [],
     away_recent_rows: Array.isArray(view?.away_recent_rows) ? view.away_recent_rows : [],
     home_team_venue_rows:
@@ -3884,6 +4416,9 @@ function renderXgd(payload) {
     : "";
 
   const warning = activeView.warning ? `<div class="warning">${escapeHtml(activeView.warning)}</div>` : "";
+  const contextNote = activeView.context_note
+    ? `<div class="xgd-context-note">${escapeHtml(activeView.context_note)}</div>`
+    : "";
 
   const periodRowsRaw = Array.isArray(activeView.period_rows) ? activeView.period_rows : [];
   const periodRows = periodRowsRaw.length ? periodRowsRaw : payloadPeriodRows;
@@ -3915,8 +4450,8 @@ function renderXgd(payload) {
           <tr>
             <td>${escapeHtml(r.home_raw)}</td>
             <td>${escapeHtml(r.away_raw)}</td>
-            <td>${escapeHtml(r.home_sofa)}</td>
-            <td>${escapeHtml(r.away_sofa)}</td>
+            <td>${buildTeamLinkHtml(r.home_sofa, r.fixture_competition || payload.competition)}</td>
+            <td>${buildTeamLinkHtml(r.away_sofa, r.fixture_competition || payload.competition)}</td>
             <td>${escapeHtml(r.home_match_method)}</td>
             <td>${escapeHtml(r.away_match_method)}</td>
             <td>${r.home_match_score == null ? "-" : Number(r.home_match_score).toFixed(3)}</td>
@@ -4011,7 +4546,7 @@ function renderXgd(payload) {
   `;
   const historicalResultSection = buildHistoricalResultSection(payload);
 
-  const xgdTabContent = `${warning}${historicalResultSection}${periodTable}${teamSummaryTables}${recentMatchesSection}${mappingTable}`;
+  const xgdTabContent = `${warning}${contextNote}${historicalResultSection}${periodTable}${teamSummaryTables}${recentMatchesSection}${mappingTable}`;
   const statsIsAway = statsTeamView === "away";
   const statsActiveLabel = statsIsAway ? awayLabel : homeLabel;
   const statsActiveRows = statsIsAway ? awayRecentRows : homeRecentRows;
@@ -4113,6 +4648,7 @@ function renderXgd(payload) {
     ? cardsTabContent
     : (detailsMainTab === "hcperf" ? hcPerfTabContent : xgdTabContent);
   linesContainer.innerHTML = `${detailsTabNav}${viewTabsHtml}${activeTabContent}`;
+  bindTeamLinkButtons(linesContainer);
 
   if (detailsMainTab === "hcperf" && selectedMarketId && !cachedHcPerfPayload && hcPerfLoadingMarketId !== selectedMarketId) {
     loadGameHcPerf(selectedMarketId);
@@ -4223,6 +4759,297 @@ function renderXgd(payload) {
   }
 }
 
+function closeTeamDetailsPanel() {
+  if (teamDetailsPanel) {
+    teamDetailsPanel.classList.add("hidden");
+  }
+  teamDetailsLoadingKey = "";
+}
+
+function getTeamPageCacheKey(teamName, competitionName = "") {
+  return `${String(teamName || "").trim().toLowerCase()}::${String(competitionName || "").trim().toLowerCase()}`;
+}
+
+function buildTeamStatsSummaryTableHtml(teamLabel, rows) {
+  const safeRows = Array.isArray(rows) ? rows : [];
+  if (!safeRows.length) {
+    return `
+      <section class="recent-team-block">
+        <h4>${escapeHtml(teamLabel || "Team")} - Stats Summary</h4>
+        <p class="recent-empty">No season stats available.</p>
+      </section>
+    `;
+  }
+  return `
+    <section class="recent-team-block">
+      <h4>${escapeHtml(teamLabel || "Team")} - Stats Summary</h4>
+      <div class="recent-table-wrap">
+        <table class="lines-table recent-lines-table">
+          <thead>
+            <tr>
+              <th>Games</th>
+              <th>Corners For</th>
+              <th>Corners Against</th>
+              <th>Cards For</th>
+              <th>Cards Against</th>
+              <th>Yellow For</th>
+              <th>Yellow Against</th>
+              <th>Red For</th>
+              <th>Red Against</th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr>
+              <td>${safeRows.length}</td>
+              <td>${formatMetricValue(averageMetric(safeRows, "corners_for"), 2)}</td>
+              <td>${formatMetricValue(averageMetric(safeRows, "corners_against"), 2)}</td>
+              <td>${formatMetricValue(averageMetric(safeRows, "cards_for"), 2)}</td>
+              <td>${formatMetricValue(averageMetric(safeRows, "cards_against"), 2)}</td>
+              <td>${formatMetricValue(averageMetric(safeRows, "yellow_for"), 2)}</td>
+              <td>${formatMetricValue(averageMetric(safeRows, "yellow_against"), 2)}</td>
+              <td>${formatMetricValue(averageMetric(safeRows, "red_for"), 2)}</td>
+              <td>${formatMetricValue(averageMetric(safeRows, "red_against"), 2)}</td>
+            </tr>
+          </tbody>
+        </table>
+      </div>
+    </section>
+  `;
+}
+
+function buildTeamXgControlsHtml(gamesShownValue, gamesShownMax, rollingValue, rollingMax) {
+  const safeGamesMax = Number.isFinite(gamesShownMax) && gamesShownMax > 0 ? Math.floor(gamesShownMax) : 1;
+  const safeGamesValue = Math.max(1, Math.min(safeGamesMax, clampRecentMatchesCount(gamesShownValue)));
+  const safeRollingMax = Number.isFinite(rollingMax) && rollingMax > 0 ? Math.floor(rollingMax) : safeGamesMax;
+  const safeRollingValue = Math.max(1, Math.min(safeRollingMax, clampRecentMatchesCount(rollingValue)));
+  return `
+    <div class="details-options">
+      <label for="teamXgGamesShownInput">Last X games</label>
+      <input id="teamXgGamesShownInput" type="number" min="1" max="${safeGamesMax}" step="1" value="${safeGamesValue}" />
+      <label for="teamXgRollingWindowInput">Rolling avg games</label>
+      <input id="teamXgRollingWindowInput" type="number" min="1" max="${safeRollingMax}" step="1" value="${safeRollingValue}" />
+    </div>
+  `;
+}
+
+function renderTeamDetailsPanel(payload) {
+  if (!teamDetailsContent || !teamDetailsTitle || !teamDetailsMeta) return;
+  const teamText = String(payload?.team || teamDetailsTeam || "").trim() || "Team";
+  const selectedCompetition = String(payload?.competition || teamDetailsCompetition || "").trim();
+  const competitions = Array.isArray(payload?.competitions) ? payload.competitions : [];
+  const recentRows = Array.isArray(payload?.recent_rows) ? payload.recent_rows : [];
+  const teamVenueRows = payload?.team_venue_rows && typeof payload.team_venue_rows === "object"
+    ? payload.team_venue_rows
+    : { home: [], away: [] };
+  const homeVenueRows = Array.isArray(teamVenueRows?.home) ? teamVenueRows.home : [];
+  const awayVenueRows = Array.isArray(teamVenueRows?.away) ? teamVenueRows.away : [];
+  const seasonHandicapRows = Array.isArray(payload?.season_handicap_rows) ? payload.season_handicap_rows : [];
+  const homeHcRows = seasonHandicapRows.filter((row) => String(row?.venue || "").trim().toLowerCase() === "home");
+  const awayHcRows = seasonHandicapRows.filter((row) => String(row?.venue || "").trim().toLowerCase() === "away");
+  teamDetailsTitle.textContent = `${teamText}`;
+  teamDetailsMeta.textContent = `${selectedCompetition || "Selected leagues"} | ${recentRows.length} season games`;
+
+  if (teamDetailsCompetitionSelect instanceof HTMLSelectElement) {
+    teamDetailsCompetitionSelect.innerHTML = "";
+    if (!competitions.length) {
+      const option = document.createElement("option");
+      option.value = "";
+      option.textContent = selectedCompetition || "No league data";
+      teamDetailsCompetitionSelect.appendChild(option);
+      teamDetailsCompetitionSelect.disabled = true;
+    } else {
+      competitions.forEach((entry) => {
+        const competitionName = String(entry?.competition || "").trim();
+        if (!competitionName) return;
+        const option = document.createElement("option");
+        option.value = competitionName;
+        const gamesCount = Number(entry?.games_count) || 0;
+        option.textContent = `${competitionName}${gamesCount ? ` (${gamesCount})` : ""}`;
+        if (competitionName === selectedCompetition) {
+          option.selected = true;
+        }
+        teamDetailsCompetitionSelect.appendChild(option);
+      });
+      if (!teamDetailsCompetitionSelect.value && selectedCompetition) {
+        teamDetailsCompetitionSelect.value = selectedCompetition;
+      }
+      teamDetailsCompetitionSelect.disabled = false;
+    }
+  }
+
+  if (teamDetailsMainTab !== "stats" && teamDetailsMainTab !== "hcperf") {
+    teamDetailsMainTab = "xg";
+  }
+  const maxTeamXgGames = Math.max(1, recentRows.length || 1);
+  const xgGamesShown = Math.max(
+    1,
+    Math.min(maxTeamXgGames, clampRecentMatchesCount(teamDetailsXgGamesShownCount))
+  );
+  const xgRollingWindow = Math.max(
+    1,
+    Math.min(xgGamesShown, clampRecentMatchesCount(teamDetailsXgRollingWindowCount))
+  );
+  teamDetailsXgGamesShownCount = xgGamesShown;
+  teamDetailsXgRollingWindowCount = xgRollingWindow;
+  const limitedAllRows = recentRows.slice(0, xgGamesShown);
+  const limitedHomeRows = homeVenueRows.slice(0, xgGamesShown);
+  const limitedAwayRows = awayVenueRows.slice(0, xgGamesShown);
+  const buildTeamXgSectionHtml = (sectionTitle, rows, tableTitle) => `
+    <h3 class="section-title">${escapeHtml(sectionTitle)}</h3>
+    ${buildRecentAveragesTableHtml(rows, Math.max(1, rows.length || 1), teamText)}
+    ${buildMetricTrendPlotHtml(rows, `${sectionTitle} trend`, teamText, xgRollingWindow)}
+    ${buildRecentMatchesTableHtml(tableTitle, rows, teamText)}
+  `;
+  const xgTabContent = `
+    <h3 class="section-title">Season Games With xG</h3>
+    ${buildTeamXgControlsHtml(xgGamesShown, maxTeamXgGames, xgRollingWindow, xgGamesShown)}
+    ${buildTeamXgSectionHtml("All Games", limitedAllRows, "All games")}
+    ${buildTeamXgSectionHtml("Home Games", limitedHomeRows, "Home games")}
+    ${buildTeamXgSectionHtml("Away Games", limitedAwayRows, "Away games")}
+  `;
+  const statsTabContent = `
+    <h3 class="section-title">Season Stats</h3>
+    ${buildTeamStatsSummaryTableHtml(teamText, recentRows)}
+    ${buildCardsCornersMatchesTableHtml(teamText, recentRows, null, "Season games")}
+  `;
+  const hcPerfTabContent = `
+    <h3 class="section-title">Season Handicap Performance</h3>
+    ${buildHcPerfSummaryTableHtml(teamText, seasonHandicapRows)}
+    ${buildSeasonHandicapPerformanceTableHtml(teamText, seasonHandicapRows, {
+      title: `${teamText} - All Games`,
+      relevantTeam: teamText,
+    })}
+    ${buildSeasonHandicapPerformanceTableHtml(teamText, homeHcRows, {
+      title: `${teamText} - Home Games`,
+      relevantTeam: teamText,
+    })}
+    ${buildSeasonHandicapPerformanceTableHtml(teamText, awayHcRows, {
+      title: `${teamText} - Away Games`,
+      relevantTeam: teamText,
+    })}
+  `;
+  const teamTabNav = `
+    <section class="page-tabs details-main-tabs">
+      <button type="button" class="tab-btn team-details-main-tab ${teamDetailsMainTab === "xg" ? "active" : ""}" data-team-details-tab="xg">xG Games</button>
+      <button type="button" class="tab-btn team-details-main-tab ${teamDetailsMainTab === "stats" ? "active" : ""}" data-team-details-tab="stats">Stats</button>
+      <button type="button" class="tab-btn team-details-main-tab ${teamDetailsMainTab === "hcperf" ? "active" : ""}" data-team-details-tab="hcperf">HC Perf</button>
+    </section>
+  `;
+  const activeTabContent = teamDetailsMainTab === "stats"
+    ? statsTabContent
+    : (teamDetailsMainTab === "hcperf" ? hcPerfTabContent : xgTabContent);
+  teamDetailsContent.innerHTML = `${teamTabNav}${activeTabContent}`;
+  bindTeamLinkButtons(teamDetailsContent);
+
+  const tabButtons = teamDetailsContent.querySelectorAll(".team-details-main-tab");
+  tabButtons.forEach((button) => {
+    if (!(button instanceof HTMLButtonElement)) return;
+    button.addEventListener("click", () => {
+      const nextTabRaw = String(button.dataset.teamDetailsTab || "").trim().toLowerCase();
+      const nextTab = nextTabRaw === "stats" || nextTabRaw === "hcperf" ? nextTabRaw : "xg";
+      if (nextTab === teamDetailsMainTab) return;
+      teamDetailsMainTab = nextTab;
+      if (teamDetailsPayload) {
+        renderTeamDetailsPanel(teamDetailsPayload);
+      }
+    });
+  });
+
+  const teamXgGamesShownInput = teamDetailsContent.querySelector("#teamXgGamesShownInput");
+  if (teamXgGamesShownInput instanceof HTMLInputElement) {
+    teamXgGamesShownInput.addEventListener("change", () => {
+      teamDetailsXgGamesShownCount = clampRecentMatchesCount(teamXgGamesShownInput.value);
+      if (teamDetailsXgRollingWindowCount > teamDetailsXgGamesShownCount) {
+        teamDetailsXgRollingWindowCount = teamDetailsXgGamesShownCount;
+      }
+      if (teamDetailsPayload) {
+        renderTeamDetailsPanel(teamDetailsPayload);
+      }
+    });
+  }
+  const teamXgRollingWindowInput = teamDetailsContent.querySelector("#teamXgRollingWindowInput");
+  if (teamXgRollingWindowInput instanceof HTMLInputElement) {
+    teamXgRollingWindowInput.addEventListener("change", () => {
+      teamDetailsXgRollingWindowCount = clampRecentMatchesCount(teamXgRollingWindowInput.value);
+      if (teamDetailsPayload) {
+        renderTeamDetailsPanel(teamDetailsPayload);
+      }
+    });
+  }
+}
+
+async function openTeamPage(teamName, competitionName = null, options = {}) {
+  if (!teamDetailsPanel || !teamDetailsContent || !teamDetailsTitle || !teamDetailsMeta) return;
+  const teamText = String(teamName || "").trim();
+  const competitionText = String(competitionName || "").trim();
+  const forceRefresh = Boolean(options?.force);
+  if (!teamText) return;
+
+  const isDifferentSelection = teamText !== teamDetailsTeam || competitionText !== teamDetailsCompetition;
+  if (isDifferentSelection) {
+    teamDetailsMainTab = "xg";
+    teamDetailsXgGamesShownCount = TEAM_DETAILS_XG_GAMES_DEFAULT;
+    teamDetailsXgRollingWindowCount = TEAM_DETAILS_XG_ROLLING_DEFAULT;
+  }
+  teamDetailsTeam = teamText;
+  teamDetailsCompetition = competitionText;
+  teamDetailsPanel.classList.remove("hidden");
+  teamDetailsTitle.textContent = teamText;
+  teamDetailsMeta.textContent = competitionText ? `${competitionText} | Loading...` : "Loading...";
+  teamDetailsContent.innerHTML = `
+    <div class="hcperf-loading">
+      <span class="hcperf-loading-dot" aria-hidden="true"></span>
+      <span>Loading team page...</span>
+    </div>
+  `;
+
+  const cacheKey = getTeamPageCacheKey(teamText, competitionText);
+  if (!forceRefresh && teamPagePayloadByKey.has(cacheKey)) {
+    const cachedPayload = teamPagePayloadByKey.get(cacheKey);
+    if (cachedPayload && typeof cachedPayload === "object") {
+      const resolvedTeam = String(cachedPayload?.team || "").trim();
+      if (resolvedTeam) {
+        teamDetailsTeam = resolvedTeam;
+      }
+      teamDetailsPayload = cachedPayload;
+      renderTeamDetailsPanel(cachedPayload);
+      return;
+    }
+  }
+
+  const requestKey = `${teamText}::${competitionText}`;
+  teamDetailsLoadingKey = requestKey;
+  try {
+    const query = new URLSearchParams();
+    query.set("team", teamText);
+    if (competitionText) {
+      query.set("competition", competitionText);
+    }
+    const res = await fetch(`/api/team-page?${query.toString()}`);
+    const payload = await parseApiResponse(res);
+    if (!res.ok) throw new Error(payload.error || "Failed to load team page");
+    if (teamDetailsLoadingKey !== requestKey) return;
+    const nextPayload = payload && typeof payload === "object" ? payload : {};
+    const resolvedTeam = String(nextPayload?.team || "").trim();
+    const resolvedCompetition = String(nextPayload?.competition || "").trim();
+    teamPagePayloadByKey.set(cacheKey, nextPayload);
+    if (resolvedCompetition) {
+      teamPagePayloadByKey.set(getTeamPageCacheKey(teamText, resolvedCompetition), nextPayload);
+    }
+    if (resolvedTeam) {
+      teamDetailsTeam = resolvedTeam;
+      teamPagePayloadByKey.set(getTeamPageCacheKey(resolvedTeam, resolvedCompetition || competitionText), nextPayload);
+    }
+    teamDetailsPayload = nextPayload;
+    teamDetailsCompetition = resolvedCompetition || competitionText;
+    renderTeamDetailsPanel(nextPayload);
+  } catch (err) {
+    if (teamDetailsLoadingKey !== requestKey) return;
+    teamDetailsMeta.textContent = competitionText ? `${competitionText} | Error` : "Error";
+    teamDetailsContent.innerHTML = `<p>${escapeHtml(String(err.message || err))}</p>`;
+  }
+}
+
 async function loadGameHcPerf(marketId, force = false) {
   const key = String(marketId || "").trim();
   if (!key) return;
@@ -4253,10 +5080,9 @@ async function loadGameHcPerf(marketId, force = false) {
   }
 }
 
-async function loadGameXgd(marketId, options = {}) {
+async function loadGameXgd(marketId) {
   const game = findGameByMarketId(marketId);
   if (!game) return;
-  const forceRefresh = Boolean(options?.force);
   const key = String(marketId || "").trim();
 
   selectedMarketId = marketId;
@@ -4271,7 +5097,7 @@ async function loadGameXgd(marketId, options = {}) {
   detailsTitle.textContent = game.event_name;
   gamesShownCount = 0;
   gamesShownAuto = true;
-  rollingWindowCount = 3;
+  rollingWindowCount = 10;
   showTrendCharts = false;
   detailsMainTab = "xgd";
   recentTeamView = "home";
@@ -4287,20 +5113,18 @@ async function loadGameXgd(marketId, options = {}) {
   const scoreMeta = game.is_historical ? ` | FT ${String(game.scoreline || "-")}` : "";
   detailsMeta.textContent = `${game.competition} | ${game.kickoff_raw}${scoreMeta}`;
 
-  if (!forceRefresh) {
-    const cachedPayload = xgdPayloadByMarket.get(key);
-    if (cachedPayload && typeof cachedPayload === "object") {
-      renderXgd(cachedPayload);
-      const updatedMainTableMetrics = applyCalculatedXgdToMainTable(marketId, cachedPayload);
-      if (updatedMainTableMetrics) {
-        if (activeTab === "saved") {
-          renderSavedGames();
-        } else {
-          renderCurrentDay();
-        }
+  const cachedPayload = xgdPayloadByMarket.get(key);
+  if (cachedPayload && typeof cachedPayload === "object") {
+    renderXgd(cachedPayload);
+    const updatedMainTableMetrics = applyCalculatedXgdToMainTable(marketId, cachedPayload);
+    if (updatedMainTableMetrics) {
+      if (activeTab === "saved") {
+        renderSavedGames();
+      } else {
+        renderCurrentDay();
       }
-      return;
     }
+    return;
   }
 
   linesContainer.innerHTML = "<p>Calculating xGD...</p>";
@@ -4364,10 +5188,28 @@ if (teamHcRankingsTabBtn instanceof HTMLButtonElement) {
     setActiveTab("rankings");
   });
 }
+if (teamsTabBtn instanceof HTMLButtonElement) {
+  teamsTabBtn.addEventListener("click", () => {
+    setActiveTab("teams");
+  });
+}
 manualMappingTabBtn.addEventListener("click", () => {
   setActiveTab("mapping");
   loadManualMappings();
 });
+if (teamsRefreshBtn instanceof HTMLButtonElement) {
+  teamsRefreshBtn.addEventListener("click", () => {
+    loadTeamsDirectory();
+  });
+}
+if (teamsSearchInput instanceof HTMLInputElement) {
+  teamsSearchInput.addEventListener("input", () => {
+    teamsDirectorySearchQuery = String(teamsSearchInput.value || "");
+    if (activeTab === "teams") {
+      renderTeamsDirectory();
+    }
+  });
+}
 upcomingModeBtn.addEventListener("click", () => {
   setGamesMode("upcoming");
 });
@@ -4527,6 +5369,7 @@ document.addEventListener("keydown", (event) => {
     setLeagueFilterOpen(false);
     setTierFilterOpen(false);
     setTeamHcRankingsLeagueFilterOpen(false);
+    closeTeamDetailsPanel();
   }
 });
 sortModeBtn.addEventListener("change", () => {
@@ -4600,9 +5443,18 @@ nextDayBtn.addEventListener("click", () => {
 closeDetails.addEventListener("click", () => {
   detailsPanel.classList.add("hidden");
 });
-recalcBtn.addEventListener("click", () => {
-  if (selectedMarketId) loadGameXgd(selectedMarketId, { force: true });
-});
+if (teamDetailsCloseBtn instanceof HTMLButtonElement) {
+  teamDetailsCloseBtn.addEventListener("click", () => {
+    closeTeamDetailsPanel();
+  });
+}
+if (teamDetailsCompetitionSelect instanceof HTMLSelectElement) {
+  teamDetailsCompetitionSelect.addEventListener("change", () => {
+    const nextCompetition = String(teamDetailsCompetitionSelect.value || "").trim();
+    if (!teamDetailsTeam) return;
+    openTeamPage(teamDetailsTeam, nextCompetition || null);
+  });
+}
 if (saveGameBtn instanceof HTMLButtonElement) {
   saveGameBtn.addEventListener("click", () => {
     toggleSelectedGameSaved();
@@ -4610,6 +5462,8 @@ if (saveGameBtn instanceof HTMLButtonElement) {
 }
 
 xgPushThreshold = getStoredXgPushThreshold();
+xgdHcHighlightEnabled = false;
+showGamesWithoutHandicap = getStoredShowGamesWithoutHandicap();
 if (xgThresholdInput instanceof HTMLInputElement) {
   xgThresholdInput.value = formatXgPushThresholdForInput(xgPushThreshold);
   xgThresholdInput.addEventListener("change", () => {
@@ -4620,6 +5474,18 @@ if (xgThresholdInput instanceof HTMLInputElement) {
     event.preventDefault();
     applyGlobalXgPushThreshold(xgThresholdInput.value);
     xgThresholdInput.blur();
+  });
+}
+updateXgdHcHighlightToggleButton();
+if (xgdHcHighlightToggleBtn instanceof HTMLButtonElement) {
+  xgdHcHighlightToggleBtn.addEventListener("click", () => {
+    setXgdHcHighlightEnabled(!xgdHcHighlightEnabled);
+  });
+}
+updateNoHandicapGamesToggleButton();
+if (noHandicapGamesToggleBtn instanceof HTMLButtonElement) {
+  noHandicapGamesToggleBtn.addEventListener("click", () => {
+    setShowGamesWithoutHandicap(!showGamesWithoutHandicap);
   });
 }
 

@@ -584,28 +584,42 @@ class MappingService:
             return 2
 
         competition_stats: dict[str, dict[str, Any]] = {}
+
+        def ensure_competition_entry(raw_name: str, kickoff_raw: str = "") -> dict[str, Any] | None:
+            competition_name = str(raw_name).strip()
+            if not competition_name:
+                return None
+            comp_norm = self.normalize_competition_key(competition_name)
+            if not comp_norm:
+                return None
+            entry = competition_stats.get(comp_norm)
+            if entry is None:
+                entry = {
+                    "raw_name": competition_name,
+                    "raw_norm": comp_norm,
+                    "games_count": 0,
+                    "next_kickoff": "",
+                }
+                competition_stats[comp_norm] = entry
+            kickoff_value = str(kickoff_raw).strip()
+            if kickoff_value:
+                current_next = str(entry.get("next_kickoff", "")).strip()
+                if not current_next or kickoff_value < current_next:
+                    entry["next_kickoff"] = kickoff_value
+            return entry
+
+        for raw_competition in sorted(selected_betfair_competitions, key=str.lower):
+            ensure_competition_entry(raw_competition)
+
         for row in games_df.to_dict(orient="records"):
             competition_name = str(row.get("competition", "")).strip()
             if not competition_name:
                 continue
-            comp_norm = self.normalize_competition_key(competition_name)
-            if not comp_norm:
-                continue
-            entry = competition_stats.setdefault(
-                competition_name,
-                {
-                    "raw_name": competition_name,
-                    "raw_norm": comp_norm,
-                    "games_count": 0,
-                    "next_kickoff": str(row.get("kickoff_raw", "")).strip(),
-                },
-            )
-            entry["games_count"] = int(entry.get("games_count", 0)) + 1
             kickoff_raw = str(row.get("kickoff_raw", "")).strip()
-            if kickoff_raw:
-                current_next = str(entry.get("next_kickoff", "")).strip()
-                if not current_next or kickoff_raw < current_next:
-                    entry["next_kickoff"] = kickoff_raw
+            entry = ensure_competition_entry(competition_name, kickoff_raw)
+            if entry is None:
+                continue
+            entry["games_count"] = int(entry.get("games_count", 0)) + 1
 
         for entry in competition_stats.values():
             raw_name = str(entry.get("raw_name", "")).strip()
@@ -651,6 +665,41 @@ class MappingService:
                     "next_kickoff": str(entry.get("next_kickoff", "")).strip(),
                 }
             )
+
+        if auto_competition_candidates:
+            with self.state.lock:
+                changed = False
+                for raw_norm, candidate in auto_competition_candidates.items():
+                    if raw_norm in self.state.manual_competition_mapping_lookup:
+                        continue
+                    raw_name = str(candidate.get("raw_name", "")).strip()
+                    sofa_name = str(candidate.get("sofa_name", "")).strip()
+                    if not raw_name or not sofa_name:
+                        continue
+                    if sofa_name not in self.state.sofa_competition_set:
+                        continue
+                    self.state.manual_competition_mappings[raw_name] = sofa_name
+                    changed = True
+                if changed:
+                    self.state.manual_competition_mapping_lookup = (
+                        self.build_manual_competition_mapping_lookup(
+                            self.state.manual_competition_mappings
+                        )
+                    )
+                    self._save_manual_competition_mappings()
+                competition_mappings = dict(self.state.manual_competition_mappings)
+                competition_mapping_lookup = dict(self.state.manual_competition_mapping_lookup)
+
+            competition_manual_norms = {
+                self.normalize_competition_key(raw_name)
+                for raw_name in competition_mappings.keys()
+                if self.normalize_competition_key(raw_name)
+            }
+            auto_competition_candidates = {
+                raw_norm: candidate
+                for raw_norm, candidate in auto_competition_candidates.items()
+                if raw_norm not in competition_manual_norms
+            }
 
         competition_mapping_rows = [
             {

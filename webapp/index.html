@@ -21,6 +21,8 @@
           autocomplete="off"
         />
       </label>
+      <button id="xgdHcHighlightToggleBtn" type="button" class="topbar-highlight-toggle-btn">Highlight</button>
+      <button id="noHandicapGamesToggleBtn" type="button" class="topbar-highlight-toggle-btn">No-HC Games: Show</button>
       <button id="refreshBtn" type="button">Refresh</button>
       <span id="statusText">Loading...</span>
     </div>
@@ -31,6 +33,7 @@
       <button id="gamesTabBtn" class="tab-btn active" type="button">Games</button>
       <button id="savedGamesTabBtn" class="tab-btn" type="button">Saved Games</button>
       <button id="teamHcRankingsTabBtn" class="tab-btn" type="button">HC Rankings</button>
+      <button id="teamsTabBtn" class="tab-btn" type="button">Teams</button>
       <button id="manualMappingTabBtn" class="tab-btn" type="button">Mapping</button>
     </section>
 
@@ -112,6 +115,22 @@
       <section id="teamHcRankingsView" class="calendar-view"></section>
     </section>
 
+    <section id="teamsTabPane" class="tab-pane hidden">
+      <section class="table-controls">
+        <label for="teamsSearchInput" class="control-label">Team</label>
+        <input
+          id="teamsSearchInput"
+          class="team-search-input"
+          type="search"
+          aria-label="Search teams directory"
+          placeholder="Search team..."
+          autocomplete="off"
+        />
+        <button id="teamsRefreshBtn" type="button">Refresh Teams</button>
+      </section>
+      <section id="teamsView" class="calendar-view"></section>
+    </section>
+
     <section id="manualMappingTabPane" class="tab-pane hidden">
       <section class="mapping-header">
         <h2>Mapping</h2>
@@ -155,12 +174,26 @@
       <h2 id="detailsTitle">Game</h2>
       <div class="details-actions">
         <button id="saveGameBtn" type="button">Save</button>
-        <button id="recalcBtn" type="button">Recalculate xGD</button>
         <button id="closeDetails" type="button">Close</button>
       </div>
     </div>
     <p id="detailsMeta" class="meta"></p>
     <div id="linesContainer"></div>
+  </aside>
+
+  <aside id="teamDetailsPanel" class="details-panel hidden" aria-live="polite">
+    <div class="details-header">
+      <h2 id="teamDetailsTitle">Team</h2>
+      <div class="details-actions">
+        <label class="team-panel-league-field" for="teamDetailsCompetitionSelect">
+          <span>League</span>
+          <select id="teamDetailsCompetitionSelect" aria-label="Team page league"></select>
+        </label>
+        <button id="teamDetailsCloseBtn" type="button">Close</button>
+      </div>
+    </div>
+    <p id="teamDetailsMeta" class="meta"></p>
+    <div id="teamDetailsContent"></div>
   </aside>
 
   <aside id="teamHcPerfPanel" class="details-panel hidden" aria-live="polite">

@@ -263,28 +263,27 @@ def calc_wyscout_form_tables(games, data_df, periods=("Season", 5, 3), return_so
         game_competition = str(game.get("competition_name", "")).strip() if "competition_name" in games.columns else ""
         game_area = str(game.get("area_name", "")).strip() if "area_name" in games.columns else ""
         if game_competition and "competition_name" in form_df.columns:
-            home_comp_rows = home_perf[
+            # Enforce strict per-game competition context for each side independently.
+            # This prevents cross-competition bleed (e.g. domestic + Europe) when one
+            # team has sparse data for the game's competition.
+            home_perf = home_perf[
                 home_perf["competition_name"].fillna("").astype(str).str.strip() == game_competition
             ].copy()
-            away_comp_rows = away_perf[
+            away_perf = away_perf[
                 away_perf["competition_name"].fillna("").astype(str).str.strip() == game_competition
             ].copy()
             if game_area and "area_name" in form_df.columns:
-                home_comp_area_rows = home_comp_rows[
-                    home_comp_rows["area_name"].fillna("").astype(str).str.strip() == game_area
+                home_area_rows = home_perf[
+                    home_perf["area_name"].fillna("").astype(str).str.strip() == game_area
                 ].copy()
-                away_comp_area_rows = away_comp_rows[
-                    away_comp_rows["area_name"].fillna("").astype(str).str.strip() == game_area
+                away_area_rows = away_perf[
+                    away_perf["area_name"].fillna("").astype(str).str.strip() == game_area
                 ].copy()
-                if not home_comp_area_rows.empty and not away_comp_area_rows.empty:
-                    home_perf = home_comp_area_rows
-                    away_perf = away_comp_area_rows
-                elif not home_comp_rows.empty and not away_comp_rows.empty:
-                    home_perf = home_comp_rows
-                    away_perf = away_comp_rows
-            elif not home_comp_rows.empty and not away_comp_rows.empty:
-                home_perf = home_comp_rows
-                away_perf = away_comp_rows
+                # Keep area filtering where available, but never relax competition filtering.
+                if not home_area_rows.empty:
+                    home_perf = home_area_rows
+                if not away_area_rows.empty:
+                    away_perf = away_area_rows
 
         if pd.notna(cutoff):
             home_perf = home_perf[home_perf["date_time"] < cutoff]

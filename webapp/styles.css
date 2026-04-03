@@ -60,6 +60,21 @@ body {
   text-align: right;
 }
 
+.topbar-highlight-toggle-btn {
+  min-width: 0;
+  width: auto;
+  text-align: center;
+}
+
+.topbar-highlight-toggle-btn.is-off {
+  opacity: 0.72;
+}
+
+.topbar-highlight-toggle-btn:not(.is-off) {
+  border-color: rgba(15, 118, 110, 0.55);
+  background: rgba(15, 118, 110, 0.08);
+}
+
 button {
   border: 1px solid var(--line);
   background: #fff;
@@ -112,8 +127,8 @@ input[type="number"]:hover { border-color: var(--accent); }
 }
 
 main {
-  padding: 16px;
-  max-width: 1360px;
+  padding: 10px 10px 16px 10px;
+  max-width: min(1900px, calc(100vw - 20px));
   margin: 0 auto;
 }
 
@@ -305,7 +320,7 @@ main {
 .games-table {
   width: 100%;
   border-collapse: collapse;
-  table-layout: fixed;
+  table-layout: auto;
 }
 
 .games-table th,
@@ -325,9 +340,11 @@ main {
 .games-table tbody tr.tier-row-1:not(.selected) td { background: #eef5ff; }
 .games-table tbody tr.tier-row-2:not(.selected) td { background: #f1fbf4; }
 .games-table tbody tr.tier-row-3:not(.selected) td { background: #fffbe6; }
+.games-table tbody tr.tier-row-4:not(.selected) td { background: #fff1f2; }
 .games-table tbody tr.tier-row-1:hover:not(.selected) td { background: #e4efff; }
 .games-table tbody tr.tier-row-2:hover:not(.selected) td { background: #e7f7ec; }
 .games-table tbody tr.tier-row-3:hover:not(.selected) td { background: #fff6d2; }
+.games-table tbody tr.tier-row-4:hover:not(.selected) td { background: #ffe4e6; }
 .games-table th {
   background: #f7fafc;
   color: #475569;
@@ -352,6 +369,24 @@ main {
   white-space: normal;
 }
 .games-table td:nth-child(3) { font-weight: 600; }
+.games-table th.home-team-col,
+.games-table td.home-team-col,
+.games-table th.away-team-col,
+.games-table td.away-team-col {
+  width: 200px;
+  min-width: 200px;
+}
+.games-table td.home-team-col .team-link-btn,
+.games-table td.away-team-col .team-link-btn { white-space: nowrap; }
+.games-table th.vs-team-col,
+.games-table td.vs-team-col {
+  width: 28px;
+  min-width: 28px;
+  padding-left: 4px;
+  padding-right: 4px;
+  color: #64748b;
+  font-weight: 700;
+}
 #saveGameBtn.is-saved {
   border-color: #0f766e;
   background: #ecfdf5;
@@ -637,6 +672,16 @@ main {
   padding-bottom: 6px;
 }
 
+.games-table td.metric-stack-cell.xgd-hc-highlight-green {
+  box-shadow: inset 0 0 0 1px rgba(22, 163, 74, 0.45);
+  border-radius: 0;
+}
+
+.games-table td.metric-stack-cell.xgd-hc-highlight-red {
+  box-shadow: inset 0 0 0 1px rgba(220, 38, 38, 0.42);
+  border-radius: 0;
+}
+
 .metric-stack {
   display: inline-flex;
   flex-direction: column;
@@ -670,6 +715,10 @@ main {
   text-align: right;
 }
 
+.games-table td.metric-stack-cell.xgd-domestic-fallback .metric-stack-value {
+  color: #b91c1c;
+}
+
 .details-panel {
   position: fixed;
   left: 0;
@@ -696,6 +745,26 @@ main {
 .details-actions {
   display: flex;
   gap: 8px;
+  align-items: center;
+  flex-wrap: wrap;
+}
+
+.team-panel-league-field {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.team-panel-league-field > span {
+  font-size: 0.74rem;
+  font-weight: 700;
+  color: #475569;
+  text-transform: uppercase;
+  letter-spacing: 0.03em;
+}
+
+.team-panel-league-field > select {
+  min-width: 220px;
 }
 
 .meta {
@@ -1014,6 +1083,32 @@ main {
   color: #115e59;
 }
 
+.team-link-btn {
+  border: 0;
+  background: transparent;
+  color: #0f766e;
+  text-decoration: underline;
+  padding: 0;
+  font: inherit;
+  cursor: pointer;
+}
+
+.team-link-btn:hover {
+  color: #115e59;
+}
+
+.team-link-btn-strong {
+  font-weight: 700;
+}
+
+.game-team-pair {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  flex-wrap: wrap;
+  justify-content: center;
+}
+
 .team-hc-sort-head-btn {
   border: 0;
   background: transparent;
@@ -1036,7 +1131,7 @@ main {
 }
 
 .trend-plot-wrap {
-  min-width: 760px;
+  min-width: 860px;
   border: 1px solid #e2e8f0;
   border-radius: 10px;
   background: #ffffff;
@@ -1045,7 +1140,7 @@ main {
 
 .trend-plot {
   width: 100%;
-  height: 220px;
+  height: 260px;
   display: block;
 }
 
@@ -1096,6 +1191,16 @@ main {
   background: #fffbeb;
   color: #92400e;
   margin-bottom: 10px;
+}
+
+.xgd-context-note {
+  padding: 8px 10px;
+  border: 1px solid #cbd5e1;
+  border-radius: 8px;
+  background: #f8fafc;
+  color: #334155;
+  margin-bottom: 10px;
+  font-size: 0.9rem;
 }
 
 @media (max-width: 900px) {
