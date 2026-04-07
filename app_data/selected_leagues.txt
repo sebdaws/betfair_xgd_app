@@ -16,6 +16,7 @@
 55|French Ligue 1|Tier 1
 59|German Bundesliga|Tier 1
 61|German Bundesliga 2|Tier 3
+67|Greek Super League|Tier 3
 12203971|Irish Premier Division|Tier 4
 81|Italian Serie A|Tier 1
 12199689|Italian Serie B|Tier 3

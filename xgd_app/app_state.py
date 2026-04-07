@@ -136,6 +136,7 @@ class AppState:
         self.manual_competition_mapping_lookup = self.mapping_service.build_manual_competition_mapping_lookup(
             self.manual_competition_mappings
         )
+        self.mapping_service.sync_all_manual_team_mappings_to_db()
 
         self.historical_service = HistoricalService(
             state=self,

@@ -8,6 +8,7 @@ const tierFilter = document.getElementById("tierFilter");
 const tierFilterBtn = document.getElementById("tierFilterBtn");
 const tierFilterMenu = document.getElementById("tierFilterMenu");
 const sortModeBtn = document.getElementById("sortModeBtn");
+const savedSortModeBtn = document.getElementById("savedSortModeBtn");
 const teamSearchInput = document.getElementById("teamSearchInput");
 const tableControls = document.querySelector(".table-controls");
 const gamesTabBtn = document.getElementById("gamesTabBtn");
@@ -64,6 +65,8 @@ const prevDayBtn = document.getElementById("prevDayBtn");
 const todayBtn = document.getElementById("todayBtn");
 const nextDayBtn = document.getElementById("nextDayBtn");
 const dayLabel = document.getElementById("dayLabel");
+const dayPickerInput = document.getElementById("dayPickerInput");
+const dayPickerCount = document.getElementById("dayPickerCount");
 const upcomingModeBtn = document.getElementById("upcomingModeBtn");
 const historicalModeBtn = document.getElementById("historicalModeBtn");
 const xgThresholdInput = document.getElementById("xgThresholdInput");
@@ -83,6 +86,7 @@ let historicalHasMoreOlder = false;
 let selectedLeagues = new Set();
 let selectedTiers = new Set();
 let sortMode = "kickoff";
+let savedSortMode = "kickoff";
 let leagueFilterSearch = "";
 let teamSearchQuery = "";
 let gamesShownCount = 0;
@@ -94,7 +98,9 @@ let statsVenueGamesShownCount = 0;
 let statsVenueGamesShownAuto = true;
 let statsAllGamesShownCount = 0;
 let statsAllGamesShownAuto = true;
+let gamestateStatsMode = "per90";
 let statsTeamView = "home";
+let statsGeneralTeamView = "home";
 let hcPerfTeamView = "home";
 const hcPerfPayloadByMarket = new Map();
 const xgdPayloadByMarket = new Map();
@@ -130,6 +136,7 @@ let lastManualMappingPayload = null;
 let teamMappingSearchBetfair = "";
 let teamMappingSearchSavedTeams = "";
 const historicalDayCalcInFlight = new Set();
+const historicalDayAutoCalcAttempted = new Set();
 let teamHcPerfDetailLoadingKey = "";
 let teamHcPerfDetailTeam = "";
 let teamHcPerfDetailCompetition = "";
@@ -165,6 +172,71 @@ function escapeHtml(value) {
     .replaceAll(">", "&gt;")
     .replaceAll('"', "&quot;")
     .replaceAll("'", "&#39;");
+}
+
+function formatUtcOffsetLabel(dateValue = new Date()) {
+  const date = dateValue instanceof Date ? dateValue : new Date(dateValue);
+  const offsetMinutes = -date.getTimezoneOffset();
+  const sign = offsetMinutes >= 0 ? "+" : "-";
+  const absMinutes = Math.abs(offsetMinutes);
+  const hours = Math.floor(absMinutes / 60);
+  const minutes = absMinutes % 60;
+  if (minutes === 0) {
+    return `UTC${sign}${hours}`;
+  }
+  return `UTC${sign}${hours}:${String(minutes).padStart(2, "0")}`;
+}
+
+function getKickoffColumnLabel() {
+  return `Kickoff (${formatUtcOffsetLabel()})`;
+}
+
+function getGameKickoffDate(game) {
+  const candidates = [
+    game?.kickoff_raw,
+    game?.kickoff_time,
+    game?.date_time,
+  ];
+  for (const candidate of candidates) {
+    const text = String(candidate || "").trim();
+    if (!text) continue;
+    const parsed = new Date(text);
+    if (!Number.isNaN(parsed.getTime())) {
+      return parsed;
+    }
+  }
+  return null;
+}
+
+function formatGameKickoffLocalTime(game) {
+  const kickoffDate = getGameKickoffDate(game);
+  if (kickoffDate) {
+    return new Intl.DateTimeFormat(undefined, {
+      hour: "2-digit",
+      minute: "2-digit",
+      hour12: false,
+    }).format(kickoffDate);
+  }
+  const fallbackUtc = String(game?.kickoff_utc || "").trim();
+  return fallbackUtc || "-";
+}
+
+function formatGameKickoffLocalDateTime(game) {
+  const kickoffDate = getGameKickoffDate(game);
+  if (kickoffDate) {
+    return new Intl.DateTimeFormat(undefined, {
+      year: "numeric",
+      month: "2-digit",
+      day: "2-digit",
+      hour: "2-digit",
+      minute: "2-digit",
+      hour12: false,
+    }).format(kickoffDate);
+  }
+  const fallbackRaw = String(game?.kickoff_raw || "").trim();
+  if (fallbackRaw) return fallbackRaw;
+  const fallbackUtc = String(game?.kickoff_utc || "").trim();
+  return fallbackUtc || "-";
 }
 
 function decodeURIComponentSafe(value) {
@@ -500,7 +572,7 @@ function setActiveTab(tabName) {
   }
   manualMappingTabPane.classList.toggle("hidden", !mappingActive);
   if (activeTab !== "games") {
-    detailsPanel.classList.add("hidden");
+    closeGameDetailsPanel(true);
   }
   if (activeTab !== "rankings" && teamHcPerfPanel) {
     teamHcPerfPanel.classList.add("hidden");
@@ -571,8 +643,7 @@ function setGamesMode(mode, reload = true) {
     return;
   }
 
-  selectedMarketId = null;
-  detailsPanel.classList.add("hidden");
+  closeGameDetailsPanel(true);
   currentDayIndex = gamesMode === "historical" ? Number.MAX_SAFE_INTEGER : 0;
   if (reload) loadGames();
 }
@@ -1220,6 +1291,19 @@ function getTodayIsoUtc() {
   return new Date().toISOString().slice(0, 10);
 }
 
+function updateDayPickerCount(dayIso = "") {
+  if (!(dayPickerCount instanceof HTMLElement)) return;
+  const targetIso = String(dayIso || "").trim();
+  if (!targetIso) {
+    dayPickerCount.textContent = "";
+    return;
+  }
+  const dayMatch = allDays.find((day) => String(day?.date || "").trim() === targetIso);
+  const gameCount = dayMatch && Array.isArray(dayMatch.games) ? dayMatch.games.length : 0;
+  const label = gameCount === 1 ? "game" : "games";
+  dayPickerCount.textContent = `(${gameCount} ${label})`;
+}
+
 function jumpToTodayDay() {
   if (!allDays.length) return;
   const todayIso = getTodayIsoUtc();
@@ -1233,6 +1317,70 @@ function jumpToTodayDay() {
   }
   currentDayIndex = targetIndex;
   renderCurrentDay();
+}
+
+function closestDayIndex(dayIso) {
+  const targetTs = Date.parse(`${String(dayIso || "").trim()}T00:00:00Z`);
+  if (!Number.isFinite(targetTs) || !allDays.length) return -1;
+  let bestIndex = -1;
+  let bestDelta = Number.POSITIVE_INFINITY;
+  for (let idx = 0; idx < allDays.length; idx += 1) {
+    const iso = String(allDays[idx]?.date || "").trim();
+    if (!iso) continue;
+    const dayTs = Date.parse(`${iso}T00:00:00Z`);
+    if (!Number.isFinite(dayTs)) continue;
+    const delta = Math.abs(dayTs - targetTs);
+    if (delta < bestDelta) {
+      bestDelta = delta;
+      bestIndex = idx;
+    }
+  }
+  return bestIndex;
+}
+
+async function jumpToDayIso(dayIso) {
+  const targetIso = String(dayIso || "").trim();
+  if (!targetIso || !/^\d{4}-\d{2}-\d{2}$/.test(targetIso)) return;
+  if (!allDays.length) return;
+
+  let targetIndex = allDays.findIndex((day) => String(day?.date || "") === targetIso);
+  if (targetIndex >= 0) {
+    currentDayIndex = targetIndex;
+    renderCurrentDay();
+    return;
+  }
+
+  if (gamesMode === "historical") {
+    let guard = 0;
+    let previousOldestIso = String(allDays[0]?.date || "");
+    while (historicalHasMoreOlder && guard < 800) {
+      guard += 1;
+      statusText.textContent = `Loading historical days to reach ${targetIso}...`;
+      const ok = await loadGames({ loadMoreHistorical: true });
+      if (!ok || !allDays.length) break;
+      targetIndex = allDays.findIndex((day) => String(day?.date || "") === targetIso);
+      if (targetIndex >= 0) {
+        currentDayIndex = targetIndex;
+        renderCurrentDay();
+        statusText.textContent = `Jumped to ${targetIso}`;
+        return;
+      }
+      const currentOldestIso = String(allDays[0]?.date || "");
+      if (!currentOldestIso || currentOldestIso === previousOldestIso) break;
+      if (currentOldestIso <= targetIso) break;
+      previousOldestIso = currentOldestIso;
+    }
+  }
+
+  const nearestIdx = closestDayIndex(targetIso);
+  if (nearestIdx >= 0) {
+    currentDayIndex = nearestIdx;
+    renderCurrentDay();
+    const nearestIso = String(allDays[nearestIdx]?.date || "").trim();
+    if (nearestIso && nearestIso !== targetIso) {
+      statusText.textContent = `No games loaded for ${targetIso}. Jumped to nearest day: ${nearestIso}`;
+    }
+  }
 }
 
 function clampRecentMatchesCount(value) {
@@ -1787,6 +1935,40 @@ function getMainTableXgdHcHighlightClass(periodValues, handicap, threshold) {
   return "";
 }
 
+function getMainTableGoalsBandHighlight(goalLine, minPeriodValues, maxPeriodValues, threshold) {
+  const mins = Array.isArray(minPeriodValues) ? minPeriodValues : [];
+  const maxes = Array.isArray(maxPeriodValues) ? maxPeriodValues : [];
+  if (goalLine == null) {
+    return { goalLineClass: "", goalUnderClass: "", goalOverClass: "" };
+  }
+  if (mins.length !== 3 || maxes.length !== 3) {
+    return { goalLineClass: "", goalUnderClass: "", goalOverClass: "" };
+  }
+  if (mins.some((value) => value == null) || maxes.some((value) => value == null)) {
+    return { goalLineClass: "", goalUnderClass: "", goalOverClass: "" };
+  }
+
+  const goalValue = Number(goalLine);
+  const thresholdValue = Number.isFinite(Number(threshold)) ? Math.max(0, Number(threshold)) : 0;
+  const belowAllMin = mins.every((value) => (goalValue + thresholdValue) < Number(value));
+  const aboveAllMax = maxes.every((value) => (goalValue - thresholdValue) > Number(value));
+  if (belowAllMin && !aboveAllMax) {
+    return {
+      goalLineClass: "xgd-hc-highlight-green",
+      goalUnderClass: "",
+      goalOverClass: "xgd-hc-highlight-green",
+    };
+  }
+  if (aboveAllMax && !belowAllMin) {
+    return {
+      goalLineClass: "xgd-hc-highlight-red",
+      goalUnderClass: "xgd-hc-highlight-red",
+      goalOverClass: "",
+    };
+  }
+  return { goalLineClass: "", goalUnderClass: "", goalOverClass: "" };
+}
+
 function buildRecentMatchesTableHtml(title, rows, relevantTeamName = "") {
   const headingPrefix = relevantTeamName
     ? `<strong>${escapeHtml(relevantTeamName)}</strong> - `
@@ -2027,7 +2209,18 @@ function buildMetricTrendPlotHtml(rows, title, relevantTeamName = "", rollingWin
     return parts.join(" ");
   };
 
-  const yTicks = [yMax, (yMax + yMin) / 2, yMin];
+  const quarterStep = 0.25;
+  const quarterScale = 1 / quarterStep;
+  const gridYMin = Math.ceil(yMin * quarterScale) / quarterScale;
+  const gridYMax = Math.floor(yMax * quarterScale) / quarterScale;
+  const horizontalGridTicks = [];
+  if (gridYMax >= gridYMin) {
+    for (let tick = gridYMin; tick <= (gridYMax + 1e-9); tick += quarterStep) {
+      horizontalGridTicks.push(Number(tick.toFixed(4)));
+    }
+  }
+  const yLabelTicks = [yMax, (yMax + yMin) / 2, yMin];
+  const verticalGridXs = points.map((_, index) => xForIndex(index));
   const firstLabel = points[0]?.dateText ? String(points[0].dateText).slice(0, 10) : "-";
   const lastLabel = points[points.length - 1]?.dateText ? String(points[points.length - 1].dateText).slice(0, 10) : "-";
 
@@ -2044,12 +2237,25 @@ function buildMetricTrendPlotHtml(rows, title, relevantTeamName = "", rollingWin
           <svg class="trend-plot" viewBox="0 0 ${width} ${height}" role="img" aria-label="${escapeHtml(
             `${relevantTeamName || "Team"} trendlines for xG and xGA`
           )}">
-            ${yTicks
+            ${horizontalGridTicks
               .map(
                 (tick) => `
               <line x1="${padLeft}" y1="${yForValue(tick).toFixed(2)}" x2="${width - padRight}" y2="${yForValue(tick).toFixed(
                 2
               )}" class="trend-grid-line" />
+            `
+              )
+              .join("")}
+            ${verticalGridXs
+              .map(
+                (x) => `
+              <line x1="${x.toFixed(2)}" y1="${padTop}" x2="${x.toFixed(2)}" y2="${height - padBottom}" class="trend-grid-line trend-grid-line-vertical" />
+            `
+              )
+              .join("")}
+            ${yLabelTicks
+              .map(
+                (tick) => `
               <text x="${padLeft - 6}" y="${(yForValue(tick) + 4).toFixed(2)}" text-anchor="end" class="trend-axis-text">${formatMetricValue(
                 tick,
                 2
@@ -2270,45 +2476,55 @@ function buildCardsCornersVenueTableHtml(homeVenueRows, awayVenueRows, homeLabel
 
 function buildGamestateTableHtml(homeRows, awayRows, homeLabel, awayLabel, sampleSize = null) {
   const sampleLabel = sampleSize == null ? "All Previous Games" : `Last ${clampRecentMatchesCount(sampleSize)} Games`;
+  const activeMode = normalizeGamestateStatsMode(gamestateStatsMode);
+  const modeLabel = activeMode === "total"
+    ? "Total Stats"
+    : (activeMode === "per90" ? "Stats / 90" : "Min / Stat");
   const entries = [
     { label: homeLabel || "Home team", rows: limitStatsRows(homeRows || [], sampleSize) },
     { label: awayLabel || "Away team", rows: limitStatsRows(awayRows || [], sampleSize) },
   ];
   const states = [
-    { key: "drawing", label: "D" },
-    { key: "winning", label: "W" },
-    { key: "losing", label: "L" },
+    { key: "drawing", label: "Draw" },
+    { key: "winning", label: "Win" },
+    { key: "losing", label: "Lose" },
   ];
   const metricCols = [
-    { metric: "corners", direction: "for", label: "Corners For" },
-    { metric: "corners", direction: "against", label: "Corners Against" },
-    { metric: "cards", direction: "for", label: "Cards For" },
-    { metric: "cards", direction: "against", label: "Cards Against" },
+    { key: "corners_for", label: "Corners For" },
+    { key: "corners_against", label: "Corners Against" },
+    { key: "cards_for", label: "Cards For" },
+    { key: "cards_against", label: "Cards Against" },
   ];
 
   const toSafeNumber = (value) => {
     const num = Number(value);
     return Number.isFinite(num) ? num : 0;
   };
-  const formatRate = (total, minutes, factor) => {
-    if (!Number.isFinite(total) || !Number.isFinite(minutes) || minutes <= 0) return "-";
-    return formatMetricValue((total / minutes) * factor, 2);
-  };
-  const formatMinutesPerStat = (total, minutes) => {
-    if (!Number.isFinite(total) || !Number.isFinite(minutes) || total <= 0 || minutes <= 0) return "-";
-    return formatMetricValue(minutes / total, 2);
+  const formatMetricByMode = (total, minutes) => {
+    if (activeMode === "per90") {
+      if (!Number.isFinite(total) || !Number.isFinite(minutes) || minutes <= 0) return "-";
+      return formatMetricValue((total / minutes) * 90, 2);
+    }
+    if (activeMode === "minperstat") {
+      if (!Number.isFinite(total) || !Number.isFinite(minutes) || total <= 0 || minutes <= 0) return "-";
+      return formatMetricValue(minutes / total, 2);
+    }
+    return formatMetricValue(total, 0);
   };
 
   const renderTeamTable = (entry) => `
     <section class="recent-team-block">
-      <h4>${escapeHtml(entry.label)} - Gamestate Totals (${escapeHtml(sampleLabel)})</h4>
+      <h4>${escapeHtml(entry.label)} - Gamestate Stats (${escapeHtml(sampleLabel)} | ${escapeHtml(modeLabel)})</h4>
       <div class="recent-table-wrap">
         <table class="lines-table recent-lines-table">
           <thead>
             <tr>
-              <th>State</th>
-              <th>Minutes</th>
+              <th>Gamestate</th>
               <th>Time %</th>
+              <th>Corners For</th>
+              <th>Corners Against</th>
+              <th>Cards For</th>
+              <th>Cards Against</th>
             </tr>
           </thead>
           <tbody>
@@ -2323,11 +2539,19 @@ function buildGamestateTableHtml(homeRows, awayRows, homeLabel, awayLabel, sampl
                 .map((state) => {
                   const minutes = minutesByState[state.key];
                   const pct = totalMinutes > 0 ? (minutes / totalMinutes) * 100 : null;
+                  const metricValues = metricCols.map((metricCol) => {
+                    const metricKey = `${metricCol.key}_${state.key}`;
+                    const metricTotal = toSafeNumber(sumMetric(entry.rows, metricKey));
+                    return formatMetricByMode(metricTotal, minutes);
+                  });
                   return `
                     <tr>
                       <td>${escapeHtml(state.label)}</td>
-                      <td>${formatMetricValue(minutes, 1)}</td>
                       <td>${pct == null ? "-" : `${formatMetricValue(pct, 1)}%`}</td>
+                      <td>${metricValues[0]}</td>
+                      <td>${metricValues[1]}</td>
+                      <td>${metricValues[2]}</td>
+                      <td>${metricValues[3]}</td>
                     </tr>
                   `;
                 })
@@ -2336,47 +2560,98 @@ function buildGamestateTableHtml(homeRows, awayRows, homeLabel, awayLabel, sampl
           </tbody>
         </table>
       </div>
+    </section>
+  `;
+
+  return `
+    ${buildGamestateModeSwitchHtml()}
+    ${entries.map((entry) => renderTeamTable(entry)).join("")}
+  `;
+}
+
+function buildSingleTeamGamestateTableHtml(rows, teamLabel, sampleSize = null) {
+  const sampleLabel = sampleSize == null ? "All Previous Games" : `Last ${clampRecentMatchesCount(sampleSize)} Games`;
+  const activeMode = normalizeGamestateStatsMode(gamestateStatsMode);
+  const modeLabel = activeMode === "total"
+    ? "Total Stats"
+    : (activeMode === "per90" ? "Stats / 90" : "Min / Stat");
+  const safeRows = limitStatsRows(rows || [], sampleSize);
+  const states = [
+    { key: "drawing", label: "Draw" },
+    { key: "winning", label: "Win" },
+    { key: "losing", label: "Lose" },
+  ];
+  const metricCols = [
+    { key: "corners_for", label: "Corners For" },
+    { key: "corners_against", label: "Corners Against" },
+    { key: "cards_for", label: "Cards For" },
+    { key: "cards_against", label: "Cards Against" },
+  ];
+
+  const toSafeNumber = (value) => {
+    const num = Number(value);
+    return Number.isFinite(num) ? num : 0;
+  };
+  const formatMetricByMode = (total, minutes) => {
+    if (activeMode === "per90") {
+      if (!Number.isFinite(total) || !Number.isFinite(minutes) || minutes <= 0) return "-";
+      return formatMetricValue((total / minutes) * 90, 2);
+    }
+    if (activeMode === "minperstat") {
+      if (!Number.isFinite(total) || !Number.isFinite(minutes) || total <= 0 || minutes <= 0) return "-";
+      return formatMetricValue(minutes / total, 2);
+    }
+    return formatMetricValue(total, 0);
+  };
+
+  const minutesByState = {};
+  for (const state of states) {
+    const key = `minutes_${state.key}`;
+    minutesByState[state.key] = toSafeNumber(sumMetric(safeRows, key));
+  }
+  const totalMinutes = states.reduce((sum, state) => sum + minutesByState[state.key], 0);
+
+  return `
+    <section class="recent-team-block">
+      <h4>${escapeHtml(teamLabel || "Team")} - Gamestate Stats (${escapeHtml(sampleLabel)} | ${escapeHtml(modeLabel)})</h4>
       <div class="recent-table-wrap">
         <table class="lines-table recent-lines-table">
           <thead>
             <tr>
-              <th>Metric</th>
-              <th>State</th>
-              <th>Total</th>
-              <th>Per 90</th>
-              <th>Mins/Stat</th>
+              <th>Gamestate</th>
+              <th>Time %</th>
+              <th>Corners For</th>
+              <th>Corners Against</th>
+              <th>Cards For</th>
+              <th>Cards Against</th>
             </tr>
           </thead>
           <tbody>
-            ${metricCols
-              .map((metric) => {
-                return states
-                  .map((state) => {
-                    const metricKey = `${metric.metric}_${metric.direction}_${state.key}`;
-                    const minutesKey = `minutes_${state.key}`;
-                    const total = toSafeNumber(sumMetric(entry.rows, metricKey));
-                    const minutes = toSafeNumber(sumMetric(entry.rows, minutesKey));
-                    return `
-                      <tr>
-                        <td>${escapeHtml(metric.label)}</td>
-                        <td>${escapeHtml(state.label)}</td>
-                        <td>${formatMetricValue(total, 0)}</td>
-                        <td>${formatRate(total, minutes, 90)}</td>
-                        <td>${formatMinutesPerStat(total, minutes)}</td>
-                      </tr>
-                    `;
-                  })
-                  .join("");
+            ${states
+              .map((state) => {
+                const minutes = minutesByState[state.key];
+                const pct = totalMinutes > 0 ? (minutes / totalMinutes) * 100 : null;
+                const metricValues = metricCols.map((metricCol) => {
+                  const metricKey = `${metricCol.key}_${state.key}`;
+                  const metricTotal = toSafeNumber(sumMetric(safeRows, metricKey));
+                  return formatMetricByMode(metricTotal, minutes);
+                });
+                return `
+                  <tr>
+                    <td>${escapeHtml(state.label)}</td>
+                    <td>${pct == null ? "-" : `${formatMetricValue(pct, 1)}%`}</td>
+                    <td>${metricValues[0]}</td>
+                    <td>${metricValues[1]}</td>
+                    <td>${metricValues[2]}</td>
+                    <td>${metricValues[3]}</td>
+                  </tr>
+                `;
               })
               .join("")}
           </tbody>
         </table>
       </div>
     </section>
-  `;
-
-  return `
-    ${entries.map((entry) => renderTeamTable(entry)).join("")}
   `;
 }
 
@@ -2852,6 +3127,70 @@ function buildStatsSwitchHtml(homeLabel, awayLabel) {
   `;
 }
 
+function buildStatsGeneralSwitchHtml(homeLabel, awayLabel) {
+  const homeActive = statsGeneralTeamView !== "away";
+  const awayActive = statsGeneralTeamView === "away";
+  return `
+    <div class="recent-switch" role="tablist" aria-label="General matches team view">
+      <button
+        type="button"
+        class="recent-switch-btn stats-general-switch-btn${homeActive ? " active" : ""}"
+        data-stats-general-team-view="home"
+        role="tab"
+        aria-selected="${homeActive ? "true" : "false"}"
+      >
+        Home: ${escapeHtml(homeLabel)}
+      </button>
+      <button
+        type="button"
+        class="recent-switch-btn stats-general-switch-btn${awayActive ? " active" : ""}"
+        data-stats-general-team-view="away"
+        role="tab"
+        aria-selected="${awayActive ? "true" : "false"}"
+      >
+        Away: ${escapeHtml(awayLabel)}
+      </button>
+    </div>
+  `;
+}
+
+function normalizeGamestateStatsMode(value) {
+  const mode = String(value || "").trim().toLowerCase();
+  if (mode === "per90" || mode === "minperstat" || mode === "total") {
+    return mode;
+  }
+  return "total";
+}
+
+function buildGamestateModeSwitchHtml() {
+  const activeMode = normalizeGamestateStatsMode(gamestateStatsMode);
+  const options = [
+    { mode: "total", label: "Total Stats" },
+    { mode: "per90", label: "Stats/90" },
+    { mode: "minperstat", label: "Min/Stat" },
+  ];
+  return `
+    <div class="recent-switch" role="tablist" aria-label="Gamestate stats mode">
+      ${options
+        .map((option) => {
+          const isActive = option.mode === activeMode;
+          return `
+            <button
+              type="button"
+              class="recent-switch-btn gamestate-mode-btn${isActive ? " active" : ""}"
+              data-gamestate-mode="${option.mode}"
+              role="tab"
+              aria-selected="${isActive ? "true" : "false"}"
+            >
+              ${escapeHtml(option.label)}
+            </button>
+          `;
+        })
+        .join("")}
+    </div>
+  `;
+}
+
 function buildHcPerfSwitchHtml(homeLabel, awayLabel) {
   const homeActive = hcPerfTeamView !== "away";
   const awayActive = hcPerfTeamView === "away";
@@ -2924,6 +3263,17 @@ function buildStatsGamesShownControlHtml(value, maxValue, options = {}) {
 
 function updateSortButtonLabel() {
   sortModeBtn.value = sortMode;
+  if (savedSortModeBtn instanceof HTMLSelectElement) {
+    savedSortModeBtn.value = savedSortMode;
+  }
+}
+
+function normalizeGameSortMode(value) {
+  const mode = String(value || "").trim().toLowerCase();
+  if (mode === "league" || mode === "tier" || mode === "kickoff") {
+    return mode;
+  }
+  return "kickoff";
 }
 
 function setLeagueFilterOpen(isOpen) {
@@ -3186,8 +3536,9 @@ function kickoffSortKey(game) {
   return Number.isNaN(ts) ? Number.MAX_SAFE_INTEGER : ts;
 }
 
-function sortGamesForDay(games) {
+function sortGamesForDay(games, mode = sortMode) {
   const out = [...games];
+  const resolvedSortMode = normalizeGameSortMode(mode);
   const tierSortRank = (tierValue) => {
     const tierText = String(tierValue || "").trim().toLowerCase();
     if (!tierText) return Number.MAX_SAFE_INTEGER;
@@ -3196,18 +3547,34 @@ function sortGamesForDay(games) {
     const tierNum = Number.parseInt(match[1], 10);
     return Number.isFinite(tierNum) ? tierNum : Number.MAX_SAFE_INTEGER;
   };
-  if (sortMode === "tier") {
+  if (resolvedSortMode === "tier") {
     out.sort((a, b) => {
       const tierCmp = tierSortRank(a.tier) - tierSortRank(b.tier);
       if (tierCmp !== 0) return tierCmp;
-      const leagueCmp = String(a.competition || "").localeCompare(String(b.competition || ""));
-      if (leagueCmp !== 0) return leagueCmp;
-      return kickoffSortKey(a) - kickoffSortKey(b);
+      const kickoffCmp = kickoffSortKey(a) - kickoffSortKey(b);
+      if (kickoffCmp !== 0) return kickoffCmp;
+      return String(a.competition || "").localeCompare(String(b.competition || ""));
     });
     return out;
   }
-  if (sortMode === "league") {
+  if (resolvedSortMode === "league") {
+    const leagueTierRank = new Map();
+    for (const game of out) {
+      const leagueName = String(game?.competition || "").trim();
+      if (!leagueName) continue;
+      const rank = tierSortRank(game?.tier);
+      const existingRank = leagueTierRank.get(leagueName);
+      if (existingRank === undefined || rank < existingRank) {
+        leagueTierRank.set(leagueName, rank);
+      }
+    }
     out.sort((a, b) => {
+      const aLeague = String(a.competition || "");
+      const bLeague = String(b.competition || "");
+      const aTierRank = leagueTierRank.get(String(aLeague).trim()) ?? tierSortRank(a.tier);
+      const bTierRank = leagueTierRank.get(String(bLeague).trim()) ?? tierSortRank(b.tier);
+      const tierCmp = aTierRank - bTierRank;
+      if (tierCmp !== 0) return tierCmp;
       const leagueCmp = String(a.competition || "").localeCompare(String(b.competition || ""));
       if (leagueCmp !== 0) return leagueCmp;
       return kickoffSortKey(a) - kickoffSortKey(b);
@@ -3245,9 +3612,7 @@ function dayHasComputedXgdMetrics(dayGames) {
   ];
   return (dayGames || []).some((game) => {
     return metricKeys.some((metricKey) => {
-      const value = game?.[metricKey];
-      if (value == null) return false;
-      return String(value).trim() !== "";
+      return toMetricNumberOrNull(game?.[metricKey]) != null;
     });
   });
 }
@@ -3467,14 +3832,16 @@ async function toggleSelectedGameSaved() {
 
 function createGamesTable(sortedGames, isHistorical, options = {}) {
   const emptyMessage = String(options?.emptyMessage || "No games");
+  const showSavedContour = options?.showSavedContour !== false;
+  const kickoffHeaderLabel = escapeHtml(getKickoffColumnLabel());
   const table = document.createElement("table");
-  table.className = "games-table";
+  table.className = "games-table main-games-table";
   if (isHistorical) {
     table.innerHTML = `
       <thead>
         <tr>
-          <th>Kickoff (UTC)</th>
-          <th>League</th>
+          <th>${kickoffHeaderLabel}</th>
+          <th class="league-col">League</th>
           <th class="home-team-col">Home</th>
           <th class="vs-team-col">v</th>
           <th class="away-team-col">Away</th>
@@ -3499,8 +3866,8 @@ function createGamesTable(sortedGames, isHistorical, options = {}) {
     table.innerHTML = `
       <thead>
         <tr>
-          <th>Kickoff (UTC)</th>
-          <th>League</th>
+          <th>${kickoffHeaderLabel}</th>
+          <th class="league-col">League</th>
           <th class="home-team-col">Home</th>
           <th class="vs-team-col">v</th>
           <th class="away-team-col">Away</th>
@@ -3533,6 +3900,9 @@ function createGamesTable(sortedGames, isHistorical, options = {}) {
     const row = document.createElement("tr");
     row.dataset.marketId = game.market_id;
     if (selectedMarketId === game.market_id) row.classList.add("selected");
+    if (showSavedContour && savedMarketIds.has(String(game.market_id || "").trim())) {
+      row.classList.add("saved-game-row");
+    }
     const tierClass = tierRowClass(game.tier);
     if (tierClass) row.classList.add(tierClass);
 
@@ -3549,12 +3919,33 @@ function createGamesTable(sortedGames, isHistorical, options = {}) {
       toMetricNumberOrNull(game?.last5_xgd_perf),
       toMetricNumberOrNull(game?.last3_xgd_perf),
     ];
+    const minPeriodValues = [
+      toMetricNumberOrNull(game?.season_min_xg),
+      toMetricNumberOrNull(game?.last5_min_xg),
+      toMetricNumberOrNull(game?.last3_min_xg),
+    ];
+    const maxPeriodValues = [
+      toMetricNumberOrNull(game?.season_max_xg),
+      toMetricNumberOrNull(game?.last5_max_xg),
+      toMetricNumberOrNull(game?.last3_max_xg),
+    ];
     const xgdHcHighlightClass = (xgdHcHighlightEnabled && !noXgMetrics)
       ? getMainTableXgdHcHighlightClass(xgdPeriodValues, handicap, threshold)
       : "";
     const xgdPerfHcHighlightClass = (xgdHcHighlightEnabled && !noXgMetrics)
       ? getMainTableXgdHcHighlightClass(xgdPerfPeriodValues, handicap, threshold)
       : "";
+    const goalsBandHighlight = (xgdHcHighlightEnabled && !noXgMetrics)
+      ? getMainTableGoalsBandHighlight(
+        toMetricNumberOrNull(game?.goal_mainline),
+        minPeriodValues,
+        maxPeriodValues,
+        threshold,
+      )
+      : { goalLineClass: "", goalUnderClass: "", goalOverClass: "" };
+    const goalUnderCellClass = ["goal-under-price-col", goalsBandHighlight.goalUnderClass].filter(Boolean).join(" ");
+    const goalLineCellClass = ["goal-line-col", goalsBandHighlight.goalLineClass].filter(Boolean).join(" ");
+    const goalOverCellClass = ["goal-over-price-col", goalsBandHighlight.goalOverClass].filter(Boolean).join(" ");
     const domesticFallbackClass = Boolean(game?.xgd_domestic_fallback) ? "xgd-domestic-fallback" : "";
     const xgdCellClassParts = ["metric-stack-cell"];
     if (xgdHcHighlightClass) xgdCellClassParts.push(xgdHcHighlightClass);
@@ -3576,20 +3967,21 @@ function createGamesTable(sortedGames, isHistorical, options = {}) {
     const competitionName = String(game?.competition || "").trim();
     const homeTeamCell = teams.home ? buildTeamLinkHtml(teams.home, competitionName) : "-";
     const awayTeamCell = teams.away ? buildTeamLinkHtml(teams.away, competitionName) : "-";
+    const kickoffLocalText = formatGameKickoffLocalTime(game);
 
     if (isHistorical) {
       row.innerHTML = `
-        <td>${escapeHtml(game.kickoff_utc)}</td>
-        <td>${escapeHtml(game.competition)}</td>
+        <td>${escapeHtml(kickoffLocalText)}</td>
+        <td class="league-col">${escapeHtml(game.competition)}</td>
         <td class="home-team-col">${homeTeamCell}</td>
         <td class="vs-team-col">v</td>
         <td class="away-team-col">${awayTeamCell}</td>
         <td class="home-price-col">${escapeHtml(game.home_price || "-")}</td>
         <td class="line-col handicap-line-col">${escapeHtml(game.mainline || "-")}</td>
         <td class="away-price-col">${escapeHtml(game.away_price || "-")}</td>
-        <td class="goal-under-price-col">${escapeHtml(game.goal_under_price || "-")}</td>
-        <td class="goal-line-col">${escapeHtml(game.goal_mainline || "-")}</td>
-        <td class="goal-over-price-col">${escapeHtml(game.goal_over_price || "-")}</td>
+        <td class="${goalUnderCellClass}">${escapeHtml(game.goal_under_price || "-")}</td>
+        <td class="${goalLineCellClass}">${escapeHtml(game.goal_mainline || "-")}</td>
+        <td class="${goalOverCellClass}">${escapeHtml(game.goal_over_price || "-")}</td>
         <td class="xg-home-col">${escapeHtml(game.home_xg_actual || "-")}</td>
         <td class="line-col score-col">${escapeHtml(game.scoreline || "-")}</td>
         <td class="xg-away-col">${escapeHtml(game.away_xg_actual || "-")}</td>
@@ -3600,8 +3992,8 @@ function createGamesTable(sortedGames, isHistorical, options = {}) {
       `;
     } else {
       row.innerHTML = `
-        <td>${escapeHtml(game.kickoff_utc)}</td>
-        <td>${escapeHtml(game.competition)}</td>
+        <td>${escapeHtml(kickoffLocalText)}</td>
+        <td class="league-col">${escapeHtml(game.competition)}</td>
         <td class="home-team-col">${homeTeamCell}</td>
         <td class="vs-team-col">v</td>
         <td class="away-team-col">${awayTeamCell}</td>
@@ -3610,9 +4002,9 @@ function createGamesTable(sortedGames, isHistorical, options = {}) {
         <td class="away-price-col">${escapeHtml(game.away_price || "-")}</td>
         <td class="${xgdCellClass}"${xgdCellTitleAttr}>${buildPeriodMetricStackCell(seasonXgdValue, last5XgdValue, last3XgdValue)}</td>
         <td class="${xgdPerfCellClass}"${xgdPerfCellTitleAttr}>${buildPeriodMetricStackCell(seasonXgdPerfValue, last5XgdPerfValue, last3XgdPerfValue)}</td>
-        <td class="goal-under-price-col">${escapeHtml(game.goal_under_price || "-")}</td>
-        <td class="goal-line-col">${escapeHtml(game.goal_mainline || "-")}</td>
-        <td class="goal-over-price-col">${escapeHtml(game.goal_over_price || "-")}</td>
+        <td class="${goalUnderCellClass}">${escapeHtml(game.goal_under_price || "-")}</td>
+        <td class="${goalLineCellClass}">${escapeHtml(game.goal_mainline || "-")}</td>
+        <td class="${goalOverCellClass}">${escapeHtml(game.goal_over_price || "-")}</td>
         <td class="metric-stack-cell">${buildPeriodMetricStackCell(game.season_min_xg, game.last5_min_xg, game.last3_min_xg)}</td>
         <td class="metric-stack-cell">${buildPeriodMetricStackCell(game.season_max_xg, game.last5_max_xg, game.last3_max_xg)}</td>
       `;
@@ -3649,7 +4041,7 @@ function renderSavedGames() {
         : rawGames.filter((game) => hasVisibleHandicapPricing(game));
       return {
         day,
-        games: sortGamesForDay(visibleGames),
+        games: sortGamesForDay(visibleGames, savedSortMode),
       };
     })
     .filter((entry) => Array.isArray(entry.games) && entry.games.length > 0);
@@ -3676,7 +4068,10 @@ function renderSavedGames() {
     heading.textContent = `${String(day?.date_label || day?.date || "Saved")} (${sortedDayGames.length})`;
     header.appendChild(heading);
 
-    const table = createGamesTable(sortedDayGames, useHistoricalLayout, { emptyMessage: "No saved games" });
+    const table = createGamesTable(sortedDayGames, useHistoricalLayout, {
+      emptyMessage: "No saved games",
+      showSavedContour: false,
+    });
     block.appendChild(header);
     block.appendChild(table);
     savedGamesView.appendChild(block);
@@ -4272,6 +4667,13 @@ function renderCurrentDay() {
     prevDayBtn.disabled = !canLoadOlderHistorical;
     todayBtn.disabled = true;
     nextDayBtn.disabled = true;
+    if (dayPickerInput instanceof HTMLInputElement) {
+      dayPickerInput.disabled = true;
+      dayPickerInput.value = "";
+      dayPickerInput.min = "";
+      dayPickerInput.max = "";
+    }
+    updateDayPickerCount("");
     calendarView.innerHTML = canLoadOlderHistorical
       ? "<p>No games in the current historical window. Click Previous Day to load older matches.</p>"
       : "<p>No games found for selected filters.</p>";
@@ -4292,6 +4694,18 @@ function renderCurrentDay() {
   prevDayBtn.disabled = atOldestLoadedDay && !canLoadOlderHistorical;
   todayBtn.disabled = jumpTargetIndex < 0 || currentDayIndex === jumpTargetIndex;
   nextDayBtn.disabled = currentDayIndex === allDays.length - 1;
+  if (dayPickerInput instanceof HTMLInputElement) {
+    const firstIso = String(allDays[0]?.date || "").trim();
+    const lastIso = String(allDays[allDays.length - 1]?.date || "").trim();
+    const currentIso = String(day?.date || "").trim();
+    dayPickerInput.disabled = false;
+    dayPickerInput.min = firstIso;
+    dayPickerInput.max = lastIso;
+    if (currentIso && dayPickerInput.value !== currentIso) {
+      dayPickerInput.value = currentIso;
+    }
+    updateDayPickerCount(currentIso);
+  }
 
   const block = document.createElement("section");
   block.className = "day-block";
@@ -4312,6 +4726,17 @@ function renderCurrentDay() {
     const dayIso = String(day.date || "").trim();
     const isComputingDay = historicalDayCalcInFlight.has(dayIso);
     const hasComputedXgd = dayHasComputedXgdMetrics(sortedDayGames);
+    const shouldAutoCalcDayXgd = (
+      dayIso
+      && sortedDayGames.length > 0
+      && !isComputingDay
+      && !hasComputedXgd
+      && !historicalDayAutoCalcAttempted.has(dayIso)
+    );
+    if (shouldAutoCalcDayXgd) {
+      historicalDayAutoCalcAttempted.add(dayIso);
+      void calculateHistoricalDayXgd(dayIso);
+    }
     const calculateBtn = document.createElement("button");
     calculateBtn.type = "button";
     calculateBtn.className = "day-calc-btn";
@@ -4486,8 +4911,6 @@ function renderXgd(payload) {
   const fallbackAwayTeamVenueRows = normalizeVenueRows(payloadAwayVenueRows);
   const homeTeamVenueRows = hasAnyVenueRows(homeTeamVenueRowsRaw) ? homeTeamVenueRowsRaw : fallbackHomeTeamVenueRows;
   const awayTeamVenueRows = hasAnyVenueRows(awayTeamVenueRowsRaw) ? awayTeamVenueRowsRaw : fallbackAwayTeamVenueRows;
-  const homeFixtureVenueRows = Array.isArray(homeTeamVenueRows.home) ? homeTeamVenueRows.home : [];
-  const awayFixtureVenueRows = Array.isArray(awayTeamVenueRows.away) ? awayTeamVenueRows.away : [];
   const cachedHcPerfPayload = selectedMarketId ? hcPerfPayloadByMarket.get(selectedMarketId) : null;
   const cachedHcPerfRows = normalizeSeasonHandicapRows(cachedHcPerfPayload?.season_handicap_rows);
   const activeSeasonRowsRaw = normalizeSeasonHandicapRows(activeView.season_handicap_rows);
@@ -4547,19 +4970,25 @@ function renderXgd(payload) {
   const historicalResultSection = buildHistoricalResultSection(payload);
 
   const xgdTabContent = `${warning}${contextNote}${historicalResultSection}${periodTable}${teamSummaryTables}${recentMatchesSection}${mappingTable}`;
-  const statsIsAway = statsTeamView === "away";
-  const statsActiveLabel = statsIsAway ? awayLabel : homeLabel;
-  const statsActiveRows = statsIsAway ? awayRecentRows : homeRecentRows;
-  const statsActiveVenueRows = statsIsAway ? awayTeamVenueRows : homeTeamVenueRows;
-  const statsAllVenueRows = [
-    ...(Array.isArray(statsActiveVenueRows?.home) ? statsActiveVenueRows.home : []),
-    ...(Array.isArray(statsActiveVenueRows?.away) ? statsActiveVenueRows.away : []),
+  const statsFixtureIsAway = statsTeamView === "away";
+  const statsFixtureActiveLabel = statsFixtureIsAway ? awayLabel : homeLabel;
+  const statsFixtureActiveRows = statsFixtureIsAway ? awayRecentRows : homeRecentRows;
+  const homeGeneralRows = [
+    ...(Array.isArray(homeTeamVenueRows?.home) ? homeTeamVenueRows.home : []),
+    ...(Array.isArray(homeTeamVenueRows?.away) ? homeTeamVenueRows.away : []),
   ];
+  const awayGeneralRows = [
+    ...(Array.isArray(awayTeamVenueRows?.home) ? awayTeamVenueRows.home : []),
+    ...(Array.isArray(awayTeamVenueRows?.away) ? awayTeamVenueRows.away : []),
+  ];
+  const statsGeneralIsAway = statsGeneralTeamView === "away";
+  const statsGeneralActiveLabel = statsGeneralIsAway ? awayLabel : homeLabel;
+  const statsGeneralActiveRows = statsGeneralIsAway ? awayGeneralRows : homeGeneralRows;
   const statsVenueMaxGamesShown = Math.max(
     1,
     homeRecentRows.length,
     awayRecentRows.length,
-    statsActiveRows.length
+    statsFixtureActiveRows.length
   );
   if (statsVenueGamesShownAuto) {
     statsVenueGamesShownCount = statsVenueMaxGamesShown;
@@ -4570,7 +4999,7 @@ function renderXgd(payload) {
     1,
     Math.min(statsVenueMaxGamesShown, clampRecentMatchesCount(statsVenueGamesShownCount))
   );
-  const statsAllMaxGamesShown = Math.max(1, statsAllVenueRows.length);
+  const statsAllMaxGamesShown = Math.max(1, homeGeneralRows.length, awayGeneralRows.length);
   if (statsAllGamesShownAuto) {
     statsAllGamesShownCount = statsAllMaxGamesShown;
   } else if (!Number.isFinite(statsAllGamesShownCount) || statsAllGamesShownCount < 1) {
@@ -4588,26 +5017,28 @@ function renderXgd(payload) {
     })}
     ${buildCardsCornersAveragesTableHtml(homeRecentRows, awayRecentRows, homeLabel, awayLabel, statsVenueGamesShownCount)}
     ${buildGamestateTableHtml(homeRecentRows, awayRecentRows, homeLabel, awayLabel, statsVenueGamesShownCount)}
-    ${buildCardsCornersVenueTableHtml(
-      homeFixtureVenueRows,
-      awayFixtureVenueRows,
-      homeLabel,
-      awayLabel,
-      statsVenueGamesShownCount
-    )}
     ${buildStatsSwitchHtml(homeLabel, awayLabel)}
     ${buildCardsCornersMatchesTableHtml(
-      statsActiveLabel,
-      statsActiveRows,
+      statsFixtureActiveLabel,
+      statsFixtureActiveRows,
       statsVenueGamesShownCount,
       "Fixture-side matches"
     )}
-    <h3 class="section-title">${escapeHtml(statsActiveLabel)}: Home & Away Matches</h3>
+    <h3 class="section-title">General</h3>
     ${buildStatsGamesShownControlHtml(statsAllGamesShownCount, statsAllMaxGamesShown, {
       inputId: "statsAllGamesShownInput",
       label: "All games shown",
     })}
-    ${buildCardsCornersMatchesTableHtml(statsActiveLabel, statsAllVenueRows, statsAllGamesShownCount, "All matches")}
+    ${buildCardsCornersAveragesTableHtml(homeGeneralRows, awayGeneralRows, homeLabel, awayLabel, statsAllGamesShownCount)}
+    ${buildGamestateTableHtml(homeGeneralRows, awayGeneralRows, homeLabel, awayLabel, statsAllGamesShownCount)}
+    ${buildStatsGeneralSwitchHtml(homeLabel, awayLabel)}
+    <h3 class="section-title">${escapeHtml(statsGeneralActiveLabel)}: Home & Away Matches</h3>
+    ${buildCardsCornersMatchesTableHtml(
+      statsGeneralActiveLabel,
+      statsGeneralActiveRows,
+      statsAllGamesShownCount,
+      "All matches"
+    )}
   `;
   const hcPerfTabContent = `
     <h3 class="section-title">Season Handicap Performance</h3>
@@ -4694,6 +5125,26 @@ function renderXgd(payload) {
       const targetView = button.dataset.statsTeamView === "away" ? "away" : "home";
       if (targetView === statsTeamView) return;
       statsTeamView = targetView;
+      if (lastXgdPayload) renderXgd(lastXgdPayload);
+    });
+  }
+
+  const statsGeneralSwitchButtons = linesContainer.querySelectorAll(".stats-general-switch-btn");
+  for (const button of statsGeneralSwitchButtons) {
+    button.addEventListener("click", () => {
+      const targetView = button.dataset.statsGeneralTeamView === "away" ? "away" : "home";
+      if (targetView === statsGeneralTeamView) return;
+      statsGeneralTeamView = targetView;
+      if (lastXgdPayload) renderXgd(lastXgdPayload);
+    });
+  }
+
+  const gamestateModeButtons = linesContainer.querySelectorAll(".gamestate-mode-btn");
+  for (const button of gamestateModeButtons) {
+    button.addEventListener("click", () => {
+      const targetMode = normalizeGamestateStatsMode(button.dataset.gamestateMode || "");
+      if (targetMode === gamestateStatsMode) return;
+      gamestateStatsMode = targetMode;
       if (lastXgdPayload) renderXgd(lastXgdPayload);
     });
   }
@@ -4910,6 +5361,23 @@ function renderTeamDetailsPanel(payload) {
   const statsTabContent = `
     <h3 class="section-title">Season Stats</h3>
     ${buildTeamStatsSummaryTableHtml(teamText, recentRows)}
+    ${buildSingleTeamGamestateTableHtml(recentRows, `${teamText} (General)`)}
+    <h3 class="section-title">Venue Split</h3>
+    ${buildCardsCornersAveragesTableHtml(
+      homeVenueRows,
+      awayVenueRows,
+      `${teamText} (Home)`,
+      `${teamText} (Away)`
+    )}
+    ${buildGamestateTableHtml(
+      homeVenueRows,
+      awayVenueRows,
+      `${teamText} (Home)`,
+      `${teamText} (Away)`
+    )}
+    ${buildCardsCornersMatchesTableHtml(teamText, homeVenueRows, null, "Home games")}
+    ${buildCardsCornersMatchesTableHtml(teamText, awayVenueRows, null, "Away games")}
+    <h3 class="section-title">All Games</h3>
     ${buildCardsCornersMatchesTableHtml(teamText, recentRows, null, "Season games")}
   `;
   const hcPerfTabContent = `
@@ -4971,6 +5439,18 @@ function renderTeamDetailsPanel(payload) {
   if (teamXgRollingWindowInput instanceof HTMLInputElement) {
     teamXgRollingWindowInput.addEventListener("change", () => {
       teamDetailsXgRollingWindowCount = clampRecentMatchesCount(teamXgRollingWindowInput.value);
+      if (teamDetailsPayload) {
+        renderTeamDetailsPanel(teamDetailsPayload);
+      }
+    });
+  }
+
+  const gamestateModeButtons = teamDetailsContent.querySelectorAll(".gamestate-mode-btn");
+  for (const button of gamestateModeButtons) {
+    button.addEventListener("click", () => {
+      const targetMode = normalizeGamestateStatsMode(button.dataset.gamestateMode || "");
+      if (targetMode === gamestateStatsMode) return;
+      gamestateStatsMode = targetMode;
       if (teamDetailsPayload) {
         renderTeamDetailsPanel(teamDetailsPayload);
       }
@@ -5106,12 +5586,13 @@ async function loadGameXgd(marketId) {
   statsAllGamesShownCount = 0;
   statsAllGamesShownAuto = true;
   statsTeamView = "home";
+  statsGeneralTeamView = "home";
   hcPerfTeamView = "home";
   activeXgdViewId = null;
   lastXgdPayload = null;
   hcPerfLoadingMarketId = null;
   const scoreMeta = game.is_historical ? ` | FT ${String(game.scoreline || "-")}` : "";
-  detailsMeta.textContent = `${game.competition} | ${game.kickoff_raw}${scoreMeta}`;
+  detailsMeta.textContent = `${game.competition} | ${formatGameKickoffLocalDateTime(game)}${scoreMeta}`;
 
   const cachedPayload = xgdPayloadByMarket.get(key);
   if (cachedPayload && typeof cachedPayload === "object") {
@@ -5172,6 +5653,18 @@ function findGameByMarketId(marketId) {
     gamesById.set(key, found);
   }
   return found;
+}
+
+function closeGameDetailsPanel(clearSelection = true) {
+  detailsPanel.classList.add("hidden");
+  if (!clearSelection) return;
+  if (!selectedMarketId) return;
+  selectedMarketId = null;
+  if (activeTab === "saved") {
+    renderSavedGames();
+  } else if (activeTab === "games") {
+    renderCurrentDay();
+  }
 }
 
 refreshBtn.addEventListener("click", () => loadGames());
@@ -5373,15 +5866,19 @@ document.addEventListener("keydown", (event) => {
   }
 });
 sortModeBtn.addEventListener("change", () => {
-  const selectedSortMode = String(sortModeBtn.value || "").trim().toLowerCase();
-  if (selectedSortMode === "league" || selectedSortMode === "tier" || selectedSortMode === "kickoff") {
-    sortMode = selectedSortMode;
-  } else {
-    sortMode = "kickoff";
-  }
+  sortMode = normalizeGameSortMode(sortModeBtn.value);
   updateSortButtonLabel();
   renderCurrentDay();
 });
+if (savedSortModeBtn instanceof HTMLSelectElement) {
+  savedSortModeBtn.addEventListener("change", () => {
+    savedSortMode = normalizeGameSortMode(savedSortModeBtn.value);
+    updateSortButtonLabel();
+    if (activeTab === "saved") {
+      renderSavedGames();
+    }
+  });
+}
 if (teamSearchInput instanceof HTMLInputElement) {
   teamSearchInput.addEventListener("input", (event) => {
     const inputEl = event.currentTarget instanceof HTMLInputElement ? event.currentTarget : teamSearchInput;
@@ -5440,8 +5937,15 @@ nextDayBtn.addEventListener("click", () => {
   currentDayIndex = clampDayIndex(currentDayIndex + 1);
   renderCurrentDay();
 });
+if (dayPickerInput instanceof HTMLInputElement) {
+  dayPickerInput.addEventListener("change", () => {
+    const targetIso = String(dayPickerInput.value || "").trim();
+    updateDayPickerCount(targetIso);
+    void jumpToDayIso(targetIso);
+  });
+}
 closeDetails.addEventListener("click", () => {
-  detailsPanel.classList.add("hidden");
+  closeGameDetailsPanel(true);
 });
 if (teamDetailsCloseBtn instanceof HTMLButtonElement) {
   teamDetailsCloseBtn.addEventListener("click", () => {

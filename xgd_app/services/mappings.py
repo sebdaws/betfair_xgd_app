@@ -121,6 +121,183 @@ class MappingService:
             self.state.manual_competition_mappings,
         )
 
+    @staticmethod
+    def _resolve_table_name_casefold(conn: sqlite3.Connection, table_name: str) -> str | None:
+        target = str(table_name or "").strip().casefold()
+        if not target:
+            return None
+        rows = conn.execute("SELECT name FROM sqlite_master WHERE type='table'").fetchall()
+        for row in rows:
+            candidate = str(row[0] if row else "").strip()
+            if candidate and candidate.casefold() == target:
+                return candidate
+        return None
+
+    @staticmethod
+    def _table_columns_casefold(conn: sqlite3.Connection, table_name: str) -> dict[str, str]:
+        rows = conn.execute(f'PRAGMA table_info("{table_name}")').fetchall()
+        return {
+            str(row[1]).strip().casefold(): str(row[1]).strip()
+            for row in rows
+            if len(row) > 1 and str(row[1]).strip()
+        }
+
+    def _sync_manual_team_mapping_to_db(self, raw_team: str, sofa_team: str) -> None:
+        raw_text = str(raw_team).strip()
+        sofa_text = str(sofa_team).strip()
+        if not raw_text or not sofa_text:
+            return
+
+        db_path = Path(getattr(self.state, "sofascore_db_path", "")).expanduser().resolve()
+        if not db_path.exists():
+            return
+
+        conn: sqlite3.Connection | None = None
+        try:
+            conn = sqlite3.connect(str(db_path))
+            table_name = self._resolve_table_name_casefold(conn, "betfair_team_id_mappings")
+            if not table_name:
+                return
+            cols = self._table_columns_casefold(conn, table_name)
+            betfair_name_col = cols.get("betfair_team_name")
+            sofa_name_col = cols.get("sofascore_team_name")
+            if not betfair_name_col or not sofa_name_col:
+                return
+
+            mapping_method_col = cols.get("mapping_method")
+            mapping_score_col = cols.get("mapping_score")
+            seen_count_col = cols.get("seen_count")
+            updated_at_col = cols.get("updated_at")
+
+            set_parts: list[str] = [f'"{sofa_name_col}" = ?']
+            set_params: list[Any] = [sofa_text]
+            if mapping_method_col:
+                set_parts.append(f'"{mapping_method_col}" = ?')
+                set_params.append("manual")
+            if mapping_score_col:
+                set_parts.append(f'"{mapping_score_col}" = ?')
+                set_params.append(1.0)
+            if updated_at_col:
+                set_parts.append(f'"{updated_at_col}" = CURRENT_TIMESTAMP')
+
+            update_sql = (
+                f'UPDATE "{table_name}" '
+                f'SET {", ".join(set_parts)} '
+                f'WHERE LOWER(TRIM(COALESCE("{betfair_name_col}", \'\'))) = LOWER(TRIM(?))'
+            )
+            update_params = [*set_params, raw_text]
+            cur = conn.execute(update_sql, update_params)
+            updated_rows = int(cur.rowcount or 0)
+
+            if updated_rows <= 0:
+                insert_cols: list[str] = [f'"{betfair_name_col}"', f'"{sofa_name_col}"']
+                insert_placeholders: list[str] = ["?", "?"]
+                insert_params: list[Any] = [raw_text, sofa_text]
+
+                if mapping_method_col:
+                    insert_cols.append(f'"{mapping_method_col}"')
+                    insert_placeholders.append("?")
+                    insert_params.append("manual")
+                if mapping_score_col:
+                    insert_cols.append(f'"{mapping_score_col}"')
+                    insert_placeholders.append("?")
+                    insert_params.append(1.0)
+                if seen_count_col:
+                    insert_cols.append(f'"{seen_count_col}"')
+                    insert_placeholders.append("?")
+                    insert_params.append(0)
+                if updated_at_col:
+                    insert_cols.append(f'"{updated_at_col}"')
+                    insert_placeholders.append("CURRENT_TIMESTAMP")
+
+                insert_sql = (
+                    f'INSERT INTO "{table_name}" ({", ".join(insert_cols)}) '
+                    f'VALUES ({", ".join(insert_placeholders)})'
+                )
+                conn.execute(insert_sql, insert_params)
+
+            conn.commit()
+        except Exception:
+            if conn is not None:
+                try:
+                    conn.rollback()
+                except Exception:
+                    pass
+        finally:
+            if conn is not None:
+                conn.close()
+
+    def _remove_manual_team_mapping_from_db(self, raw_team: str, sofa_team: str | None = None) -> None:
+        raw_text = str(raw_team).strip()
+        sofa_text = str(sofa_team).strip() if sofa_team is not None else ""
+        if not raw_text:
+            return
+
+        db_path = Path(getattr(self.state, "sofascore_db_path", "")).expanduser().resolve()
+        if not db_path.exists():
+            return
+
+        conn: sqlite3.Connection | None = None
+        try:
+            conn = sqlite3.connect(str(db_path))
+            table_name = self._resolve_table_name_casefold(conn, "betfair_team_id_mappings")
+            if not table_name:
+                return
+            cols = self._table_columns_casefold(conn, table_name)
+            betfair_name_col = cols.get("betfair_team_name")
+            sofa_name_col = cols.get("sofascore_team_name")
+            mapping_method_col = cols.get("mapping_method")
+            mapping_score_col = cols.get("mapping_score")
+            updated_at_col = cols.get("updated_at")
+            if not betfair_name_col or not sofa_name_col or not mapping_method_col:
+                return
+
+            set_parts: list[str] = [
+                f'"{sofa_name_col}" = NULL',
+                f'"{mapping_method_col}" = ?',
+            ]
+            set_params: list[Any] = ["manual_removed"]
+            if mapping_score_col:
+                set_parts.append(f'"{mapping_score_col}" = NULL')
+            if updated_at_col:
+                set_parts.append(f'"{updated_at_col}" = CURRENT_TIMESTAMP')
+
+            where_parts: list[str] = [
+                f'LOWER(TRIM(COALESCE("{betfair_name_col}", \'\'))) = LOWER(TRIM(?))',
+                f'LOWER(TRIM(COALESCE("{mapping_method_col}", \'\'))) = ?',
+            ]
+            where_params: list[Any] = [raw_text, "manual"]
+            if sofa_text:
+                where_parts.append(f'LOWER(TRIM(COALESCE("{sofa_name_col}", \'\'))) = LOWER(TRIM(?))')
+                where_params.append(sofa_text)
+
+            sql = (
+                f'UPDATE "{table_name}" '
+                f'SET {", ".join(set_parts)} '
+                f'WHERE {" AND ".join(where_parts)}'
+            )
+            conn.execute(sql, [*set_params, *where_params])
+            conn.commit()
+        except Exception:
+            if conn is not None:
+                try:
+                    conn.rollback()
+                except Exception:
+                    pass
+        finally:
+            if conn is not None:
+                conn.close()
+
+    def sync_all_manual_team_mappings_to_db(self) -> None:
+        with self.state.lock:
+            mappings = list(self.state.manual_team_mappings.items())
+        for raw_team, sofa_team in mappings:
+            raw_text = str(raw_team).strip()
+            sofa_text = str(sofa_team).strip()
+            if not raw_text or not sofa_text:
+                continue
+            self._sync_manual_team_mapping_to_db(raw_team=raw_text, sofa_team=sofa_text)
+
     def get_manual_mapping_lookup_snapshot(self) -> dict[str, str]:
         with self.state.lock:
             return dict(self.state.manual_mapping_lookup)
@@ -784,18 +961,23 @@ class MappingService:
             self.state.manual_team_mappings[raw_team] = sofa_team
             self.state.manual_mapping_lookup = self.build_manual_mapping_lookup(self.state.manual_team_mappings)
             self._save_manual_team_mappings()
+        self._sync_manual_team_mapping_to_db(raw_team=raw_team, sofa_team=sofa_team)
 
     def delete_manual_team_mapping(self, raw_name: str) -> bool:
         raw_team = str(raw_name).strip()
         if not raw_team:
             raise ValueError("raw_name is required")
         deleted = False
+        removed_sofa_team = ""
         with self.state.lock:
             if raw_team in self.state.manual_team_mappings:
+                removed_sofa_team = str(self.state.manual_team_mappings.get(raw_team, "")).strip()
                 self.state.manual_team_mappings.pop(raw_team, None)
                 deleted = True
             self.state.manual_mapping_lookup = self.build_manual_mapping_lookup(self.state.manual_team_mappings)
             self._save_manual_team_mappings()
+        if deleted:
+            self._remove_manual_team_mapping_from_db(raw_team=raw_team, sofa_team=removed_sofa_team or None)
         return deleted
 
     def upsert_manual_competition_mapping(self, raw_name: str, sofa_name: str) -> None:

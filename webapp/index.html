@@ -48,6 +48,11 @@
           <button id="prevDayBtn" type="button">Previous Day</button>
           <h2 id="dayLabel">Day</h2>
           <button id="nextDayBtn" type="button">Next Day</button>
+          <label class="day-picker-wrap" for="dayPickerInput">
+            <span>Jump to</span>
+            <input id="dayPickerInput" type="date" aria-label="Jump to date" />
+            <span id="dayPickerCount" class="day-picker-count"></span>
+          </label>
         </section>
       </section>
       <section class="table-controls">
@@ -81,6 +86,14 @@
     </section>
 
     <section id="savedGamesTabPane" class="tab-pane hidden">
+      <section class="table-controls">
+        <label for="savedSortModeBtn" class="control-label">Sort</label>
+        <select id="savedSortModeBtn" aria-label="Sort saved games">
+          <option value="kickoff">Kickoff</option>
+          <option value="league">League</option>
+          <option value="tier">Tier</option>
+        </select>
+      </section>
       <section id="savedGamesView" class="calendar-view"></section>
     </section>
 
