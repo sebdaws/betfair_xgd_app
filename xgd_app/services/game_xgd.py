@@ -1208,11 +1208,13 @@ class GameXgdService:
             raise KeyError("Market not found")
 
         manual_mapping_lookup = self.get_manual_mapping_lookup_snapshot()
+        blocked_auto_mapping_norms = self.state.get_disabled_auto_team_mapping_norms_snapshot()
         mapped_rows, _ = map_betfair_games(
             betfair_games_df=game_df,
             fixtures_df=self.fixtures_df,
             team_matcher=self.team_matcher,
             manual_mapping_lookup=manual_mapping_lookup,
+            blocked_auto_mapping_norms=blocked_auto_mapping_norms,
         )
         if not mapped_rows:
             raise KeyError("Market not found")
@@ -1403,6 +1405,7 @@ class GameXgdService:
             fixtures_df=self.fixtures_df,
             team_matcher=self.team_matcher,
             manual_mapping_lookup=manual_mapping_lookup,
+            blocked_auto_mapping_norms=self.state.get_disabled_auto_team_mapping_norms_snapshot(),
         )
         mapped_prediction_df = pd.DataFrame(mapped_rows)
 

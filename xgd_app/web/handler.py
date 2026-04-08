@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import math
+import threading
 from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler
 from pathlib import Path
@@ -124,6 +125,8 @@ class AppHandler(BaseHTTPRequestHandler):
             return self._serve_rescan_closing_prices()
         if path == "/api/manual-mappings":
             return self._upsert_manual_mapping()
+        if path == "/api/manual-mappings/bulk":
+            return self._bulk_upsert_manual_mappings()
         if path == "/api/manual-mappings/delete":
             return self._delete_manual_mapping()
         if path == "/api/manual-competition-mappings":
@@ -134,6 +137,8 @@ class AppHandler(BaseHTTPRequestHandler):
             return self._save_game()
         if path == "/api/saved-games/delete":
             return self._unsave_game()
+        if path == "/api/exit-app":
+            return self._exit_app()
 
         self._json({"error": "Not found"}, status=HTTPStatus.NOT_FOUND)
 
@@ -278,6 +283,15 @@ class AppHandler(BaseHTTPRequestHandler):
         except Exception as exc:
             self._json({"error": str(exc)}, status=HTTPStatus.INTERNAL_SERVER_ERROR)
 
+    def _exit_app(self) -> None:
+        server = getattr(self, "server", None) or getattr(self.__class__, "http_server", None)
+        if server is None:
+            self._json({"error": "Server shutdown is unavailable."}, status=HTTPStatus.SERVICE_UNAVAILABLE)
+            return
+        print("[xgd_web_app] Exit App requested from web UI. Shutting down...", flush=True)
+        self._json({"ok": True, "message": "Shutdown requested"})
+        threading.Timer(0.15, server.shutdown).start()
+
     def _upsert_manual_mapping(self) -> None:
         payload = self._read_json_body()
         raw_name = str(payload.get("raw_name", "")).strip()
@@ -285,6 +299,17 @@ class AppHandler(BaseHTTPRequestHandler):
         try:
             self.state.upsert_manual_team_mapping(raw_name=raw_name, sofa_name=sofa_name)
             self._json({"ok": True})
+        except ValueError as exc:
+            self._json({"error": str(exc)}, status=HTTPStatus.BAD_REQUEST)
+        except Exception as exc:
+            self._json({"error": str(exc)}, status=HTTPStatus.INTERNAL_SERVER_ERROR)
+
+    def _bulk_upsert_manual_mappings(self) -> None:
+        payload = self._read_json_body()
+        mappings = payload.get("mappings", [])
+        try:
+            saved_count = self.state.upsert_manual_team_mappings_bulk(mappings=mappings)
+            self._json({"ok": True, "saved_count": int(saved_count)})
         except ValueError as exc:
             self._json({"error": str(exc)}, status=HTTPStatus.BAD_REQUEST)
         except Exception as exc:

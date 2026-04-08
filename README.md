@@ -10,6 +10,39 @@ Web app version of the Betfair + SofaScore xGD workflow (no Streamlit).
 
 Open: `http://127.0.0.1:8090`
 
+## Conda Launcher Script
+
+Use `launch_app.cmd` to start the app via `conda run`:
+
+This is the single launcher entrypoint for Windows shells (CMD, PowerShell, VS Code terminal, and Git Bash on Windows).
+By default it auto-loads config from `app_data/launcher_config.json`.
+The launcher now prints startup stages, and the app prints a clear `Fully running` line when the server is live.
+
+Examples:
+
+```powershell
+# PowerShell/CMD (no flags needed when app_data/launcher_config.json is set)
+C:\Users\Sebastian Daws\Documents\betfair_xgd_app\launch_app.cmd
+```
+
+```powershell
+# Direct env + app args
+C:\Users\Sebastian Daws\Documents\betfair_xgd_app\launch_app.cmd --conda-env footy -- --host 127.0.0.1 --port 8090
+```
+
+```powershell
+# Optional explicit config override
+C:\Users\Sebastian Daws\Documents\betfair_xgd_app\launch_app.cmd --config C:\Users\Sebastian Daws\Documents\betfair_xgd_app\app_data\launcher_config.example.json
+```
+
+Config keys used by the launcher:
+- `launcher.conda_env` or `launcher.conda.env` (or `launcher.conda.path`)
+- `launcher.conda_exe` (optional)
+- `launcher.app_args` (optional)
+- `launcher.env_vars` (optional extra env vars)
+
+The launcher auto-discovers conda when possible (`--conda-exe` still overrides).
+
 ## Project Layout
 
 - `xgd_web_app.py`: compatibility launcher; calls `xgd_app.runtime.main()`

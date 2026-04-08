@@ -1,6 +1,7 @@
 const calendarView = document.getElementById("calendarView");
 const statusText = document.getElementById("statusText");
 const refreshBtn = document.getElementById("refreshBtn");
+const exitAppBtn = document.getElementById("exitAppBtn");
 const leagueFilter = document.getElementById("leagueFilter");
 const leagueFilterBtn = document.getElementById("leagueFilterBtn");
 const leagueFilterMenu = document.getElementById("leagueFilterMenu");
@@ -40,6 +41,8 @@ const teamHcPerfContent = document.getElementById("teamHcPerfContent");
 const teamHcPerfCloseBtn = document.getElementById("teamHcPerfCloseBtn");
 const manualMappingTabPane = document.getElementById("manualMappingTabPane");
 const mappingRefreshBtn = document.getElementById("mappingRefreshBtn");
+const mappingSaveSelectedBtn = document.getElementById("mappingSaveSelectedBtn");
+const mappingClearSelectedBtn = document.getElementById("mappingClearSelectedBtn");
 const mappingStatus = document.getElementById("mappingStatus");
 const unmatchedTeamsContainer = document.getElementById("unmatchedTeamsContainer");
 const savedMappingsContainer = document.getElementById("savedMappingsContainer");
@@ -85,7 +88,7 @@ let fillMissingDays = true;
 let historicalHasMoreOlder = false;
 let selectedLeagues = new Set();
 let selectedTiers = new Set();
-let sortMode = "kickoff";
+let sortMode = "tier";
 let savedSortMode = "kickoff";
 let leagueFilterSearch = "";
 let teamSearchQuery = "";
@@ -135,6 +138,8 @@ let mappingSubTab = "teams";
 let lastManualMappingPayload = null;
 let teamMappingSearchBetfair = "";
 let teamMappingSearchSavedTeams = "";
+const teamMappingBatchSelections = new Set();
+const teamMappingBatchDrafts = new Map();
 const historicalDayCalcInFlight = new Set();
 const historicalDayAutoCalcAttempted = new Set();
 let teamHcPerfDetailLoadingKey = "";
@@ -684,6 +689,58 @@ function rerenderManualMappingsPreserveSavedSearchFocus(selectionStart = null, s
   }
 }
 
+function normalizeTeamMappingRawName(rawName) {
+  return String(rawName || "").trim();
+}
+
+function setTeamMappingDraft(rawName, sofaName) {
+  const rawKey = normalizeTeamMappingRawName(rawName);
+  if (!rawKey) return;
+  const sofaValue = String(sofaName || "").trim();
+  if (!sofaValue) {
+    teamMappingBatchDrafts.delete(rawKey);
+    return;
+  }
+  teamMappingBatchDrafts.set(rawKey, sofaValue);
+}
+
+function clearTeamMappingSelection(rawName) {
+  const rawKey = normalizeTeamMappingRawName(rawName);
+  if (!rawKey) return;
+  teamMappingBatchSelections.delete(rawKey);
+  teamMappingBatchDrafts.delete(rawKey);
+}
+
+function clearAllTeamMappingSelections() {
+  teamMappingBatchSelections.clear();
+  teamMappingBatchDrafts.clear();
+}
+
+function updateTeamMappingBatchButtons() {
+  const selectedCount = teamMappingBatchSelections.size;
+  if (mappingSaveSelectedBtn instanceof HTMLButtonElement) {
+    mappingSaveSelectedBtn.disabled = selectedCount <= 0;
+    mappingSaveSelectedBtn.textContent = selectedCount > 0
+      ? `Save Selected Team Mappings (${selectedCount})`
+      : "Save Selected Team Mappings";
+  }
+  if (mappingClearSelectedBtn instanceof HTMLButtonElement) {
+    mappingClearSelectedBtn.disabled = selectedCount <= 0;
+  }
+}
+
+function getTeamMappingLookupByRaw(payload) {
+  const map = new Map();
+  const mappings = Array.isArray(payload?.mappings) ? payload.mappings : [];
+  for (const row of mappings) {
+    const rawName = normalizeTeamMappingRawName(row?.raw_name);
+    const sofaName = String(row?.sofa_name || "").trim();
+    if (!rawName || !sofaName || map.has(rawName)) continue;
+    map.set(rawName, sofaName);
+  }
+  return map;
+}
+
 function appendMappingLimitNotice(container, shown, total, label) {
   if (!(container instanceof HTMLElement)) return;
   if (!Number.isFinite(shown) || !Number.isFinite(total) || shown >= total) return;
@@ -698,6 +755,21 @@ function renderManualMappingSections(payload) {
   const teamMappings = Array.isArray(payload?.mappings) ? payload.mappings : [];
   const unmatchedTeams = Array.isArray(payload?.unmatched) ? payload.unmatched : [];
   const sofaTeams = Array.isArray(payload?.sofa_teams) ? payload.sofa_teams : [];
+  const activeRawNames = new Set(
+    [...teamMappings, ...unmatchedTeams]
+      .map((row) => normalizeTeamMappingRawName(row?.raw_name))
+      .filter((rawName) => !!rawName)
+  );
+  for (const rawName of Array.from(teamMappingBatchSelections)) {
+    if (!activeRawNames.has(rawName)) {
+      teamMappingBatchSelections.delete(rawName);
+    }
+  }
+  for (const rawName of Array.from(teamMappingBatchDrafts.keys())) {
+    if (!activeRawNames.has(rawName)) {
+      teamMappingBatchDrafts.delete(rawName);
+    }
+  }
   const manualMappings = teamMappings.filter((row) => row?.is_manual !== false);
   const autoMappings = teamMappings.filter((row) => row?.is_manual === false);
   const manualCountRaw = Number(payload?.manual_count);
@@ -847,6 +919,8 @@ function renderManualMappingSections(payload) {
     for (const row of visibleUnmatchedTeams) {
       const tr = document.createElement("tr");
       const rawName = String(row.raw_name || "");
+      const rawKey = normalizeTeamMappingRawName(rawName);
+      const draftValue = String(teamMappingBatchDrafts.get(rawKey) || "").trim();
       const resolveSofaTeam = (inputValue) => {
         const normalized = String(inputValue || "").trim();
         if (!normalized) return "";
@@ -868,6 +942,24 @@ function renderManualMappingSections(payload) {
       `;
       const input = tr.querySelector(".mapping-team-picker");
       const dropdown = tr.querySelector(".mapping-team-dropdown");
+      if (input && draftValue) {
+        input.value = draftValue;
+      }
+      const syncBatchSelectionForRow = (autoSelect = false) => {
+        if (!(input instanceof HTMLInputElement)) return;
+        const resolvedSofaName = resolveSofaTeam(input.value);
+        if (resolvedSofaName) {
+          setTeamMappingDraft(rawKey, resolvedSofaName);
+          if (autoSelect) {
+            teamMappingBatchSelections.add(rawKey);
+          }
+        } else if (!teamMappingBatchSelections.has(rawKey)) {
+          teamMappingBatchDrafts.delete(rawKey);
+        }
+        if (!resolvedSofaName && teamMappingBatchSelections.has(rawKey)) {
+          teamMappingBatchSelections.delete(rawKey);
+        }
+      };
       const renderDropdownOptions = (query = "") => {
         if (!dropdown) return;
         const q = String(query || "").trim().toLowerCase();
@@ -915,8 +1007,16 @@ function renderManualMappingSections(payload) {
           const selectedTeam = String(optionBtn.dataset.team || "").trim();
           if (!selectedTeam) return;
           input.value = selectedTeam;
+          syncBatchSelectionForRow(true);
+          updateTeamMappingBatchButtons();
           dropdown.classList.add("hidden");
           input.focus();
+        });
+      }
+      if (input) {
+        input.addEventListener("input", () => {
+          syncBatchSelectionForRow(true);
+          updateTeamMappingBatchButtons();
         });
       }
       const saveBtn = tr.querySelector(".mapping-save-btn");
@@ -928,9 +1028,12 @@ function renderManualMappingSections(payload) {
             mappingStatus.textContent = "Pick a SofaScore team from the dropdown suggestions before saving.";
             return;
           }
+          clearTeamMappingSelection(rawKey);
+          updateTeamMappingBatchButtons();
           await upsertManualTeamMapping(rawName, sofaName);
         });
       }
+      syncBatchSelectionForRow();
       tbody.appendChild(tr);
     }
     unmatchedTeamsContainer.appendChild(table);
@@ -1015,8 +1118,10 @@ function renderManualMappingSections(payload) {
       for (const row of visibleTeamMappings) {
         const tr = document.createElement("tr");
         const rawName = String(row.raw_name || "");
+        const rawKey = normalizeTeamMappingRawName(rawName);
         const sofaName = String(row.sofa_name || "");
         const sofaNameLower = sofaName.toLowerCase();
+        const draftValue = String(teamMappingBatchDrafts.get(rawKey) || "").trim();
         const isManual = row?.is_manual !== false;
         const method = String(row.match_method || "").trim().toLowerCase();
         const methodLabel = method ? `${method.charAt(0).toUpperCase()}${method.slice(1)}` : "Auto";
@@ -1026,7 +1131,10 @@ function renderManualMappingSections(payload) {
               <button type="button" class="mapping-save-btn">Save</button>
               <button type="button" class="mapping-delete-btn">Delete</button>
             `
-          : `<button type="button" class="mapping-save-btn">Override</button>`;
+          : `
+              <button type="button" class="mapping-save-btn">Override</button>
+              <button type="button" class="mapping-delete-btn">Delete Auto</button>
+            `;
         tr.innerHTML = `
           <td>${escapeHtml(rawName)}</td>
           <td>
@@ -1036,26 +1144,54 @@ function renderManualMappingSections(payload) {
           <td>${actionHtml}</td>
         `;
         const teamInput = tr.querySelector(".mapping-team-input");
+        const resolveSavedSofaName = () => {
+          const selectedRaw = String(teamInput?.value || "").trim();
+          const selectedLower = selectedRaw.toLowerCase();
+          return availableSofaTeamLookup.get(selectedLower)
+            || (selectedLower && selectedLower === sofaNameLower ? sofaName : "");
+        };
+        if (teamInput && draftValue) {
+          teamInput.value = draftValue;
+        }
+        const syncSavedBatchSelectionForRow = () => {
+          const resolvedSofaName = resolveSavedSofaName();
+          if (resolvedSofaName) {
+            setTeamMappingDraft(rawKey, resolvedSofaName);
+          } else if (!teamMappingBatchSelections.has(rawKey)) {
+            teamMappingBatchDrafts.delete(rawKey);
+          }
+          if (!resolvedSofaName && teamMappingBatchSelections.has(rawKey)) {
+            teamMappingBatchSelections.delete(rawKey);
+          }
+        };
+        if (teamInput) {
+          teamInput.addEventListener("input", () => {
+            syncSavedBatchSelectionForRow();
+            updateTeamMappingBatchButtons();
+          });
+        }
         const saveBtn = tr.querySelector(".mapping-save-btn");
         if (saveBtn && teamInput) {
           saveBtn.addEventListener("click", async () => {
-            const selectedRaw = String(teamInput.value || "").trim();
-            const selectedLower = selectedRaw.toLowerCase();
-            const selectedSofaName = availableSofaTeamLookup.get(selectedLower)
-              || (selectedLower && selectedLower === sofaNameLower ? sofaName : "");
+            const selectedSofaName = resolveSavedSofaName();
             if (!selectedSofaName) {
               mappingStatus.textContent = "Select a valid SofaScore team before saving.";
               return;
             }
+            clearTeamMappingSelection(rawKey);
+            updateTeamMappingBatchButtons();
             await upsertManualTeamMapping(rawName, selectedSofaName);
           });
         }
         const deleteBtn = tr.querySelector(".mapping-delete-btn");
-        if (deleteBtn && isManual) {
+        if (deleteBtn) {
           deleteBtn.addEventListener("click", async () => {
+            clearTeamMappingSelection(rawKey);
+            updateTeamMappingBatchButtons();
             await deleteManualTeamMapping(rawName);
           });
         }
+        syncSavedBatchSelectionForRow();
         tbody.appendChild(tr);
       }
       savedMappingsContainer.appendChild(table);
@@ -1196,6 +1332,8 @@ function renderManualMappingSections(payload) {
       "saved competition mappings"
     );
   }
+
+  updateTeamMappingBatchButtons();
 }
 
 async function loadManualMappings() {
@@ -1210,7 +1348,60 @@ async function loadManualMappings() {
   }
 }
 
+async function saveSelectedManualTeamMappings() {
+  const selectedRawNames = Array.from(teamMappingBatchSelections)
+    .map((rawName) => normalizeTeamMappingRawName(rawName))
+    .filter((rawName) => !!rawName);
+  if (!selectedRawNames.length) {
+    mappingStatus.textContent = "Select at least one team mapping row first.";
+    return;
+  }
+
+  const currentSofaByRaw = getTeamMappingLookupByRaw(lastManualMappingPayload);
+  const bulkMappings = [];
+  const missingMappings = [];
+
+  for (const rawName of selectedRawNames) {
+    let sofaName = String(teamMappingBatchDrafts.get(rawName) || "").trim();
+    if (!sofaName) {
+      sofaName = String(currentSofaByRaw.get(rawName) || "").trim();
+    }
+    if (!sofaName) {
+      missingMappings.push(rawName);
+      continue;
+    }
+    bulkMappings.push({ raw_name: rawName, sofa_name: sofaName });
+  }
+
+  if (!bulkMappings.length) {
+    mappingStatus.textContent = "No valid mappings were selected to save.";
+    return;
+  }
+  if (missingMappings.length) {
+    mappingStatus.textContent = "Some selected rows do not have a valid SofaScore team.";
+    return;
+  }
+
+  try {
+    mappingStatus.textContent = `Saving ${bulkMappings.length} team mappings...`;
+    const res = await fetch("/api/manual-mappings/bulk", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ mappings: bulkMappings }),
+    });
+    const payload = await parseApiResponse(res);
+    if (!res.ok) throw new Error(payload.error || "Failed to save selected mappings");
+    clearAllTeamMappingSelections();
+    updateTeamMappingBatchButtons();
+    await Promise.all([loadGames(), loadManualMappings()]);
+  } catch (err) {
+    mappingStatus.textContent = String(err.message || err);
+  }
+}
+
 async function upsertManualTeamMapping(rawName, sofaName) {
+  clearTeamMappingSelection(rawName);
+  updateTeamMappingBatchButtons();
   try {
     const res = await fetch("/api/manual-mappings", {
       method: "POST",
@@ -1226,6 +1417,8 @@ async function upsertManualTeamMapping(rawName, sofaName) {
 }
 
 async function deleteManualTeamMapping(rawName) {
+  clearTeamMappingSelection(rawName);
+  updateTeamMappingBatchButtons();
   try {
     const res = await fetch("/api/manual-mappings/delete", {
       method: "POST",
@@ -3689,9 +3882,10 @@ async function loadGames(options = {}) {
     } else {
       statusText.textContent = `Loaded ${payload.total_games || 0} games`;
     }
-    if (activeTab === "mapping") {
-      loadManualMappings();
-    } else if (activeTab === "rankings" && teamHcRankingsLoaded) {
+    // Keep mapping tab edits stable during game refreshes (manual + auto-refresh).
+    // Mapping data now refreshes only when the user opens Mapping, clicks
+    // "Refresh Mapping Data", or after an explicit mapping save/delete action.
+    if (activeTab === "rankings" && teamHcRankingsLoaded) {
       loadTeamHcRankings({ silent: true });
     } else if (activeTab === "teams" && teamsDirectoryLoaded) {
       loadTeamsDirectory({ silent: true });
@@ -5667,7 +5861,38 @@ function closeGameDetailsPanel(clearSelection = true) {
   }
 }
 
+async function requestAppExit() {
+  if (!(exitAppBtn instanceof HTMLButtonElement)) return;
+  const confirmed = window.confirm("Exit the app now? This will stop the local server.");
+  if (!confirmed) return;
+
+  const originalText = exitAppBtn.textContent;
+  exitAppBtn.disabled = true;
+  exitAppBtn.textContent = "Exiting...";
+  statusText.textContent = "Stopping app...";
+
+  try {
+    const res = await fetch("/api/exit-app", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: "{}",
+    });
+    const payload = await parseApiResponse(res);
+    if (!res.ok) throw new Error(payload.error || "Failed to exit app");
+    statusText.textContent = "App shutdown requested. This page will disconnect shortly.";
+  } catch (err) {
+    exitAppBtn.disabled = false;
+    exitAppBtn.textContent = originalText || "Exit App";
+    statusText.textContent = String(err.message || err);
+  }
+}
+
 refreshBtn.addEventListener("click", () => loadGames());
+if (exitAppBtn instanceof HTMLButtonElement) {
+  exitAppBtn.addEventListener("click", () => {
+    requestAppExit();
+  });
+}
 gamesTabBtn.addEventListener("click", () => {
   setActiveTab("games");
 });
@@ -5718,6 +5943,20 @@ competitionMappingsSubTabBtn.addEventListener("click", () => {
 mappingRefreshBtn.addEventListener("click", () => {
   loadManualMappings();
 });
+if (mappingSaveSelectedBtn instanceof HTMLButtonElement) {
+  mappingSaveSelectedBtn.addEventListener("click", () => {
+    saveSelectedManualTeamMappings();
+  });
+}
+if (mappingClearSelectedBtn instanceof HTMLButtonElement) {
+  mappingClearSelectedBtn.addEventListener("click", () => {
+    clearAllTeamMappingSelections();
+    updateTeamMappingBatchButtons();
+    if (lastManualMappingPayload) {
+      renderManualMappingSections(lastManualMappingPayload);
+    }
+  });
+}
 if (teamHcRankingsGeneralTabBtn instanceof HTMLButtonElement) {
   teamHcRankingsGeneralTabBtn.addEventListener("click", () => {
     setTeamHcRankingsVenueMode("overall");
@@ -6002,6 +6241,7 @@ if (teamHcRankingsSortSelect instanceof HTMLSelectElement) {
 setTeamHcRankingsVenueMode("overall");
 updateSavedTabLabel();
 updateDetailsSaveButton();
+updateTeamMappingBatchButtons();
 setMappingSubTab("teams");
 setActiveTab("games");
 setGamesMode("upcoming", false);

@@ -10,6 +10,7 @@
 17|Croatian HNL|Tier 4
 23|Danish Superliga|Tier 3
 9404054|Dutch Eredivisie|Tier 2
+801976|Egyptian Premier|Tier 4
 30558|English FA Cup|Tier 0
 10932509|English Premier League|Tier 1
 7129730|English Sky Bet Championship|Tier 2

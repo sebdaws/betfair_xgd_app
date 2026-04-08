@@ -1,0 +1,13 @@
+{
+  "launcher": {
+    "conda": {
+      "env": "work_test"
+    },
+    "app_args": [
+      "--host",
+      "127.0.0.1",
+      "--port",
+      "8090"
+    ]
+  }
+}

@@ -377,6 +377,9 @@ class AppState:
     def get_manual_mapping_lookup_snapshot(self) -> dict[str, str]:
         return self.mapping_service.get_manual_mapping_lookup_snapshot()
 
+    def get_disabled_auto_team_mapping_norms_snapshot(self) -> set[str]:
+        return self.mapping_service.get_disabled_auto_team_mapping_norms_snapshot()
+
     def get_manual_competition_mapping_lookup_snapshot(self) -> dict[str, str]:
         return self.mapping_service.get_manual_competition_mapping_lookup_snapshot()
 
@@ -385,6 +388,9 @@ class AppState:
 
     def upsert_manual_team_mapping(self, raw_name: str, sofa_name: str) -> None:
         self.mapping_service.upsert_manual_team_mapping(raw_name=raw_name, sofa_name=sofa_name)
+
+    def upsert_manual_team_mappings_bulk(self, mappings: list[dict[str, Any]]) -> int:
+        return self.mapping_service.upsert_manual_team_mappings_bulk(mappings=mappings)
 
     def delete_manual_team_mapping(self, raw_name: str) -> bool:
         return self.mapping_service.delete_manual_team_mapping(raw_name=raw_name)

@@ -215,6 +215,7 @@ class GamesService:
             return pd.DataFrame()
 
         manual_mapping_lookup = self.state.get_manual_mapping_lookup_snapshot()
+        blocked_auto_mapping_norms = self.state.get_disabled_auto_team_mapping_norms_snapshot()
         manual_competition_mapping_lookup = self.state.get_manual_competition_mapping_lookup_snapshot()
         try:
             prediction_df = self.build_predictions(
@@ -226,6 +227,7 @@ class GamesService:
                 periods=self.state.periods,
                 min_games=self.state.min_games,
                 manual_mapping_lookup=manual_mapping_lookup,
+                blocked_auto_mapping_norms=blocked_auto_mapping_norms,
                 manual_competition_mapping_lookup=manual_competition_mapping_lookup,
             )
         except Exception:
@@ -512,6 +514,7 @@ class GamesService:
 
             if markets_to_compute:
                 manual_mapping_lookup = self.state.get_manual_mapping_lookup_snapshot()
+                blocked_auto_mapping_norms = self.state.get_disabled_auto_team_mapping_norms_snapshot()
                 manual_competition_mapping_lookup = self.state.get_manual_competition_mapping_lookup_snapshot()
                 target_games_df = games_df[games_df["market_id"].astype(str).isin(markets_to_compute)].copy()
                 try:
@@ -524,6 +527,7 @@ class GamesService:
                         periods=self.state.periods,
                         min_games=self.state.min_games,
                         manual_mapping_lookup=manual_mapping_lookup,
+                        blocked_auto_mapping_norms=blocked_auto_mapping_norms,
                         manual_competition_mapping_lookup=manual_competition_mapping_lookup,
                     )
                 except Exception:

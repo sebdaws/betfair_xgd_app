@@ -350,17 +350,24 @@ def apply_manual_or_match(
     raw_name: str | None,
     team_matcher: TeamMatcher,
     manual_mapping_lookup: dict[str, str] | None = None,
+    blocked_auto_mapping_norms: set[str] | None = None,
     disallow: set[str] | None = None,
 ) -> tuple[str | None, float | None, str]:
     if raw_name is None or not str(raw_name).strip():
         return None, None, "missing"
 
     disallow = disallow or set()
+    raw_norm = normalize_team_name(raw_name)
+    if not raw_norm:
+        return None, None, "missing"
+
     if manual_mapping_lookup:
-        raw_norm = normalize_team_name(raw_name)
         manual_target = manual_mapping_lookup.get(raw_norm)
         if manual_target and manual_target in team_matcher.team_set and manual_target not in disallow:
             return manual_target, 1.0, "manual"
+
+    if blocked_auto_mapping_norms and raw_norm in blocked_auto_mapping_norms:
+        return None, None, "unmatched"
 
     return team_matcher.match(raw_name, disallow=disallow)
 
@@ -388,6 +395,7 @@ def map_betfair_games(
     fixtures_df: pd.DataFrame,
     team_matcher: TeamMatcher,
     manual_mapping_lookup: dict[str, str] | None = None,
+    blocked_auto_mapping_norms: set[str] | None = None,
 ) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
     mapped_games: list[dict[str, Any]] = []
     model_games: list[dict[str, Any]] = []
@@ -408,11 +416,13 @@ def map_betfair_games(
             row.get("home_raw"),
             team_matcher=team_matcher,
             manual_mapping_lookup=manual_mapping_lookup,
+            blocked_auto_mapping_norms=blocked_auto_mapping_norms,
         )
         away_team, away_score, away_method = apply_manual_or_match(
             row.get("away_raw"),
             team_matcher=team_matcher,
             manual_mapping_lookup=manual_mapping_lookup,
+            blocked_auto_mapping_norms=blocked_auto_mapping_norms,
             disallow={home_team} if home_team else None,
         )
 
@@ -471,6 +481,7 @@ def build_predictions(
     periods: tuple[Any, ...],
     min_games: int,
     manual_mapping_lookup: dict[str, str] | None = None,
+    blocked_auto_mapping_norms: set[str] | None = None,
     manual_competition_mapping_lookup: dict[str, str] | None = None,
 ) -> pd.DataFrame:
     if betfair_games_df.empty:
@@ -481,6 +492,7 @@ def build_predictions(
         fixtures_df=fixtures_df,
         team_matcher=team_matcher,
         manual_mapping_lookup=manual_mapping_lookup,
+        blocked_auto_mapping_norms=blocked_auto_mapping_norms,
     )
 
     if not model_games:

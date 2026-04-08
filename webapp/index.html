@@ -8,7 +8,11 @@
 </head>
 <body>
   <header class="topbar">
-    <h1>Football Handicap Viewer</h1>
+    <div class="topbar-left">
+      <h1>Football Handicap Viewer</h1>
+      <button id="refreshBtn" type="button">Refresh</button>
+      <span id="statusText" class="topbar-status">Loading...</span>
+    </div>
     <div class="actions">
       <label class="topbar-threshold-field" for="xgThresholdInput">
         <span>xG Threshold</span>
@@ -23,8 +27,7 @@
       </label>
       <button id="xgdHcHighlightToggleBtn" type="button" class="topbar-highlight-toggle-btn">Highlight</button>
       <button id="noHandicapGamesToggleBtn" type="button" class="topbar-highlight-toggle-btn">No-HC Games: Show</button>
-      <button id="refreshBtn" type="button">Refresh</button>
-      <span id="statusText">Loading...</span>
+      <button id="exitAppBtn" type="button" class="topbar-exit-btn">Exit App</button>
     </div>
   </header>
 
@@ -147,7 +150,11 @@
     <section id="manualMappingTabPane" class="tab-pane hidden">
       <section class="mapping-header">
         <h2>Mapping</h2>
-        <button id="mappingRefreshBtn" type="button">Refresh Mapping Data</button>
+        <div class="mapping-header-actions">
+          <button id="mappingSaveSelectedBtn" type="button">Save Selected Team Mappings</button>
+          <button id="mappingClearSelectedBtn" type="button">Clear Selection</button>
+          <button id="mappingRefreshBtn" type="button">Refresh Mapping Data</button>
+        </div>
       </section>
       <p id="mappingStatus" class="mapping-status">Loading mapping data...</p>
 

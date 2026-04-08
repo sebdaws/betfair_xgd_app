@@ -16,6 +16,7 @@ MatchCompetitionNameFn = Callable[..., tuple[str | None, float | None, str]]
 
 MAX_UNMATCHED_TEAM_ROWS_PAYLOAD = 5000
 MAX_UNMATCHED_COMPETITION_ROWS_PAYLOAD = 600
+DISABLED_AUTO_TEAM_MAPPINGS_FILENAME = "disabled_auto_team_mappings.json"
 
 
 class MappingService:
@@ -35,6 +36,9 @@ class MappingService:
         self.normalize_competition_key = normalize_competition_key
         self.map_betfair_games = map_betfair_games
         self.match_competition_name = match_competition_name
+        manual_path = Path(getattr(self.state, "manual_mappings_path", "manual_team_mappings.json"))
+        self.disabled_auto_team_mappings_path = manual_path.with_name(DISABLED_AUTO_TEAM_MAPPINGS_FILENAME)
+        self.disabled_auto_team_mappings_by_norm = self._load_disabled_auto_team_mappings()
 
     @staticmethod
     def _parse_mapping_file(path: Path) -> list[tuple[str, str]]:
@@ -120,6 +124,54 @@ class MappingService:
             self.state.manual_competition_mappings_path,
             self.state.manual_competition_mappings,
         )
+
+    def _load_disabled_auto_team_mappings(self) -> dict[str, str]:
+        path = Path(self.disabled_auto_team_mappings_path)
+        if not path.exists():
+            return {}
+        try:
+            raw_data = json.loads(path.read_text(encoding="utf-8"))
+        except Exception:
+            return {}
+
+        out: dict[str, str] = {}
+        if isinstance(raw_data, dict):
+            for raw_norm, raw_name in raw_data.items():
+                raw_text = str(raw_name).strip()
+                norm_text = str(raw_norm).strip()
+                if raw_text and not norm_text:
+                    norm_text = self.normalize_team_name(raw_text)
+                if not norm_text:
+                    continue
+                out[norm_text] = raw_text or norm_text
+            return out
+
+        if isinstance(raw_data, list):
+            for raw_name in raw_data:
+                raw_text = str(raw_name).strip()
+                norm_text = self.normalize_team_name(raw_text)
+                if not raw_text or not norm_text:
+                    continue
+                out[norm_text] = raw_text
+        return out
+
+    def _save_disabled_auto_team_mappings_locked(self) -> None:
+        ordered = {
+            norm: self.disabled_auto_team_mappings_by_norm[norm]
+            for norm in sorted(
+                self.disabled_auto_team_mappings_by_norm,
+                key=lambda key: (
+                    str(self.disabled_auto_team_mappings_by_norm.get(key, "")).lower(),
+                    str(key).lower(),
+                ),
+            )
+        }
+        body = json.dumps(ordered, indent=2, ensure_ascii=True)
+        path = Path(self.disabled_auto_team_mappings_path)
+        path.parent.mkdir(parents=True, exist_ok=True)
+        tmp_path = path.with_suffix(path.suffix + ".tmp")
+        tmp_path.write_text(body + "\n", encoding="utf-8")
+        tmp_path.replace(path)
 
     @staticmethod
     def _resolve_table_name_casefold(conn: sqlite3.Connection, table_name: str) -> str | None:
@@ -302,6 +354,10 @@ class MappingService:
         with self.state.lock:
             return dict(self.state.manual_mapping_lookup)
 
+    def get_disabled_auto_team_mapping_norms_snapshot(self) -> set[str]:
+        with self.state.lock:
+            return set(self.disabled_auto_team_mappings_by_norm.keys())
+
     def get_manual_competition_mapping_lookup_snapshot(self) -> dict[str, str]:
         with self.state.lock:
             return dict(self.state.manual_competition_mapping_lookup)
@@ -482,6 +538,7 @@ class MappingService:
             form_df = self.state.form_df.copy()
             fixtures_df = self.state.fixtures_df.copy()
             manual_mapping_lookup = dict(self.state.manual_mapping_lookup)
+            disabled_auto_team_norms = set(self.disabled_auto_team_mappings_by_norm.keys())
             sofa_teams = list(self.state.team_matcher.teams)
             competition_mappings = dict(self.state.manual_competition_mappings)
             competition_mapping_lookup = dict(self.state.manual_competition_mapping_lookup)
@@ -572,9 +629,10 @@ class MappingService:
             try:
                 mapped_rows, _ = self.map_betfair_games(
                     betfair_games_df=games_df,
-                    fixtures_df=self.state.fixtures_df,
+                    fixtures_df=fixtures_df,
                     team_matcher=self.state.team_matcher,
                     manual_mapping_lookup=manual_mapping_lookup,
+                    blocked_auto_mapping_norms=disabled_auto_team_norms,
                 )
             except Exception:
                 mapped_rows = []
@@ -610,10 +668,19 @@ class MappingService:
                             score = -1.0
                         if not raw_name:
                             continue
-                        if sofa_name and method not in {"missing", "unmatched"}:
+                        has_mapping = bool(sofa_name and method not in {"missing", "unmatched"})
+                        is_auto_mapping = bool(has_mapping and method != "manual")
+                        if is_auto_mapping and raw_norm and raw_norm in disabled_auto_team_norms:
+                            has_mapping = False
+                        if has_mapping:
                             if raw_norm:
                                 mapped_raw_norms.add(raw_norm)
-                            if method != "manual" and raw_norm and raw_norm not in manual_raw_norms:
+                            if (
+                                is_auto_mapping
+                                and raw_norm
+                                and raw_norm not in manual_raw_norms
+                                and raw_norm not in disabled_auto_team_norms
+                            ):
                                 candidate = {
                                     "raw_name": raw_name,
                                     "sofa_name": sofa_name,
@@ -646,36 +713,10 @@ class MappingService:
                         )
 
         if auto_mapping_candidates:
-            with self.state.lock:
-                changed = False
-                for raw_norm, candidate in auto_mapping_candidates.items():
-                    if raw_norm in self.state.manual_mapping_lookup:
-                        continue
-                    raw_name = str(candidate.get("raw_name", "")).strip()
-                    sofa_name = str(candidate.get("sofa_name", "")).strip()
-                    if not raw_name or not sofa_name:
-                        continue
-                    if sofa_name not in self.state.team_matcher.team_set:
-                        continue
-                    self.state.manual_team_mappings[raw_name] = sofa_name
-                    changed = True
-                if changed:
-                    self.state.manual_mapping_lookup = self.build_manual_mapping_lookup(
-                        self.state.manual_team_mappings
-                    )
-                    self._save_manual_team_mappings()
-                mappings = dict(self.state.manual_team_mappings)
-                manual_mapping_lookup = dict(self.state.manual_mapping_lookup)
-
-            manual_raw_norms = {
-                self.normalize_team_name(raw_name)
-                for raw_name in mappings.keys()
-                if self.normalize_team_name(raw_name)
-            }
             auto_mapping_candidates = {
                 raw_norm: candidate
                 for raw_norm, candidate in auto_mapping_candidates.items()
-                if raw_norm not in manual_raw_norms
+                if raw_norm not in manual_raw_norms and raw_norm not in disabled_auto_team_norms
             }
 
         mapping_rows = [
@@ -958,27 +999,78 @@ class MappingService:
                 ]
                 for existing_raw in conflicting_keys:
                     self.state.manual_team_mappings.pop(existing_raw, None)
+                if raw_norm in self.disabled_auto_team_mappings_by_norm:
+                    self.disabled_auto_team_mappings_by_norm.pop(raw_norm, None)
+                    self._save_disabled_auto_team_mappings_locked()
             self.state.manual_team_mappings[raw_team] = sofa_team
             self.state.manual_mapping_lookup = self.build_manual_mapping_lookup(self.state.manual_team_mappings)
             self._save_manual_team_mappings()
         self._sync_manual_team_mapping_to_db(raw_team=raw_team, sofa_team=sofa_team)
 
+    def upsert_manual_team_mappings_bulk(self, mappings: list[dict[str, Any]]) -> int:
+        if not isinstance(mappings, list) or not mappings:
+            raise ValueError("mappings must be a non-empty list")
+
+        deduped_by_raw: dict[str, str] = {}
+        for row in mappings:
+            if not isinstance(row, dict):
+                raise ValueError("Each mapping must be an object with raw_name and sofa_name")
+            raw_team = str(row.get("raw_name", "")).strip()
+            sofa_team = str(row.get("sofa_name", "")).strip()
+            if not raw_team:
+                raise ValueError("raw_name is required for each mapping")
+            if not sofa_team:
+                raise ValueError(f"sofa_name is required for '{raw_team}'")
+            deduped_by_raw[raw_team] = sofa_team
+
+        saved_count = 0
+        for raw_team, sofa_team in deduped_by_raw.items():
+            self.upsert_manual_team_mapping(raw_name=raw_team, sofa_name=sofa_team)
+            saved_count += 1
+        return saved_count
+
     def delete_manual_team_mapping(self, raw_name: str) -> bool:
         raw_team = str(raw_name).strip()
         if not raw_team:
             raise ValueError("raw_name is required")
+        raw_norm = self.normalize_team_name(raw_team)
         deleted = False
+        disabled_changed = False
         removed_sofa_team = ""
         with self.state.lock:
-            if raw_team in self.state.manual_team_mappings:
-                removed_sofa_team = str(self.state.manual_team_mappings.get(raw_team, "")).strip()
-                self.state.manual_team_mappings.pop(raw_team, None)
+            keys_to_remove: list[str] = []
+            if raw_norm:
+                keys_to_remove = [
+                    existing_raw
+                    for existing_raw in list(self.state.manual_team_mappings.keys())
+                    if (
+                        str(existing_raw).strip()
+                        and self.normalize_team_name(existing_raw) == raw_norm
+                    )
+                ]
+            elif raw_team in self.state.manual_team_mappings:
+                keys_to_remove = [raw_team]
+
+            for key in keys_to_remove:
+                if not removed_sofa_team:
+                    removed_sofa_team = str(self.state.manual_team_mappings.get(key, "")).strip()
+                self.state.manual_team_mappings.pop(key, None)
+            if keys_to_remove:
                 deleted = True
+
+            if raw_norm:
+                current = str(self.disabled_auto_team_mappings_by_norm.get(raw_norm, "")).strip()
+                if current != raw_team:
+                    self.disabled_auto_team_mappings_by_norm[raw_norm] = raw_team
+                    disabled_changed = True
+                if disabled_changed:
+                    self._save_disabled_auto_team_mappings_locked()
+
             self.state.manual_mapping_lookup = self.build_manual_mapping_lookup(self.state.manual_team_mappings)
             self._save_manual_team_mappings()
         if deleted:
             self._remove_manual_team_mapping_from_db(raw_team=raw_team, sofa_team=removed_sofa_team or None)
-        return deleted
+        return bool(deleted or disabled_changed)
 
     def upsert_manual_competition_mapping(self, raw_name: str, sofa_name: str) -> None:
         raw_comp = str(raw_name).strip()
