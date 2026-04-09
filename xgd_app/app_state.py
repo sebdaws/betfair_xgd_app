@@ -166,13 +166,13 @@ class AppState:
         self.historical_data_service.initialize_historical_games(initial_days=7)
         self.last_refresh: dt.datetime | None = None
 
-    def _load_sofa_competitions_from_db(self) -> set[str]:
-        db_path = Path(self.sofascore_db_path).expanduser().resolve()
-        if not db_path.exists():
+    def _load_sofa_competitions_from_db(self, db_path: Path | None = None) -> set[str]:
+        target_path = Path(db_path if db_path is not None else self.sofascore_db_path).expanduser().resolve()
+        if not target_path.exists():
             return set()
         conn: sqlite3.Connection | None = None
         try:
-            conn = sqlite3.connect(str(db_path))
+            conn = sqlite3.connect(str(target_path))
             rows = conn.execute(
                 """
                 SELECT DISTINCT TRIM(name) AS competition_name
@@ -190,6 +190,49 @@ class AppState:
             str(row[0]).strip()
             for row in rows
             if row and str(row[0]).strip()
+        }
+
+    def hard_refresh_xgd_data(self) -> dict[str, Any]:
+        current_db_path = Path(self.sofascore_db_path).expanduser().resolve()
+        form_df, fixtures_df, teams, resolved_db_path = load_sofascore_inputs(str(current_db_path))
+        team_matcher = TeamMatcher(teams)
+        sofa_competitions = sorted(self._load_sofa_competitions_from_db(db_path=resolved_db_path))
+        sofa_competition_set = set(sofa_competitions)
+        sofa_competition_by_norm: dict[str, str] = {}
+        for competition_name in sofa_competitions:
+            norm = normalize_competition_key(competition_name)
+            if norm and norm not in sofa_competition_by_norm:
+                sofa_competition_by_norm[norm] = competition_name
+
+        with self.lock:
+            self.form_df = form_df
+            self.fixtures_df = fixtures_df
+            self.team_matcher = team_matcher
+            self.sofascore_db_path = resolved_db_path
+            self.sofa_competitions = sofa_competitions
+            self.sofa_competition_set = sofa_competition_set
+            self.sofa_competition_by_norm = sofa_competition_by_norm
+            # Clear cached xGD period metrics so they are rebuilt against fresh DB data.
+            self.upcoming_metrics_cache = {}
+            self.games_df = pd.DataFrame()
+            self.historical_games_df = pd.DataFrame()
+            self.last_refresh = None
+
+        # Rebuild historical and upcoming game tables using refreshed SofaScore inputs.
+        self.historical_data_service.initialize_historical_games(initial_days=7)
+        self.refresh_games(force=True)
+
+        with self.lock:
+            upcoming_games_count = int(len(self.games_df))
+            historical_games_count = int(len(self.historical_games_df))
+
+        return {
+            "db_path": str(resolved_db_path),
+            "teams_count": int(len(teams)),
+            "form_rows_count": int(len(form_df)),
+            "fixtures_count": int(len(fixtures_df)),
+            "upcoming_games_count": upcoming_games_count,
+            "historical_games_count": historical_games_count,
         }
 
     def _load_saved_market_ids(self) -> list[str]:

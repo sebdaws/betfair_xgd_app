@@ -1,6 +1,7 @@
 const calendarView = document.getElementById("calendarView");
 const statusText = document.getElementById("statusText");
 const refreshBtn = document.getElementById("refreshBtn");
+const hardRefreshXgdBtn = document.getElementById("hardRefreshXgdBtn");
 const exitAppBtn = document.getElementById("exitAppBtn");
 const leagueFilter = document.getElementById("leagueFilter");
 const leagueFilterBtn = document.getElementById("leagueFilterBtn");
@@ -4684,11 +4685,16 @@ async function loadTeamHcRankings(options = {}) {
       !selectedTeamHcRankingsLeague
       || !teamHcRankingsLeagues.some((row) => String(row?.competition || "").trim() === selectedTeamHcRankingsLeague)
     ) {
-      const premierLeague = teamHcRankingsLeagues.find((row) => {
-        const name = String(row?.competition || "").trim().toLowerCase();
-        return name === "premier league" || name.includes("premier league");
-      });
-      const defaultLeague = premierLeague || teamHcRankingsLeagues[0];
+      const normalizedLeagueName = (row) => String(row?.competition || "").trim().toLowerCase();
+      const findLeague = (predicate) => teamHcRankingsLeagues.find((row) => predicate(normalizedLeagueName(row)));
+      const englishPremierLeague = (
+        findLeague((name) => name === "english premier league")
+        || findLeague((name) => name === "england premier league")
+        || findLeague((name) => name.includes("english") && name.includes("premier league"))
+        || findLeague((name) => name.includes("england") && name.includes("premier league"))
+        || findLeague((name) => name === "premier league")
+      );
+      const defaultLeague = englishPremierLeague || teamHcRankingsLeagues[0];
       selectedTeamHcRankingsLeague = String(defaultLeague?.competition || "").trim();
     }
     teamHcRankingsLoaded = true;
@@ -5887,7 +5893,59 @@ async function requestAppExit() {
   }
 }
 
+async function requestHardRefreshXgd() {
+  if (!(hardRefreshXgdBtn instanceof HTMLButtonElement)) return;
+
+  const originalHardRefreshText = hardRefreshXgdBtn.textContent || "Hard Refresh xGD";
+  const disableOddsRefresh = refreshBtn instanceof HTMLButtonElement;
+  hardRefreshXgdBtn.disabled = true;
+  hardRefreshXgdBtn.textContent = "Refreshing...";
+  if (disableOddsRefresh) {
+    refreshBtn.disabled = true;
+  }
+  statusText.textContent = "Hard refreshing xGD data from SofaScore DB...";
+
+  try {
+    const res = await fetch("/api/hard-refresh-xgd", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: "{}",
+    });
+    const payload = await parseApiResponse(res);
+    if (!res.ok) throw new Error(payload.error || "Failed to hard refresh xGD data");
+
+    // Clear client-side caches so all detail panels and rankings re-query fresh values.
+    xgdPayloadByMarket.clear();
+    hcPerfPayloadByMarket.clear();
+    teamPagePayloadByKey.clear();
+    teamDetailsPayload = null;
+    teamHcPerfDetailRows = [];
+    teamHcRankingsLoaded = false;
+    teamsDirectoryLoaded = false;
+    historicalDayAutoCalcAttempted.clear();
+
+    await loadGames();
+
+    const upcomingCount = Number(payload?.upcoming_games_count) || 0;
+    const historicalCount = Number(payload?.historical_games_count) || 0;
+    statusText.textContent = `Hard refresh complete: ${upcomingCount} upcoming and ${historicalCount} historical games recalculated`;
+  } catch (err) {
+    statusText.textContent = String(err.message || err);
+  } finally {
+    hardRefreshXgdBtn.disabled = false;
+    hardRefreshXgdBtn.textContent = originalHardRefreshText;
+    if (disableOddsRefresh) {
+      refreshBtn.disabled = false;
+    }
+  }
+}
+
 refreshBtn.addEventListener("click", () => loadGames());
+if (hardRefreshXgdBtn instanceof HTMLButtonElement) {
+  hardRefreshXgdBtn.addEventListener("click", () => {
+    requestHardRefreshXgd();
+  });
+}
 if (exitAppBtn instanceof HTMLButtonElement) {
   exitAppBtn.addEventListener("click", () => {
     requestAppExit();

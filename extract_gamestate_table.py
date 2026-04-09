@@ -188,15 +188,23 @@ def load_timeline_data_for_matches(db_path: Path, match_ids: list[int]) -> tuple
         events_df = pd.read_sql_query(
             f"""
             SELECT
-                id,
-                match_id,
-                LOWER(TRIM(COALESCE(event_type, ''))) AS event_type,
-                minute,
-                COALESCE(added_time, 0) AS added_time,
-                team_side_code
-            FROM match_events
-            WHERE match_id IN ({placeholders})
-              AND LOWER(TRIM(COALESCE(event_type, ''))) IN ('corner', 'card')
+                me.id,
+                me.match_id,
+                LOWER(TRIM(COALESCE(me.event_type, ''))) AS event_type,
+                me.minute,
+                COALESCE(me.added_time, 0) AS added_time,
+                me.team_side_code
+            FROM match_events me
+            JOIN matches m ON m.id = me.match_id
+            WHERE me.match_id IN ({placeholders})
+              AND LOWER(TRIM(COALESCE(me.event_type, ''))) IN ('corner', 'card')
+              AND (
+                UPPER(TRIM(COALESCE(m.status, ''))) NOT IN ('AET', 'AP')
+                OR (
+                    NULLIF(TRIM(COALESCE(me.minute, '')), '') IS NOT NULL
+                    AND CAST(NULLIF(TRIM(COALESCE(me.minute, '')), '') AS REAL) <= 90
+                )
+              )
             """,
             conn,
             params=match_ids,
@@ -204,17 +212,25 @@ def load_timeline_data_for_matches(db_path: Path, match_ids: list[int]) -> tuple
         goals_df = pd.read_sql_query(
             f"""
             SELECT
-                id,
-                match_id,
-                time_minute AS minute,
+                ms.id,
+                ms.match_id,
+                ms.time_minute AS minute,
                 CASE
-                    WHEN is_home = 1 THEN 1
-                    WHEN is_home = 0 THEN 2
+                    WHEN ms.is_home = 1 THEN 1
+                    WHEN ms.is_home = 0 THEN 2
                     ELSE NULL
                 END AS side
-            FROM match_shots
-            WHERE match_id IN ({placeholders})
-              AND LOWER(TRIM(COALESCE(shot_type, ''))) = 'goal'
+            FROM match_shots ms
+            JOIN matches m ON m.id = ms.match_id
+            WHERE ms.match_id IN ({placeholders})
+              AND LOWER(TRIM(COALESCE(ms.shot_type, ''))) = 'goal'
+              AND (
+                UPPER(TRIM(COALESCE(m.status, ''))) NOT IN ('AET', 'AP')
+                OR (
+                    NULLIF(TRIM(COALESCE(ms.time_minute, '')), '') IS NOT NULL
+                    AND CAST(NULLIF(TRIM(COALESCE(ms.time_minute, '')), '') AS REAL) <= 90
+                )
+              )
             """,
             conn,
             params=match_ids,

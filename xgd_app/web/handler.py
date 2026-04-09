@@ -137,6 +137,8 @@ class AppHandler(BaseHTTPRequestHandler):
             return self._save_game()
         if path == "/api/saved-games/delete":
             return self._unsave_game()
+        if path == "/api/hard-refresh-xgd":
+            return self._serve_hard_refresh_xgd()
         if path == "/api/exit-app":
             return self._exit_app()
 
@@ -280,6 +282,13 @@ class AppHandler(BaseHTTPRequestHandler):
             self._json({"ok": True, **out})
         except ValueError as exc:
             self._json({"error": str(exc)}, status=HTTPStatus.BAD_REQUEST)
+        except Exception as exc:
+            self._json({"error": str(exc)}, status=HTTPStatus.INTERNAL_SERVER_ERROR)
+
+    def _serve_hard_refresh_xgd(self) -> None:
+        try:
+            out = self.state.hard_refresh_xgd_data()
+            self._json({"ok": True, **out})
         except Exception as exc:
             self._json({"error": str(exc)}, status=HTTPStatus.INTERNAL_SERVER_ERROR)
 

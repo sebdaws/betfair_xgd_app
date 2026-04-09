@@ -17,6 +17,7 @@ FINISHED_STATUSES = {
     "after penalties",
     "after extra time",
     "aet",
+    "ap",
     "penalties",
     "ft",
 }
@@ -373,13 +374,66 @@ def load_sofascore_inputs(db_path: str) -> tuple[pd.DataFrame, pd.DataFrame, lis
     ),
     shot_aggs AS (
         SELECT
-            match_id,
-            SUM(CASE WHEN is_home = 1 THEN COALESCE(CAST(NULLIF(xg, '') AS REAL), 0) ELSE 0 END) AS home_xg_shots,
-            SUM(CASE WHEN is_home = 0 THEN COALESCE(CAST(NULLIF(xg, '') AS REAL), 0) ELSE 0 END) AS away_xg_shots,
-            SUM(CASE WHEN is_home = 1 THEN COALESCE(CAST(NULLIF(xgot, '') AS REAL), 0) ELSE 0 END) AS home_xgot_shots,
-            SUM(CASE WHEN is_home = 0 THEN COALESCE(CAST(NULLIF(xgot, '') AS REAL), 0) ELSE 0 END) AS away_xgot_shots
-        FROM match_shots
-        GROUP BY match_id
+            ms.match_id,
+            SUM(
+                CASE
+                    WHEN ms.is_home = 1
+                     AND (
+                        UPPER(TRIM(COALESCE(m.status, ''))) NOT IN ('AET', 'AP')
+                        OR (
+                            NULLIF(TRIM(COALESCE(ms.time_minute, '')), '') IS NOT NULL
+                            AND CAST(NULLIF(TRIM(COALESCE(ms.time_minute, '')), '') AS REAL) <= 90
+                        )
+                     )
+                    THEN COALESCE(CAST(NULLIF(ms.xg, '') AS REAL), 0)
+                    ELSE 0
+                END
+            ) AS home_xg_shots,
+            SUM(
+                CASE
+                    WHEN ms.is_home = 0
+                     AND (
+                        UPPER(TRIM(COALESCE(m.status, ''))) NOT IN ('AET', 'AP')
+                        OR (
+                            NULLIF(TRIM(COALESCE(ms.time_minute, '')), '') IS NOT NULL
+                            AND CAST(NULLIF(TRIM(COALESCE(ms.time_minute, '')), '') AS REAL) <= 90
+                        )
+                     )
+                    THEN COALESCE(CAST(NULLIF(ms.xg, '') AS REAL), 0)
+                    ELSE 0
+                END
+            ) AS away_xg_shots,
+            SUM(
+                CASE
+                    WHEN ms.is_home = 1
+                     AND (
+                        UPPER(TRIM(COALESCE(m.status, ''))) NOT IN ('AET', 'AP')
+                        OR (
+                            NULLIF(TRIM(COALESCE(ms.time_minute, '')), '') IS NOT NULL
+                            AND CAST(NULLIF(TRIM(COALESCE(ms.time_minute, '')), '') AS REAL) <= 90
+                        )
+                     )
+                    THEN COALESCE(CAST(NULLIF(ms.xgot, '') AS REAL), 0)
+                    ELSE 0
+                END
+            ) AS home_xgot_shots,
+            SUM(
+                CASE
+                    WHEN ms.is_home = 0
+                     AND (
+                        UPPER(TRIM(COALESCE(m.status, ''))) NOT IN ('AET', 'AP')
+                        OR (
+                            NULLIF(TRIM(COALESCE(ms.time_minute, '')), '') IS NOT NULL
+                            AND CAST(NULLIF(TRIM(COALESCE(ms.time_minute, '')), '') AS REAL) <= 90
+                        )
+                     )
+                    THEN COALESCE(CAST(NULLIF(ms.xgot, '') AS REAL), 0)
+                    ELSE 0
+                END
+            ) AS away_xgot_shots
+        FROM match_shots ms
+        JOIN matches m ON m.id = ms.match_id
+        GROUP BY ms.match_id
     ),
     keeper_aggs AS (
         SELECT
@@ -438,6 +492,80 @@ def load_sofascore_inputs(db_path: str) -> tuple[pd.DataFrame, pd.DataFrame, lis
         WHERE UPPER(COALESCE(ms.period, '')) = 'ALL'
         GROUP BY ms.match_id
     ),
+    normal_time_event_aggs AS (
+        SELECT
+            evt.match_id,
+            SUM(
+                CASE
+                    WHEN evt.event_type_norm = 'corner'
+                     AND evt.team_side_code = 1
+                     AND evt.minute_num IS NOT NULL
+                     AND evt.minute_num <= 90
+                    THEN 1 ELSE 0
+                END
+            ) AS home_corners_90,
+            SUM(
+                CASE
+                    WHEN evt.event_type_norm = 'corner'
+                     AND evt.team_side_code = 2
+                     AND evt.minute_num IS NOT NULL
+                     AND evt.minute_num <= 90
+                    THEN 1 ELSE 0
+                END
+            ) AS away_corners_90,
+            SUM(
+                CASE
+                    WHEN evt.event_type_norm = 'card'
+                     AND evt.card_type_norm IN ('yellow', 'second-yellow')
+                     AND evt.team_side_code = 1
+                     AND evt.minute_num IS NOT NULL
+                     AND evt.minute_num <= 90
+                    THEN 1 ELSE 0
+                END
+            ) AS home_yellow_cards_90,
+            SUM(
+                CASE
+                    WHEN evt.event_type_norm = 'card'
+                     AND evt.card_type_norm IN ('yellow', 'second-yellow')
+                     AND evt.team_side_code = 2
+                     AND evt.minute_num IS NOT NULL
+                     AND evt.minute_num <= 90
+                    THEN 1 ELSE 0
+                END
+            ) AS away_yellow_cards_90,
+            SUM(
+                CASE
+                    WHEN evt.event_type_norm = 'card'
+                     AND evt.card_type_norm IN ('red', 'second-yellow')
+                     AND evt.team_side_code = 1
+                     AND evt.minute_num IS NOT NULL
+                     AND evt.minute_num <= 90
+                    THEN 1 ELSE 0
+                END
+            ) AS home_red_cards_90,
+            SUM(
+                CASE
+                    WHEN evt.event_type_norm = 'card'
+                     AND evt.card_type_norm IN ('red', 'second-yellow')
+                     AND evt.team_side_code = 2
+                     AND evt.minute_num IS NOT NULL
+                     AND evt.minute_num <= 90
+                    THEN 1 ELSE 0
+                END
+            ) AS away_red_cards_90
+        FROM (
+            SELECT
+                me.match_id,
+                LOWER(TRIM(COALESCE(me.event_type, ''))) AS event_type_norm,
+                LOWER(TRIM(COALESCE(me.card_type, ''))) AS card_type_norm,
+                me.team_side_code AS team_side_code,
+                CAST(NULLIF(TRIM(COALESCE(me.minute, '')), '') AS REAL) AS minute_num
+            FROM match_events me
+            JOIN matches m ON m.id = me.match_id
+            WHERE UPPER(TRIM(COALESCE(m.status, ''))) IN ('AET', 'AP')
+        ) evt
+        GROUP BY evt.match_id
+    ),
     event_card_aggs AS (
         SELECT
             me.match_id,
@@ -474,6 +602,14 @@ def load_sofascore_inputs(db_path: str) -> tuple[pd.DataFrame, pd.DataFrame, lis
                 END
             ) AS away_straight_red_events
         FROM match_events me
+        JOIN matches m ON m.id = me.match_id
+        WHERE (
+            UPPER(TRIM(COALESCE(m.status, ''))) NOT IN ('AET', 'AP')
+            OR (
+                NULLIF(TRIM(COALESCE(me.minute, '')), '') IS NOT NULL
+                AND CAST(NULLIF(TRIM(COALESCE(me.minute, '')), '') AS REAL) <= 90
+            )
+        )
         GROUP BY me.match_id
     )
     SELECT
@@ -488,22 +624,70 @@ def load_sofascore_inputs(db_path: str) -> tuple[pd.DataFrame, pd.DataFrame, lis
         s.end_date AS season_end_date,
         ht.name AS home_team_name,
         at.name AS away_team_name,
-        COALESCE(m.home_ft_score, m.home_score_final) AS home_goals,
-        COALESCE(m.away_ft_score, m.away_score_final) AS away_goals,
-        xg.home_xg_stat,
-        xg.away_xg_stat,
+        CASE
+            WHEN UPPER(TRIM(COALESCE(m.status, ''))) IN ('AET', 'AP')
+            THEN m.home_ft_score
+            ELSE COALESCE(m.home_ft_score, m.home_score_final)
+        END AS home_goals,
+        CASE
+            WHEN UPPER(TRIM(COALESCE(m.status, ''))) IN ('AET', 'AP')
+            THEN m.away_ft_score
+            ELSE COALESCE(m.away_ft_score, m.away_score_final)
+        END AS away_goals,
+        CASE
+            WHEN UPPER(TRIM(COALESCE(m.status, ''))) IN ('AET', 'AP')
+            THEN NULL
+            ELSE xg.home_xg_stat
+        END AS home_xg_stat,
+        CASE
+            WHEN UPPER(TRIM(COALESCE(m.status, ''))) IN ('AET', 'AP')
+            THEN NULL
+            ELSE xg.away_xg_stat
+        END AS away_xg_stat,
         sa.home_xg_shots,
         sa.away_xg_shots,
         sa.home_xgot_shots,
         sa.away_xgot_shots,
-        ka.home_goalkeeper_goals_prevented,
-        ka.away_goalkeeper_goals_prevented,
-        cca.home_corners,
-        cca.away_corners,
-        cca.home_yellow_cards,
-        cca.away_yellow_cards,
-        cca.home_red_cards,
-        cca.away_red_cards,
+        CASE
+            WHEN UPPER(TRIM(COALESCE(m.status, ''))) IN ('AET', 'AP')
+            THEN NULL
+            ELSE ka.home_goalkeeper_goals_prevented
+        END AS home_goalkeeper_goals_prevented,
+        CASE
+            WHEN UPPER(TRIM(COALESCE(m.status, ''))) IN ('AET', 'AP')
+            THEN NULL
+            ELSE ka.away_goalkeeper_goals_prevented
+        END AS away_goalkeeper_goals_prevented,
+        CASE
+            WHEN UPPER(TRIM(COALESCE(m.status, ''))) IN ('AET', 'AP')
+            THEN COALESCE(ntea.home_corners_90, cca.home_corners)
+            ELSE cca.home_corners
+        END AS home_corners,
+        CASE
+            WHEN UPPER(TRIM(COALESCE(m.status, ''))) IN ('AET', 'AP')
+            THEN COALESCE(ntea.away_corners_90, cca.away_corners)
+            ELSE cca.away_corners
+        END AS away_corners,
+        CASE
+            WHEN UPPER(TRIM(COALESCE(m.status, ''))) IN ('AET', 'AP')
+            THEN COALESCE(ntea.home_yellow_cards_90, cca.home_yellow_cards)
+            ELSE cca.home_yellow_cards
+        END AS home_yellow_cards,
+        CASE
+            WHEN UPPER(TRIM(COALESCE(m.status, ''))) IN ('AET', 'AP')
+            THEN COALESCE(ntea.away_yellow_cards_90, cca.away_yellow_cards)
+            ELSE cca.away_yellow_cards
+        END AS away_yellow_cards,
+        CASE
+            WHEN UPPER(TRIM(COALESCE(m.status, ''))) IN ('AET', 'AP')
+            THEN COALESCE(ntea.home_red_cards_90, cca.home_red_cards)
+            ELSE cca.home_red_cards
+        END AS home_red_cards,
+        CASE
+            WHEN UPPER(TRIM(COALESCE(m.status, ''))) IN ('AET', 'AP')
+            THEN COALESCE(ntea.away_red_cards_90, cca.away_red_cards)
+            ELSE cca.away_red_cards
+        END AS away_red_cards,
         eca.home_second_yellows,
         eca.away_second_yellows,
         eca.home_straight_red_events,
@@ -517,6 +701,7 @@ def load_sofascore_inputs(db_path: str) -> tuple[pd.DataFrame, pd.DataFrame, lis
     LEFT JOIN shot_aggs sa ON sa.match_id = m.id
     LEFT JOIN keeper_aggs ka ON ka.match_id = m.id
     LEFT JOIN card_corner_aggs cca ON cca.match_id = m.id
+    LEFT JOIN normal_time_event_aggs ntea ON ntea.match_id = m.id
     LEFT JOIN event_card_aggs eca ON eca.match_id = m.id
     WHERE m.kickoff_ts IS NOT NULL
       AND COALESCE(m.home_ft_score, m.home_score_final) IS NOT NULL
@@ -547,33 +732,49 @@ def load_sofascore_inputs(db_path: str) -> tuple[pd.DataFrame, pd.DataFrame, lis
         match_events_df = pd.read_sql_query(
             """
             SELECT
-                id,
-                match_id,
-                event_type,
-                card_type,
-                goal_type,
-                score_after,
-                minute,
-                added_time,
-                team_side_code
-            FROM match_events
-            WHERE LOWER(COALESCE(event_type, '')) IN ('goal', 'corner', 'card')
+                me.id,
+                me.match_id,
+                me.event_type,
+                me.card_type,
+                me.goal_type,
+                me.score_after,
+                me.minute,
+                me.added_time,
+                me.team_side_code
+            FROM match_events me
+            JOIN matches m ON m.id = me.match_id
+            WHERE LOWER(COALESCE(me.event_type, '')) IN ('goal', 'corner', 'card')
+              AND (
+                UPPER(TRIM(COALESCE(m.status, ''))) NOT IN ('AET', 'AP')
+                OR (
+                    NULLIF(TRIM(COALESCE(me.minute, '')), '') IS NOT NULL
+                    AND CAST(NULLIF(TRIM(COALESCE(me.minute, '')), '') AS REAL) <= 90
+                )
+              )
             """,
             conn,
         )
         goal_shots_df = pd.read_sql_query(
             """
             SELECT
-                id,
-                match_id,
-                time_minute AS minute,
+                ms.id,
+                ms.match_id,
+                ms.time_minute AS minute,
                 CASE
-                    WHEN is_home = 1 THEN 1
-                    WHEN is_home = 0 THEN 2
+                    WHEN ms.is_home = 1 THEN 1
+                    WHEN ms.is_home = 0 THEN 2
                     ELSE NULL
                 END AS team_side_code
-            FROM match_shots
-            WHERE LOWER(TRIM(COALESCE(shot_type, ''))) = 'goal'
+            FROM match_shots ms
+            JOIN matches m ON m.id = ms.match_id
+            WHERE LOWER(TRIM(COALESCE(ms.shot_type, ''))) = 'goal'
+              AND (
+                UPPER(TRIM(COALESCE(m.status, ''))) NOT IN ('AET', 'AP')
+                OR (
+                    NULLIF(TRIM(COALESCE(ms.time_minute, '')), '') IS NOT NULL
+                    AND CAST(NULLIF(TRIM(COALESCE(ms.time_minute, '')), '') AS REAL) <= 90
+                )
+              )
             """,
             conn,
         )
