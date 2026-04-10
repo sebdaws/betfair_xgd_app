@@ -2,7 +2,7 @@
   "project": "betfair_xgd_app",
   "launcher": {
     "conda": {
-      "env": "work_test"
+      "env": "env_1"
     },
     "app_args": [
       "--host",
@@ -16,6 +16,6 @@
   },
   "other_config_data": {
     "enabled": true,
-    "notes": "This section is ignored by launch_xgd_web_app.py"
+    "notes": "This section is ignored by launch_app.cmd / launcher/launch_app_impl.py"
   }
 }

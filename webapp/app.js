@@ -31,6 +31,7 @@ const teamHcRankingsGeneralTabBtn = document.getElementById("teamHcRankingsGener
 const teamHcRankingsHomeTabBtn = document.getElementById("teamHcRankingsHomeTabBtn");
 const teamHcRankingsAwayTabBtn = document.getElementById("teamHcRankingsAwayTabBtn");
 const teamHcRankingsSortSelect = document.getElementById("teamHcRankingsSortSelect");
+const teamHcRankingsSeasonSelect = document.getElementById("teamHcRankingsSeasonSelect");
 const teamHcRankingsLeagueFilter = document.getElementById("teamHcRankingsLeagueFilter");
 const teamHcRankingsLeagueFilterBtn = document.getElementById("teamHcRankingsLeagueFilterBtn");
 const teamHcRankingsLeagueFilterMenu = document.getElementById("teamHcRankingsLeagueFilterMenu");
@@ -64,6 +65,7 @@ const teamDetailsTitle = document.getElementById("teamDetailsTitle");
 const teamDetailsMeta = document.getElementById("teamDetailsMeta");
 const teamDetailsContent = document.getElementById("teamDetailsContent");
 const teamDetailsCloseBtn = document.getElementById("teamDetailsCloseBtn");
+const teamDetailsSeasonSelect = document.getElementById("teamDetailsSeasonSelect");
 const teamDetailsCompetitionSelect = document.getElementById("teamDetailsCompetitionSelect");
 const prevDayBtn = document.getElementById("prevDayBtn");
 const todayBtn = document.getElementById("todayBtn");
@@ -123,12 +125,15 @@ let savedGamesCount = 0;
 let savedMarketIds = new Set();
 let teamHcRankingsLeagues = [];
 let teamHcRankingsRows = [];
+let teamHcRankingsSeasons = [];
+let teamHcRankingsSeasonsByCompetition = {};
 let teamHcRankingsLoading = false;
 let teamHcRankingsLoaded = false;
 let teamHcRankingsErrorText = "";
 let teamHcRankingsVenueMode = "overall";
 let teamHcRankingsSortMetric = "result";
 let selectedTeamHcRankingsLeague = "";
+let selectedTeamHcRankingsSeason = "";
 let teamHcRankingsLeagueSearch = "";
 let teamsDirectoryRows = [];
 let teamsDirectoryLoaded = false;
@@ -150,6 +155,7 @@ let teamHcPerfDetailRows = [];
 let teamDetailsLoadingKey = "";
 let teamDetailsTeam = "";
 let teamDetailsCompetition = "";
+let teamDetailsSeason = "";
 let teamDetailsMainTab = "xg";
 let teamDetailsPayload = null;
 const TEAM_DETAILS_XG_GAMES_DEFAULT = 9999; // effectively "all games"
@@ -2163,6 +2169,84 @@ function getMainTableGoalsBandHighlight(goalLine, minPeriodValues, maxPeriodValu
   return { goalLineClass: "", goalUnderClass: "", goalOverClass: "" };
 }
 
+function getHistoricalHcBetSide(periodValues, handicap, threshold) {
+  const cls = getMainTableXgdHcHighlightClass(periodValues, handicap, threshold);
+  if (cls === "xgd-hc-highlight-green") return "home";
+  if (cls === "xgd-hc-highlight-red") return "away";
+  return null;
+}
+
+function getHistoricalGoalsBetSide(goalLine, minPeriodValues, maxPeriodValues, threshold) {
+  const highlight = getMainTableGoalsBandHighlight(goalLine, minPeriodValues, maxPeriodValues, threshold);
+  if (highlight.goalOverClass === "xgd-hc-highlight-green") return "over";
+  if (highlight.goalUnderClass === "xgd-hc-highlight-red") return "under";
+  return null;
+}
+
+function settleAsianReturnFromDelta(delta) {
+  const verdict = classifyResultHandicapDelta(delta);
+  if (verdict === "win") return 1;
+  if (verdict === "half_win") return 0.5;
+  if (verdict === "push") return 0;
+  if (verdict === "half_loss") return -0.5;
+  if (verdict === "loss") return -1;
+  return null;
+}
+
+function settleThresholdReturnFromDelta(delta, threshold) {
+  if (!Number.isFinite(delta)) return null;
+  const deltaNum = Number(delta);
+  const thresholdNum = Number.isFinite(Number(threshold)) ? Math.max(0, Number(threshold)) : 0;
+  if (deltaNum > thresholdNum) return 1;
+  if (deltaNum < (-thresholdNum)) return -1;
+  return 0;
+}
+
+function formatBetReturnValue(value) {
+  if (!Number.isFinite(value)) return "-";
+  const num = Number(value);
+  if (Math.abs(num) <= 1e-9) return "+0";
+  if (Math.abs(Math.abs(num) - 0.5) <= 1e-9) return num > 0 ? "+0.5" : "-0.5";
+  return num > 0 ? "+1" : "-1";
+}
+
+function formatXgBetReturnValue(value) {
+  if (!Number.isFinite(value)) return "-";
+  const num = Number(value);
+  if (Math.abs(num) <= 1e-9) return "0";
+  return num > 0 ? "+1" : "-1";
+}
+
+function getBetReturnClass(value) {
+  if (!Number.isFinite(value)) return "";
+  const num = Number(value);
+  if (Math.abs(num) <= 1e-9) return "hcperf-pick-neutral";
+  if (Math.abs(Math.abs(num) - 0.5) <= 1e-9) {
+    return num > 0 ? "hcperf-pick-relevant-half" : "hcperf-pick-other-half";
+  }
+  return num > 0 ? "hcperf-pick-relevant" : "hcperf-pick-other";
+}
+
+function buildBetResultStackCell(resultValue, xgValue) {
+  if (!Number.isFinite(resultValue) && !Number.isFinite(xgValue)) {
+    return "-";
+  }
+  const resultClass = getBetReturnClass(resultValue);
+  const xgClass = getBetReturnClass(xgValue);
+  return `
+    <div class="metric-stack">
+      <div class="metric-stack-row">
+        <span class="metric-stack-label">R</span>
+        <span class="metric-stack-value ${resultClass}">${escapeHtml(formatBetReturnValue(resultValue))}</span>
+      </div>
+      <div class="metric-stack-row">
+        <span class="metric-stack-label">xG</span>
+        <span class="metric-stack-value ${xgClass}">${escapeHtml(formatXgBetReturnValue(xgValue))}</span>
+      </div>
+    </div>
+  `;
+}
+
 function buildRecentMatchesTableHtml(title, rows, relevantTeamName = "") {
   const headingPrefix = relevantTeamName
     ? `<strong>${escapeHtml(relevantTeamName)}</strong> - `
@@ -4030,12 +4114,14 @@ function createGamesTable(sortedGames, isHistorical, options = {}) {
   const showSavedContour = options?.showSavedContour !== false;
   const kickoffHeaderLabel = escapeHtml(getKickoffColumnLabel());
   const table = document.createElement("table");
-  table.className = "games-table main-games-table";
+  table.className = isHistorical
+    ? "games-table main-games-table historical-games-table"
+    : "games-table main-games-table";
   if (isHistorical) {
     table.innerHTML = `
       <thead>
         <tr>
-          <th>${kickoffHeaderLabel}</th>
+          <th class="kickoff-col">${kickoffHeaderLabel}</th>
           <th class="league-col">League</th>
           <th class="home-team-col">Home</th>
           <th class="vs-team-col">v</th>
@@ -4046,13 +4132,15 @@ function createGamesTable(sortedGames, isHistorical, options = {}) {
           <th class="goal-under-price-col">Under</th>
           <th class="goal-line-col">Goals</th>
           <th class="goal-over-price-col">Over</th>
-          <th class="xg-home-col">xG H</th>
-          <th class="line-col score-col">Score</th>
-          <th class="xg-away-col">xG A</th>
           <th>xGD</th>
           <th>xGD Perf</th>
           <th>Min</th>
           <th>Max</th>
+          <th class="xg-home-col">xG H</th>
+          <th class="line-col score-col">Score</th>
+          <th class="xg-away-col">xG A</th>
+          <th>HC Bet</th>
+          <th>Goals Bet</th>
         </tr>
       </thead>
       <tbody></tbody>
@@ -4061,7 +4149,7 @@ function createGamesTable(sortedGames, isHistorical, options = {}) {
     table.innerHTML = `
       <thead>
         <tr>
-          <th>${kickoffHeaderLabel}</th>
+          <th class="kickoff-col">${kickoffHeaderLabel}</th>
           <th class="league-col">League</th>
           <th class="home-team-col">Home</th>
           <th class="vs-team-col">v</th>
@@ -4085,7 +4173,7 @@ function createGamesTable(sortedGames, isHistorical, options = {}) {
   const tbody = table.querySelector("tbody");
   if (!sortedGames.length) {
     const row = document.createElement("tr");
-    row.innerHTML = `<td class="no-games-row" colspan="${isHistorical ? "18" : "15"}">${escapeHtml(emptyMessage)}</td>`;
+    row.innerHTML = `<td class="no-games-row" colspan="${isHistorical ? "20" : "15"}">${escapeHtml(emptyMessage)}</td>`;
     tbody.appendChild(row);
     return table;
   }
@@ -4163,10 +4251,43 @@ function createGamesTable(sortedGames, isHistorical, options = {}) {
     const homeTeamCell = teams.home ? buildTeamLinkHtml(teams.home, competitionName) : "-";
     const awayTeamCell = teams.away ? buildTeamLinkHtml(teams.away, competitionName) : "-";
     const kickoffLocalText = formatGameKickoffLocalTime(game);
+    const homeGoals = toMetricNumberOrNull(game?.home_goals);
+    const awayGoals = toMetricNumberOrNull(game?.away_goals);
+    const homeXgActual = toMetricNumberOrNull(game?.home_xg_actual);
+    const awayXgActual = toMetricNumberOrNull(game?.away_xg_actual);
+    const goalLine = toMetricNumberOrNull(game?.goal_mainline);
+    const hcBetSide = getHistoricalHcBetSide(xgdPeriodValues, handicap, threshold);
+    const goalsBetSide = getHistoricalGoalsBetSide(goalLine, minPeriodValues, maxPeriodValues, threshold);
+    let hcBetResult = null;
+    let hcBetResultXg = null;
+    let goalsBetResult = null;
+    let goalsBetResultXg = null;
+
+    if (hcBetSide && handicap != null && homeGoals != null && awayGoals != null) {
+      const homeHandicapDeltaResult = (homeGoals + handicap) - awayGoals;
+      const betDeltaResult = hcBetSide === "home" ? homeHandicapDeltaResult : -homeHandicapDeltaResult;
+      hcBetResult = settleAsianReturnFromDelta(betDeltaResult);
+    }
+    if (hcBetSide && handicap != null && homeXgActual != null && awayXgActual != null) {
+      const homeHandicapDeltaXg = (homeXgActual + handicap) - awayXgActual;
+      const betDeltaXg = hcBetSide === "home" ? homeHandicapDeltaXg : -homeHandicapDeltaXg;
+      hcBetResultXg = settleThresholdReturnFromDelta(betDeltaXg, threshold);
+    }
+
+    if (goalsBetSide && goalLine != null && homeGoals != null && awayGoals != null) {
+      const totalGoals = homeGoals + awayGoals;
+      const betDeltaResult = goalsBetSide === "over" ? (totalGoals - goalLine) : (goalLine - totalGoals);
+      goalsBetResult = settleAsianReturnFromDelta(betDeltaResult);
+    }
+    if (goalsBetSide && goalLine != null && homeXgActual != null && awayXgActual != null) {
+      const totalXg = homeXgActual + awayXgActual;
+      const betDeltaXg = goalsBetSide === "over" ? (totalXg - goalLine) : (goalLine - totalXg);
+      goalsBetResultXg = settleThresholdReturnFromDelta(betDeltaXg, threshold);
+    }
 
     if (isHistorical) {
       row.innerHTML = `
-        <td>${escapeHtml(kickoffLocalText)}</td>
+        <td class="kickoff-col">${escapeHtml(kickoffLocalText)}</td>
         <td class="league-col">${escapeHtml(game.competition)}</td>
         <td class="home-team-col">${homeTeamCell}</td>
         <td class="vs-team-col">v</td>
@@ -4177,17 +4298,19 @@ function createGamesTable(sortedGames, isHistorical, options = {}) {
         <td class="${goalUnderCellClass}">${escapeHtml(game.goal_under_price || "-")}</td>
         <td class="${goalLineCellClass}">${escapeHtml(game.goal_mainline || "-")}</td>
         <td class="${goalOverCellClass}">${escapeHtml(game.goal_over_price || "-")}</td>
-        <td class="xg-home-col">${escapeHtml(game.home_xg_actual || "-")}</td>
-        <td class="line-col score-col">${escapeHtml(game.scoreline || "-")}</td>
-        <td class="xg-away-col">${escapeHtml(game.away_xg_actual || "-")}</td>
         <td class="${xgdCellClass}"${xgdCellTitleAttr}>${buildPeriodMetricStackCell(seasonXgdValue, last5XgdValue, last3XgdValue)}</td>
         <td class="${xgdPerfCellClass}"${xgdPerfCellTitleAttr}>${buildPeriodMetricStackCell(seasonXgdPerfValue, last5XgdPerfValue, last3XgdPerfValue)}</td>
         <td class="metric-stack-cell">${buildPeriodMetricStackCell(game.season_min_xg, game.last5_min_xg, game.last3_min_xg)}</td>
         <td class="metric-stack-cell">${buildPeriodMetricStackCell(game.season_max_xg, game.last5_max_xg, game.last3_max_xg)}</td>
+        <td class="xg-home-col">${escapeHtml(game.home_xg_actual || "-")}</td>
+        <td class="line-col score-col">${escapeHtml(game.scoreline || "-")}</td>
+        <td class="xg-away-col">${escapeHtml(game.away_xg_actual || "-")}</td>
+        <td class="metric-stack-cell">${buildBetResultStackCell(hcBetResult, hcBetResultXg)}</td>
+        <td class="metric-stack-cell">${buildBetResultStackCell(goalsBetResult, goalsBetResultXg)}</td>
       `;
     } else {
       row.innerHTML = `
-        <td>${escapeHtml(kickoffLocalText)}</td>
+        <td class="kickoff-col">${escapeHtml(kickoffLocalText)}</td>
         <td class="league-col">${escapeHtml(game.competition)}</td>
         <td class="home-team-col">${homeTeamCell}</td>
         <td class="vs-team-col">v</td>
@@ -4371,6 +4494,63 @@ function updateTeamHcRankingsLeagueFilterButtonLabel() {
   teamHcRankingsLeagueFilterBtn.textContent = selectedText || "Select League";
 }
 
+function getTeamHcRankingsSeasonsForCompetition(competitionName) {
+  const competitionText = String(competitionName || "").trim();
+  if (!competitionText) return [];
+  const seasonsByCompetition = (
+    teamHcRankingsSeasonsByCompetition
+    && typeof teamHcRankingsSeasonsByCompetition === "object"
+  )
+    ? teamHcRankingsSeasonsByCompetition
+    : {};
+  const entries = seasonsByCompetition[competitionText];
+  return Array.isArray(entries) ? entries : [];
+}
+
+function updateTeamHcRankingsSeasonSelectOptions() {
+  if (!(teamHcRankingsSeasonSelect instanceof HTMLSelectElement)) return;
+  const selectedLeague = String(selectedTeamHcRankingsLeague || "").trim();
+  const seasons = getTeamHcRankingsSeasonsForCompetition(selectedLeague);
+  teamHcRankingsSeasonSelect.innerHTML = "";
+  if (!selectedLeague) {
+    const option = document.createElement("option");
+    option.value = "";
+    option.textContent = "Select league first";
+    teamHcRankingsSeasonSelect.appendChild(option);
+    teamHcRankingsSeasonSelect.disabled = true;
+    return;
+  }
+  if (!seasons.length) {
+    const option = document.createElement("option");
+    option.value = "";
+    option.textContent = "No season data";
+    teamHcRankingsSeasonSelect.appendChild(option);
+    teamHcRankingsSeasonSelect.disabled = true;
+    return;
+  }
+  if (!seasons.some((entry) => String(entry?.season || "").trim() === selectedTeamHcRankingsSeason)) {
+    selectedTeamHcRankingsSeason = String(seasons[0]?.season || "").trim();
+  }
+
+  for (const entry of seasons) {
+    const seasonValue = String(entry?.season || "").trim();
+    if (!seasonValue) continue;
+    const option = document.createElement("option");
+    option.value = seasonValue;
+    const seasonLabel = String(entry?.season_label || seasonValue).trim();
+    const gamesCount = Number(entry?.games_count) || 0;
+    option.textContent = `${seasonLabel}${gamesCount ? ` (${gamesCount})` : ""}`;
+    if (seasonValue === selectedTeamHcRankingsSeason) {
+      option.selected = true;
+    }
+    teamHcRankingsSeasonSelect.appendChild(option);
+  }
+  if (!teamHcRankingsSeasonSelect.value && selectedTeamHcRankingsSeason) {
+    teamHcRankingsSeasonSelect.value = selectedTeamHcRankingsSeason;
+  }
+  teamHcRankingsSeasonSelect.disabled = false;
+}
+
 function updateTeamHcRankingsLeagueFilterMenu() {
   if (!teamHcRankingsLeagueFilterMenu) return;
   teamHcRankingsLeagueFilterMenu.innerHTML = "";
@@ -4539,6 +4719,7 @@ async function loadTeamHcRankingTeamDetails(teamName, competitionName) {
 function renderTeamHcRankings() {
   if (!teamHcRankingsView) return;
   teamHcRankingsView.innerHTML = "";
+  updateTeamHcRankingsSeasonSelectOptions();
   updateTeamHcRankingsLeagueFilterButtonLabel();
   updateTeamHcRankingsLeagueFilterMenu();
   if (teamHcRankingsLoading) {
@@ -4643,7 +4824,7 @@ function renderTeamHcRankings() {
       teamBtn.addEventListener("click", () => {
         const teamName = decodeURIComponent(String(teamBtn.dataset.team || ""));
         const leagueName = decodeURIComponent(String(teamBtn.dataset.league || ""));
-        openTeamPage(teamName, leagueName || null);
+        openTeamPage(teamName, leagueName || null, selectedTeamHcRankingsSeason || null);
       });
     }
     tbody.appendChild(tr);
@@ -4668,6 +4849,7 @@ function renderTeamHcRankings() {
 async function loadTeamHcRankings(options = {}) {
   if (teamHcRankingsLoading) return false;
   const silent = Boolean(options?.silent);
+  const skipLeagueSeasonReload = Boolean(options?.skipLeagueSeasonReload);
   teamHcRankingsLoading = true;
   if (!silent) {
     statusText.textContent = "Loading team HC rankings...";
@@ -4676,9 +4858,30 @@ async function loadTeamHcRankings(options = {}) {
   try {
     const query = new URLSearchParams();
     query.set("xg_threshold", String(getCurrentXgPushThreshold()));
+    const competitionText = String(selectedTeamHcRankingsLeague || "").trim();
+    if (competitionText) {
+      query.set("competition", competitionText);
+    }
+    const seasonText = String(selectedTeamHcRankingsSeason || "").trim();
+    if (seasonText) {
+      query.set("season", seasonText);
+    }
     const res = await fetch(`/api/team-hc-rankings?${query.toString()}`);
     const payload = await parseApiResponse(res);
     if (!res.ok) throw new Error(payload.error || "Failed to load team HC rankings");
+    teamHcRankingsSeasons = Array.isArray(payload?.seasons) ? payload.seasons : [];
+    teamHcRankingsSeasonsByCompetition = (
+      payload?.seasons_by_competition
+      && typeof payload.seasons_by_competition === "object"
+    )
+      ? payload.seasons_by_competition
+      : {};
+    const payloadSeason = String(payload?.season || "").trim();
+    if (payloadSeason) {
+      selectedTeamHcRankingsSeason = payloadSeason;
+    } else if (!selectedTeamHcRankingsSeason && teamHcRankingsSeasons.length) {
+      selectedTeamHcRankingsSeason = String(teamHcRankingsSeasons[0]?.season || "").trim();
+    }
     teamHcRankingsLeagues = Array.isArray(payload?.leagues) ? payload.leagues : [];
     teamHcRankingsRows = Array.isArray(payload?.rows) ? payload.rows : [];
     if (
@@ -4697,12 +4900,38 @@ async function loadTeamHcRankings(options = {}) {
       const defaultLeague = englishPremierLeague || teamHcRankingsLeagues[0];
       selectedTeamHcRankingsLeague = String(defaultLeague?.competition || "").trim();
     }
+    const leagueSeasons = getTeamHcRankingsSeasonsForCompetition(selectedTeamHcRankingsLeague);
+    if (leagueSeasons.length) {
+      const currentSeason = String(selectedTeamHcRankingsSeason || "").trim();
+      const hasCurrentSeason = leagueSeasons.some((entry) => String(entry?.season || "").trim() === currentSeason);
+      if (!hasCurrentSeason) {
+        selectedTeamHcRankingsSeason = String(leagueSeasons[0]?.season || "").trim();
+      }
+    }
+    const shouldReloadForLeagueSeason = (
+      !skipLeagueSeasonReload
+      && !competitionText
+      && leagueSeasons.length > 0
+      && String(payloadSeason || "").trim() !== ""
+      && String(selectedTeamHcRankingsSeason || "").trim() !== String(payloadSeason || "").trim()
+    );
     teamHcRankingsLoaded = true;
     teamHcRankingsErrorText = "";
     if (activeTab === "rankings" && !silent) {
-      statusText.textContent = `Loaded HC rankings for ${Number(payload?.total_teams) || 0} teams across ${Number(payload?.total_leagues) || 0} leagues`;
+      const seasonLabel = (
+        getTeamHcRankingsSeasonsForCompetition(selectedTeamHcRankingsLeague).find(
+          (entry) => String(entry?.season || "").trim() === String(selectedTeamHcRankingsSeason || "").trim()
+        )?.season_label
+      ) || selectedTeamHcRankingsSeason;
+      const seasonPrefix = seasonLabel ? `${seasonLabel}: ` : "";
+      statusText.textContent = `${seasonPrefix}Loaded HC rankings for ${Number(payload?.total_teams) || 0} teams across ${Number(payload?.total_leagues) || 0} leagues`;
     }
     renderTeamHcRankings();
+    if (shouldReloadForLeagueSeason) {
+      window.setTimeout(() => {
+        loadTeamHcRankings({ silent: true, skipLeagueSeasonReload: true });
+      }, 0);
+    }
     return true;
   } catch (err) {
     teamHcRankingsErrorText = String(err.message || err);
@@ -5417,8 +5646,12 @@ function closeTeamDetailsPanel() {
   teamDetailsLoadingKey = "";
 }
 
-function getTeamPageCacheKey(teamName, competitionName = "") {
-  return `${String(teamName || "").trim().toLowerCase()}::${String(competitionName || "").trim().toLowerCase()}`;
+function getTeamPageCacheKey(teamName, competitionName = "", seasonKey = "") {
+  return [
+    String(teamName || "").trim().toLowerCase(),
+    String(competitionName || "").trim().toLowerCase(),
+    String(seasonKey || "").trim().toLowerCase(),
+  ].join("::");
 }
 
 function buildTeamStatsSummaryTableHtml(teamLabel, rows) {
@@ -5487,7 +5720,9 @@ function renderTeamDetailsPanel(payload) {
   if (!teamDetailsContent || !teamDetailsTitle || !teamDetailsMeta) return;
   const teamText = String(payload?.team || teamDetailsTeam || "").trim() || "Team";
   const selectedCompetition = String(payload?.competition || teamDetailsCompetition || "").trim();
+  const selectedSeason = String(payload?.season || teamDetailsSeason || "").trim();
   const competitions = Array.isArray(payload?.competitions) ? payload.competitions : [];
+  const seasons = Array.isArray(payload?.seasons) ? payload.seasons : [];
   const recentRows = Array.isArray(payload?.recent_rows) ? payload.recent_rows : [];
   const teamVenueRows = payload?.team_venue_rows && typeof payload.team_venue_rows === "object"
     ? payload.team_venue_rows
@@ -5497,8 +5732,41 @@ function renderTeamDetailsPanel(payload) {
   const seasonHandicapRows = Array.isArray(payload?.season_handicap_rows) ? payload.season_handicap_rows : [];
   const homeHcRows = seasonHandicapRows.filter((row) => String(row?.venue || "").trim().toLowerCase() === "home");
   const awayHcRows = seasonHandicapRows.filter((row) => String(row?.venue || "").trim().toLowerCase() === "away");
+  const selectedSeasonEntry = seasons.find((entry) => String(entry?.season || "").trim() === selectedSeason) || null;
+  const selectedSeasonLabel = String(selectedSeasonEntry?.season_label || selectedSeason || "").trim();
+  teamDetailsCompetition = selectedCompetition;
+  teamDetailsSeason = selectedSeason;
   teamDetailsTitle.textContent = `${teamText}`;
-  teamDetailsMeta.textContent = `${selectedCompetition || "Selected leagues"} | ${recentRows.length} season games`;
+  teamDetailsMeta.textContent = `${selectedCompetition || "Selected leagues"} | ${selectedSeasonLabel || "All seasons"} | ${recentRows.length} games`;
+
+  if (teamDetailsSeasonSelect instanceof HTMLSelectElement) {
+    teamDetailsSeasonSelect.innerHTML = "";
+    if (!seasons.length) {
+      const option = document.createElement("option");
+      option.value = "";
+      option.textContent = selectedSeasonLabel || "No season data";
+      teamDetailsSeasonSelect.appendChild(option);
+      teamDetailsSeasonSelect.disabled = true;
+    } else {
+      seasons.forEach((entry) => {
+        const seasonValue = String(entry?.season || "").trim();
+        if (!seasonValue) return;
+        const option = document.createElement("option");
+        option.value = seasonValue;
+        const seasonLabel = String(entry?.season_label || seasonValue).trim();
+        const gamesCount = Number(entry?.games_count) || 0;
+        option.textContent = `${seasonLabel}${gamesCount ? ` (${gamesCount})` : ""}`;
+        if (seasonValue === selectedSeason) {
+          option.selected = true;
+        }
+        teamDetailsSeasonSelect.appendChild(option);
+      });
+      if (!teamDetailsSeasonSelect.value && selectedSeason) {
+        teamDetailsSeasonSelect.value = selectedSeason;
+      }
+      teamDetailsSeasonSelect.disabled = false;
+    }
+  }
 
   if (teamDetailsCompetitionSelect instanceof HTMLSelectElement) {
     teamDetailsCompetitionSelect.innerHTML = "";
@@ -5658,14 +5926,19 @@ function renderTeamDetailsPanel(payload) {
   }
 }
 
-async function openTeamPage(teamName, competitionName = null, options = {}) {
+async function openTeamPage(teamName, competitionName = null, seasonKey = null, options = {}) {
   if (!teamDetailsPanel || !teamDetailsContent || !teamDetailsTitle || !teamDetailsMeta) return;
   const teamText = String(teamName || "").trim();
   const competitionText = String(competitionName || "").trim();
+  const seasonText = String(seasonKey || "").trim();
   const forceRefresh = Boolean(options?.force);
   if (!teamText) return;
 
-  const isDifferentSelection = teamText !== teamDetailsTeam || competitionText !== teamDetailsCompetition;
+  const isDifferentSelection = (
+    teamText !== teamDetailsTeam
+    || competitionText !== teamDetailsCompetition
+    || seasonText !== teamDetailsSeason
+  );
   if (isDifferentSelection) {
     teamDetailsMainTab = "xg";
     teamDetailsXgGamesShownCount = TEAM_DETAILS_XG_GAMES_DEFAULT;
@@ -5673,9 +5946,14 @@ async function openTeamPage(teamName, competitionName = null, options = {}) {
   }
   teamDetailsTeam = teamText;
   teamDetailsCompetition = competitionText;
+  teamDetailsSeason = seasonText;
   teamDetailsPanel.classList.remove("hidden");
   teamDetailsTitle.textContent = teamText;
-  teamDetailsMeta.textContent = competitionText ? `${competitionText} | Loading...` : "Loading...";
+  const loadingParts = [];
+  if (competitionText) loadingParts.push(competitionText);
+  if (seasonText) loadingParts.push(seasonText);
+  loadingParts.push("Loading...");
+  teamDetailsMeta.textContent = loadingParts.join(" | ");
   teamDetailsContent.innerHTML = `
     <div class="hcperf-loading">
       <span class="hcperf-loading-dot" aria-hidden="true"></span>
@@ -5683,27 +5961,34 @@ async function openTeamPage(teamName, competitionName = null, options = {}) {
     </div>
   `;
 
-  const cacheKey = getTeamPageCacheKey(teamText, competitionText);
+  const cacheKey = getTeamPageCacheKey(teamText, competitionText, seasonText);
   if (!forceRefresh && teamPagePayloadByKey.has(cacheKey)) {
     const cachedPayload = teamPagePayloadByKey.get(cacheKey);
     if (cachedPayload && typeof cachedPayload === "object") {
       const resolvedTeam = String(cachedPayload?.team || "").trim();
+      const resolvedCompetition = String(cachedPayload?.competition || "").trim();
+      const resolvedSeason = String(cachedPayload?.season || "").trim();
       if (resolvedTeam) {
         teamDetailsTeam = resolvedTeam;
       }
+      teamDetailsCompetition = resolvedCompetition || competitionText;
+      teamDetailsSeason = resolvedSeason || seasonText;
       teamDetailsPayload = cachedPayload;
       renderTeamDetailsPanel(cachedPayload);
       return;
     }
   }
 
-  const requestKey = `${teamText}::${competitionText}`;
+  const requestKey = `${teamText}::${competitionText}::${seasonText}`;
   teamDetailsLoadingKey = requestKey;
   try {
     const query = new URLSearchParams();
     query.set("team", teamText);
     if (competitionText) {
       query.set("competition", competitionText);
+    }
+    if (seasonText) {
+      query.set("season", seasonText);
     }
     const res = await fetch(`/api/team-page?${query.toString()}`);
     const payload = await parseApiResponse(res);
@@ -5712,20 +5997,36 @@ async function openTeamPage(teamName, competitionName = null, options = {}) {
     const nextPayload = payload && typeof payload === "object" ? payload : {};
     const resolvedTeam = String(nextPayload?.team || "").trim();
     const resolvedCompetition = String(nextPayload?.competition || "").trim();
+    const resolvedSeason = String(nextPayload?.season || "").trim();
     teamPagePayloadByKey.set(cacheKey, nextPayload);
-    if (resolvedCompetition) {
-      teamPagePayloadByKey.set(getTeamPageCacheKey(teamText, resolvedCompetition), nextPayload);
+    if (resolvedCompetition || resolvedSeason) {
+      teamPagePayloadByKey.set(
+        getTeamPageCacheKey(teamText, resolvedCompetition || competitionText, resolvedSeason || seasonText),
+        nextPayload
+      );
     }
     if (resolvedTeam) {
       teamDetailsTeam = resolvedTeam;
-      teamPagePayloadByKey.set(getTeamPageCacheKey(resolvedTeam, resolvedCompetition || competitionText), nextPayload);
+      teamPagePayloadByKey.set(
+        getTeamPageCacheKey(
+          resolvedTeam,
+          resolvedCompetition || competitionText,
+          resolvedSeason || seasonText
+        ),
+        nextPayload
+      );
     }
     teamDetailsPayload = nextPayload;
     teamDetailsCompetition = resolvedCompetition || competitionText;
+    teamDetailsSeason = resolvedSeason || seasonText;
     renderTeamDetailsPanel(nextPayload);
   } catch (err) {
     if (teamDetailsLoadingKey !== requestKey) return;
-    teamDetailsMeta.textContent = competitionText ? `${competitionText} | Error` : "Error";
+    const errorParts = [];
+    if (competitionText) errorParts.push(competitionText);
+    if (seasonText) errorParts.push(seasonText);
+    errorParts.push("Error");
+    teamDetailsMeta.textContent = errorParts.join(" | ");
     teamDetailsContent.innerHTML = `<p>${escapeHtml(String(err.message || err))}</p>`;
   }
 }
@@ -6044,6 +6345,15 @@ if (teamHcRankingsSortSelect instanceof HTMLSelectElement) {
     renderTeamHcRankings();
   });
 }
+if (teamHcRankingsSeasonSelect instanceof HTMLSelectElement) {
+  teamHcRankingsSeasonSelect.addEventListener("change", () => {
+    const nextSeason = String(teamHcRankingsSeasonSelect.value || "").trim();
+    if (nextSeason === selectedTeamHcRankingsSeason) return;
+    selectedTeamHcRankingsSeason = nextSeason;
+    closeTeamHcPerfPanel();
+    loadTeamHcRankings();
+  });
+}
 if (teamHcRankingsLeagueFilterBtn instanceof HTMLButtonElement) {
   teamHcRankingsLeagueFilterBtn.addEventListener("click", (event) => {
     event.stopPropagation();
@@ -6069,7 +6379,16 @@ if (teamHcRankingsLeagueFilterMenu instanceof HTMLDivElement) {
     if (!selectedLeague) return;
     if (selectedLeague !== selectedTeamHcRankingsLeague) {
       setSelectedTeamHcRankingsLeague(selectedLeague);
+      const leagueSeasons = getTeamHcRankingsSeasonsForCompetition(selectedLeague);
+      const currentSeason = String(selectedTeamHcRankingsSeason || "").trim();
+      const hasCurrentSeason = leagueSeasons.some((entry) => String(entry?.season || "").trim() === currentSeason);
+      if (!hasCurrentSeason) {
+        selectedTeamHcRankingsSeason = String(leagueSeasons[0]?.season || "").trim();
+      }
       closeTeamHcPerfPanel();
+      setTeamHcRankingsLeagueFilterOpen(false);
+      loadTeamHcRankings();
+      return;
     }
     setTeamHcRankingsLeagueFilterOpen(false);
     renderTeamHcRankings();
@@ -6253,7 +6572,14 @@ if (teamDetailsCompetitionSelect instanceof HTMLSelectElement) {
   teamDetailsCompetitionSelect.addEventListener("change", () => {
     const nextCompetition = String(teamDetailsCompetitionSelect.value || "").trim();
     if (!teamDetailsTeam) return;
-    openTeamPage(teamDetailsTeam, nextCompetition || null);
+    openTeamPage(teamDetailsTeam, nextCompetition || null, teamDetailsSeason || null);
+  });
+}
+if (teamDetailsSeasonSelect instanceof HTMLSelectElement) {
+  teamDetailsSeasonSelect.addEventListener("change", () => {
+    const nextSeason = String(teamDetailsSeasonSelect.value || "").trim();
+    if (!teamDetailsTeam) return;
+    openTeamPage(teamDetailsTeam, teamDetailsCompetition || null, nextSeason || null);
   });
 }
 if (saveGameBtn instanceof HTMLButtonElement) {

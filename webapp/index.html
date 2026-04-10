@@ -115,6 +115,8 @@
           <option value="pnl">PnL (For)</option>
           <option value="pnl_against">PnL (Against)</option>
         </select>
+        <label for="teamHcRankingsSeasonSelect" class="control-label">Season</label>
+        <select id="teamHcRankingsSeasonSelect" aria-label="HC rankings season"></select>
         <label for="teamHcRankingsLeagueFilterBtn" class="control-label">League</label>
         <div class="league-filter" id="teamHcRankingsLeagueFilter">
           <button id="teamHcRankingsLeagueFilterBtn" type="button" aria-haspopup="true" aria-expanded="false">
@@ -206,6 +208,10 @@
     <div class="details-header">
       <h2 id="teamDetailsTitle">Team</h2>
       <div class="details-actions">
+        <label class="team-panel-league-field" for="teamDetailsSeasonSelect">
+          <span>Season</span>
+          <select id="teamDetailsSeasonSelect" aria-label="Team page season"></select>
+        </label>
         <label class="team-panel-league-field" for="teamDetailsCompetitionSelect">
           <span>League</span>
           <select id="teamDetailsCompetitionSelect" aria-label="Team page league"></select>

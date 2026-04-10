@@ -343,12 +343,112 @@ class MappingService:
     def sync_all_manual_team_mappings_to_db(self) -> None:
         with self.state.lock:
             mappings = list(self.state.manual_team_mappings.items())
-        for raw_team, sofa_team in mappings:
-            raw_text = str(raw_team).strip()
-            sofa_text = str(sofa_team).strip()
-            if not raw_text or not sofa_text:
-                continue
-            self._sync_manual_team_mapping_to_db(raw_team=raw_text, sofa_team=sofa_text)
+        if not mappings:
+            return
+
+        db_path = Path(getattr(self.state, "sofascore_db_path", "")).expanduser().resolve()
+        if not db_path.exists():
+            return
+
+        conn: sqlite3.Connection | None = None
+        try:
+            # Single connection + transaction keeps startup fast even with large mapping sets.
+            conn = sqlite3.connect(str(db_path), timeout=1.0)
+            conn.execute("PRAGMA busy_timeout = 1000")
+
+            table_name = self._resolve_table_name_casefold(conn, "betfair_team_id_mappings")
+            if not table_name:
+                return
+            cols = self._table_columns_casefold(conn, table_name)
+            betfair_name_col = cols.get("betfair_team_name")
+            sofa_name_col = cols.get("sofascore_team_name")
+            if not betfair_name_col or not sofa_name_col:
+                return
+
+            mapping_method_col = cols.get("mapping_method")
+            mapping_score_col = cols.get("mapping_score")
+            seen_count_col = cols.get("seen_count")
+            updated_at_col = cols.get("updated_at")
+
+            set_parts: list[str] = [f'"{sofa_name_col}" = ?']
+            set_param_template: list[Any] = []
+            if mapping_method_col:
+                set_parts.append(f'"{mapping_method_col}" = ?')
+                set_param_template.append("manual")
+            if mapping_score_col:
+                set_parts.append(f'"{mapping_score_col}" = ?')
+                set_param_template.append(1.0)
+            if updated_at_col:
+                set_parts.append(f'"{updated_at_col}" = CURRENT_TIMESTAMP')
+
+            update_sql = (
+                f'UPDATE "{table_name}" '
+                f'SET {", ".join(set_parts)} '
+                f'WHERE LOWER(TRIM(COALESCE("{betfair_name_col}", \'\'))) = LOWER(TRIM(?))'
+            )
+
+            insert_cols: list[str] = [f'"{betfair_name_col}"', f'"{sofa_name_col}"']
+            insert_placeholders: list[str] = ["?", "?"]
+            insert_tail_params: list[Any] = []
+            if mapping_method_col:
+                insert_cols.append(f'"{mapping_method_col}"')
+                insert_placeholders.append("?")
+                insert_tail_params.append("manual")
+            if mapping_score_col:
+                insert_cols.append(f'"{mapping_score_col}"')
+                insert_placeholders.append("?")
+                insert_tail_params.append(1.0)
+            if seen_count_col:
+                insert_cols.append(f'"{seen_count_col}"')
+                insert_placeholders.append("?")
+                insert_tail_params.append(0)
+            if updated_at_col:
+                insert_cols.append(f'"{updated_at_col}"')
+                insert_placeholders.append("CURRENT_TIMESTAMP")
+
+            insert_sql = (
+                f'INSERT INTO "{table_name}" ({", ".join(insert_cols)}) '
+                f'VALUES ({", ".join(insert_placeholders)})'
+            )
+
+            conn.execute("BEGIN IMMEDIATE")
+            for raw_team, sofa_team in mappings:
+                raw_text = str(raw_team).strip()
+                sofa_text = str(sofa_team).strip()
+                if not raw_text or not sofa_text:
+                    continue
+
+                update_params = [sofa_text, *set_param_template, raw_text]
+                cur = conn.execute(update_sql, update_params)
+                if int(cur.rowcount or 0) <= 0:
+                    insert_params = [raw_text, sofa_text, *insert_tail_params]
+                    conn.execute(insert_sql, insert_params)
+            conn.commit()
+        except sqlite3.OperationalError as exc:
+            if conn is not None:
+                try:
+                    conn.rollback()
+                except Exception:
+                    pass
+            print(
+                "[xgd_web_app] Warning: manual mapping DB sync skipped due to SQLite lock/error: "
+                f"{exc}",
+                flush=True,
+            )
+        except Exception as exc:
+            if conn is not None:
+                try:
+                    conn.rollback()
+                except Exception:
+                    pass
+            print(
+                "[xgd_web_app] Warning: manual mapping DB sync failed: "
+                f"{exc}",
+                flush=True,
+            )
+        finally:
+            if conn is not None:
+                conn.close()
 
     def get_manual_mapping_lookup_snapshot(self) -> dict[str, str]:
         with self.state.lock:

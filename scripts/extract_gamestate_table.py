@@ -4,13 +4,19 @@ from __future__ import annotations
 import argparse
 import json
 import sqlite3
+import sys
 from pathlib import Path
 from typing import Any
 
 import pandas as pd
 
+# Allow running this script from inside ./scripts while importing project modules.
+PROJECT_DIR = Path(__file__).resolve().parents[1]
+if str(PROJECT_DIR) not in sys.path:
+    sys.path.insert(0, str(PROJECT_DIR))
+
 import xgd_web_app as app
-import xgd_form_model as wd
+from xgd_app.integrations import xgd_form_model as wd
 
 
 def parse_args() -> argparse.Namespace:

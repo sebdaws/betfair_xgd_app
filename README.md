@@ -5,7 +5,7 @@ Web app version of the Betfair + SofaScore xGD workflow (no Streamlit).
 ## Quick Start
 
 ```bash
-/Users/sebastiandaws/miniconda3/envs/footy/bin/python xgd_web_app.py --host 127.0.0.1 --port 8090
+python xgd_web_app.py --host 127.0.0.1 --port 8090
 ```
 
 Open: `http://127.0.0.1:8090`
@@ -22,17 +22,17 @@ Examples:
 
 ```powershell
 # PowerShell/CMD (no flags needed when app_data/launcher_config.json is set)
-C:\Users\Sebastian Daws\Documents\betfair_xgd_app\launch_app.cmd
+.\launch_app.cmd
 ```
 
 ```powershell
 # Direct env + app args
-C:\Users\Sebastian Daws\Documents\betfair_xgd_app\launch_app.cmd --conda-env footy -- --host 127.0.0.1 --port 8090
+.\launch_app.cmd --conda-env footy -- --host 127.0.0.1 --port 8090
 ```
 
 ```powershell
 # Optional explicit config override
-C:\Users\Sebastian Daws\Documents\betfair_xgd_app\launch_app.cmd --config C:\Users\Sebastian Daws\Documents\betfair_xgd_app\app_data\launcher_config.example.json
+.\launch_app.cmd --config .\app_data\launcher_config.example.json
 ```
 
 Config keys used by the launcher:
@@ -46,15 +46,17 @@ The launcher auto-discovers conda when possible (`--conda-exe` still overrides).
 ## Project Layout
 
 - `xgd_web_app.py`: compatibility launcher; calls `xgd_app.runtime.main()`
+- `launcher/launch_app_impl.py`: internal Python launcher used by `launch_app.cmd`
 - `xgd_app/runtime.py`: app startup and HTTP server lifecycle
 - `xgd_app/app_state.py`: central app state and service wiring
 - `xgd_app/web/handler.py`: HTTP routes (`/api/*`) and static asset serving
 - `xgd_app/services/`: business logic split by area
 - `xgd_app/data/`: SofaScore + historical Betfair data loading
 - `xgd_app/markets/`: handicap and goal-line market parsing helpers
+- `xgd_app/integrations/`: local Betfair scraper and form model modules loaded by `AppState`
 - `webapp/`: frontend assets (`index.html`, `app.js`, `styles.css`)
+- `scripts/`: utility scripts for local data inspection
 - `app_data/`: selected leagues, generated leagues list, mappings, saved games, and path defaults
-- `betfair_scraper.py` and `xgd_form_model.py`: local modules loaded by `AppState`
 
 ## Credentials
 
@@ -78,6 +80,66 @@ You can override with `--db-path`.
 
 Cross-project paths are configured in `app_data/default_paths.json`.
 Update that file to point this app at shared data or modules in other repositories.
+
+## App Navigation
+
+1. Launch the app and open `http://127.0.0.1:8090`.
+2. Use the top row tabs to switch between `Games`, `Saved Games`, `HC Rankings`, `Teams`, and `Mapping`.
+3. Click a game row (or team button) to open the right-side details panel.
+4. Use `Close` in the panel header to return to the table view.
+
+Top-bar controls (always visible):
+- `Refresh Betfair Odds`: reloads upcoming game/price data.
+- `xG Threshold`: changes highlight and HC/xG decision thresholds used across views.
+- `Highlight`: toggles xGD/HC highlighting.
+- `No-HC Games`: show or hide games with missing handicap prices.
+- `Hard Refresh xGD`: recomputes xGD data from source rows.
+
+## Tabs Overview
+
+### Games
+- Main working view for upcoming and historical fixtures.
+- `Upcoming` / `Historical` switch controls mode.
+- Day navigation: `Previous Day`, `Next Day`, `Today`/`Latest`, plus date jump input.
+- Filters: leagues, tier, sort, and team search.
+- Clicking a fixture opens a details panel with sub-tabs:
+  - `xGD`: matchup, venue-based and general form.
+  - `Stats`: corner/card stats and gamestate-based numbers.
+  - `HC Perf`: season handicap performance tables for both teams.
+- `Save` in the details panel adds/removes the game from `Saved Games`.
+
+### Saved Games
+- Shows only markets you have saved.
+- Uses its own sort selector.
+- Clicking a row opens the same details panel as in `Games`.
+
+### HC Rankings
+- League-level handicap performance ranking table by team.
+- Controls:
+  - venue sub-tabs: `General`, `Home`, `Away`
+  - `Rank By`: `Result`, `xG`, `PnL (For)`, `PnL (Against)`
+  - `Season` selector
+  - `League` selector
+- Clicking a team opens that team’s page for deeper season-level review.
+
+### Teams
+- Directory of teams available from current data.
+- Search by team name.
+- Clicking a team opens the team details panel.
+
+Team details panel:
+- Header selectors: `Season` and `League`
+- Sub-tabs:
+  - `xG Games`: game-by-game xG and recent form context
+  - `Stats`: aggregate team metrics
+  - `HC Perf`: handicap performance and summary tables
+
+### Mapping
+- Used to resolve Betfair vs SofaScore naming mismatches.
+- Sub-tabs:
+  - `Teams`: map unmatched teams to SofaScore names.
+  - `Competitions`: map unmatched competition names.
+- Includes save/delete actions and bulk save for selected rows.
 
 ## Notes
 

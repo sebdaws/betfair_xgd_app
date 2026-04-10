@@ -7,6 +7,7 @@ import datetime as dt
 import json
 import sqlite3
 import threading
+import time
 from pathlib import Path
 from typing import Any
 
@@ -53,26 +54,35 @@ from xgd_app.services.mappings import MappingService
 
 class AppState:
     def __init__(self, args: argparse.Namespace) -> None:
+        init_started_at = time.perf_counter()
         self.args = args
         self.lock = threading.Lock()
 
-        betfair_scraper_path = APP_DIR / "betfair_scraper.py"
+        betfair_scraper_path = APP_DIR / "xgd_app" / "integrations" / "betfair_scraper.py"
+        legacy_betfair_scraper_path = APP_DIR / "betfair_scraper.py"
+        if (not betfair_scraper_path.exists()) and legacy_betfair_scraper_path.exists():
+            betfair_scraper_path = legacy_betfair_scraper_path
         configured_betfair_scraper_path = get_external_path("betfair_scraper")
         if (not betfair_scraper_path.exists()) and configured_betfair_scraper_path is not None:
             betfair_scraper_path = configured_betfair_scraper_path
 
-        form_model_path = APP_DIR / "xgd_form_model.py"
+        form_model_path = APP_DIR / "xgd_app" / "integrations" / "xgd_form_model.py"
+        legacy_form_model_path = APP_DIR / "xgd_form_model.py"
+        if (not form_model_path.exists()) and legacy_form_model_path.exists():
+            form_model_path = legacy_form_model_path
         configured_form_model_path = get_external_path("xgd_form_model")
         if (not form_model_path.exists()) and configured_form_model_path is not None:
             form_model_path = configured_form_model_path
 
         if not betfair_scraper_path.exists():
             raise RuntimeError(
-                "Missing betfair_scraper.py. Set external_paths.betfair_scraper in app_data/default_paths.json."
+                "Missing xgd_app/integrations/betfair_scraper.py. "
+                "Set external_paths.betfair_scraper in app_data/default_paths.json if needed."
             )
         if not form_model_path.exists():
             raise RuntimeError(
-                "Missing xgd_form_model.py. Set external_paths.xgd_form_model in app_data/default_paths.json."
+                "Missing xgd_app/integrations/xgd_form_model.py. "
+                "Set external_paths.xgd_form_model in app_data/default_paths.json if needed."
             )
 
         self.betfair_module = load_module_from_path(betfair_scraper_path, "xgd_betfair_scraper")
@@ -107,7 +117,15 @@ class AppState:
         )
         self.credentials = self.games_service.resolve_credentials(args)
 
+        load_sofa_started_at = time.perf_counter()
+        print("[xgd_web_app] Stage 2/3: Loading SofaScore inputs...", flush=True)
         self.form_df, self.fixtures_df, teams, self.sofascore_db_path = load_sofascore_inputs(args.db_path)
+        print(
+            "[xgd_web_app] Stage 2/3: SofaScore inputs loaded "
+            f"({len(self.form_df)} form rows, {len(self.fixtures_df)} fixtures) "
+            f"in {(time.perf_counter() - load_sofa_started_at):.1f}s",
+            flush=True,
+        )
         self.team_matcher = TeamMatcher(teams)
 
         self.manual_mappings_path = DEFAULT_MANUAL_TEAM_MAPPINGS
@@ -136,7 +154,18 @@ class AppState:
         self.manual_competition_mapping_lookup = self.mapping_service.build_manual_competition_mapping_lookup(
             self.manual_competition_mappings
         )
+        sync_mappings_started_at = time.perf_counter()
+        print(
+            "[xgd_web_app] Stage 2/3: Syncing manual team mappings to DB "
+            f"({len(self.manual_team_mappings)} mappings)...",
+            flush=True,
+        )
         self.mapping_service.sync_all_manual_team_mappings_to_db()
+        print(
+            "[xgd_web_app] Stage 2/3: Manual mapping sync complete "
+            f"in {(time.perf_counter() - sync_mappings_started_at):.1f}s",
+            flush=True,
+        )
 
         self.historical_service = HistoricalService(
             state=self,
@@ -163,8 +192,21 @@ class AppState:
         self.historical_games_df = pd.DataFrame()
         self.upcoming_metrics_cache: dict[str, dict[str, Any]] = {}
         self.saved_market_ids = self._load_saved_market_ids()
+        historical_init_started_at = time.perf_counter()
+        print("[xgd_web_app] Stage 2/3: Initializing historical games cache...", flush=True)
         self.historical_data_service.initialize_historical_games(initial_days=7)
+        print(
+            "[xgd_web_app] Stage 2/3: Historical games cache initialized "
+            f"({len(self.historical_games_df)} rows) "
+            f"in {(time.perf_counter() - historical_init_started_at):.1f}s",
+            flush=True,
+        )
         self.last_refresh: dt.datetime | None = None
+        print(
+            "[xgd_web_app] Stage 2/3: App state initialized "
+            f"in {(time.perf_counter() - init_started_at):.1f}s",
+            flush=True,
+        )
 
     def _load_sofa_competitions_from_db(self, db_path: Path | None = None) -> set[str]:
         target_path = Path(db_path if db_path is not None else self.sofascore_db_path).expanduser().resolve()
@@ -462,14 +504,32 @@ class AppState:
     def get_game_hc_performance(self, market_id: str, verbose: bool = False) -> dict[str, Any]:
         return self.game_xgd_service.get_game_hc_performance(market_id=market_id, verbose=bool(verbose))
 
-    def get_team_hc_rankings(self, xg_push_threshold: float = 0.1) -> dict[str, Any]:
-        return self.game_xgd_service.get_team_hc_rankings(xg_push_threshold=xg_push_threshold)
+    def get_team_hc_rankings(
+        self,
+        xg_push_threshold: float = 0.1,
+        season_id: str | None = None,
+        competition_name: str | None = None,
+    ) -> dict[str, Any]:
+        return self.game_xgd_service.get_team_hc_rankings(
+            xg_push_threshold=xg_push_threshold,
+            season_id=season_id,
+            competition_name=competition_name,
+        )
 
     def get_team_hc_ranking_details(self, team_name: str, competition_name: str | None = None) -> dict[str, Any]:
         return self.game_xgd_service.get_team_hc_ranking_details(team_name=team_name, competition_name=competition_name)
 
-    def get_team_page(self, team_name: str, competition_name: str | None = None) -> dict[str, Any]:
-        return self.game_xgd_service.get_team_page(team_name=team_name, competition_name=competition_name)
+    def get_team_page(
+        self,
+        team_name: str,
+        competition_name: str | None = None,
+        season_id: str | None = None,
+    ) -> dict[str, Any]:
+        return self.game_xgd_service.get_team_page(
+            team_name=team_name,
+            competition_name=competition_name,
+            season_id=season_id,
+        )
 
     def list_teams_directory(self) -> dict[str, Any]:
         return self.game_xgd_service.list_teams_directory()

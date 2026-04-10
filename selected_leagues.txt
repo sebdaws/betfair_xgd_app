@@ -1,4 +1,0 @@
-# Format: competition_id|competition_name|tier
-# Tier is optional, but recommended for UI filtering.
-# Example:
-# 10932509|English Premier League|Tier 1

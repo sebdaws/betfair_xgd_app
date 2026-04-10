@@ -8,9 +8,9 @@ League selection workflow:
 3) Run normally; only leagues in app_data/selected_leagues.txt are tracked.
 
 Usage:
-  python betfair_scraper.py --export-leagues-only
-  python betfair_scraper.py --selected-leagues-file app_data/selected_leagues.txt
-  python betfair_scraper.py --market-types ASIAN_HANDICAP,HANDICAP
+  python xgd_app/integrations/betfair_scraper.py --export-leagues-only
+  python xgd_app/integrations/betfair_scraper.py --selected-leagues-file app_data/selected_leagues.txt
+  python xgd_app/integrations/betfair_scraper.py --market-types ASIAN_HANDICAP,HANDICAP
 """
 
 from __future__ import annotations

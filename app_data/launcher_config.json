@@ -1,7 +1,7 @@
 {
   "launcher": {
     "conda": {
-      "env": "work_test"
+      "env": "footy"
     },
     "app_args": [
       "--host",

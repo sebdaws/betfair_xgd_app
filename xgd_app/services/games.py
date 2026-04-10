@@ -243,6 +243,11 @@ class GamesService:
 
     def refresh(self, force: bool = False) -> None:
         now = dt.datetime.now(dt.timezone.utc)
+        if force:
+            print(
+                "[xgd_web_app] Stage 2/3: Collecting markets and preparing xGD workload...",
+                flush=True,
+            )
         with self.state.lock:
             games_df_snapshot = self.state.games_df.copy()
             last_refresh = self.state.last_refresh
@@ -512,11 +517,43 @@ class GamesService:
                 }
             markets_to_compute = set(missing_market_ids) | tier_zero_market_ids
 
+            if force:
+                print(
+                    f"[xgd_web_app] xGD calculation queue: {len(markets_to_compute)} game(s)",
+                    flush=True,
+                )
+
             if markets_to_compute:
                 manual_mapping_lookup = self.state.get_manual_mapping_lookup_snapshot()
                 blocked_auto_mapping_norms = self.state.get_disabled_auto_team_mapping_norms_snapshot()
                 manual_competition_mapping_lookup = self.state.get_manual_competition_mapping_lookup_snapshot()
                 target_games_df = games_df[games_df["market_id"].astype(str).isin(markets_to_compute)].copy()
+                progress_total = int(len(target_games_df))
+                progress_step = max(1, progress_total // 20) if progress_total > 0 else 1
+                progress_state = {"last_done": -1}
+
+                def _startup_progress(done: int, total: int, _: dict[str, Any]) -> None:
+                    if not force:
+                        return
+                    total_value = int(total or 0)
+                    done_value = int(done or 0)
+                    if total_value <= 0:
+                        return
+                    should_print = (
+                        done_value <= 1
+                        or done_value >= total_value
+                        or (done_value % progress_step) == 0
+                    )
+                    if not should_print:
+                        return
+                    if done_value == int(progress_state.get("last_done", -1)):
+                        return
+                    progress_state["last_done"] = done_value
+                    print(
+                        f"[xgd_web_app] xGD calculation progress: {done_value}/{total_value}",
+                        flush=True,
+                    )
+
                 try:
                     prediction_df = self.build_predictions(
                         betfair_games_df=target_games_df,
@@ -529,6 +566,7 @@ class GamesService:
                         manual_mapping_lookup=manual_mapping_lookup,
                         blocked_auto_mapping_norms=blocked_auto_mapping_norms,
                         manual_competition_mapping_lookup=manual_competition_mapping_lookup,
+                        progress_callback=_startup_progress if force else None,
                     )
                 except Exception:
                     prediction_df = pd.DataFrame()

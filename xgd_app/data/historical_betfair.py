@@ -167,6 +167,70 @@ class HistoricalBetfairDataService:
         }
 
     @staticmethod
+    def _historical_price_snapshot_is_missing(prices: dict[str, Any] | None) -> bool:
+        if not isinstance(prices, dict):
+            return True
+        for key in (
+            "mainline",
+            "home_price",
+            "away_price",
+            "goal_mainline",
+            "goal_under_price",
+            "goal_over_price",
+        ):
+            value = str(prices.get(key, "-") or "-").strip()
+            if value and value != "-":
+                return False
+        return True
+
+    def _resolve_historical_closing_prices_for_fixtures(
+        self,
+        fixtures: list[dict[str, Any]],
+    ) -> dict[tuple[str, str, str], dict[str, str]]:
+        if not fixtures:
+            return {}
+
+        seed_team = ""
+        for fixture in fixtures:
+            home_team = str(fixture.get("home_team", "")).strip()
+            away_team = str(fixture.get("away_team", "")).strip()
+            seed_team = home_team or away_team
+            if seed_team:
+                break
+
+        bulk_prices_by_fixture = self._bulk_lookup_historical_betfair_prices_for_team_fixtures(
+            team_name=seed_team,
+            fixtures=fixtures,
+        )
+
+        out: dict[tuple[str, str, str], dict[str, str]] = {}
+        for fixture in fixtures:
+            home_team = str(fixture.get("home_team", "")).strip()
+            away_team = str(fixture.get("away_team", "")).strip()
+            kickoff_time = pd.to_datetime(fixture.get("kickoff_time"), errors="coerce", utc=True)
+            home_norm = normalize_team_name(home_team)
+            away_norm = normalize_team_name(away_team)
+            if not home_norm or not away_norm or pd.isna(kickoff_time):
+                continue
+
+            fixture_key = self._historical_price_lookup_key(home_norm, away_norm, kickoff_time)
+            closing = bulk_prices_by_fixture.get(fixture_key)
+            if self._historical_price_snapshot_is_missing(closing):
+                closing = self._lookup_historical_betfair_prices(
+                    home_team=home_team,
+                    away_team=away_team,
+                    kickoff_ts=kickoff_time,
+                )
+
+            base = self._historical_default_price_snapshot()
+            if isinstance(closing, dict):
+                for key in base:
+                    base[key] = str(closing.get(key, "-") or "-")
+            out[fixture_key] = base
+
+        return out
+
+    @staticmethod
     def _historical_price_db_table_candidates() -> tuple[str, ...]:
         return (
             "betfair_historical_prices",
@@ -1732,8 +1796,31 @@ class HistoricalBetfairDataService:
         if not isinstance(home_rows, pd.DataFrame) or home_rows.empty:
             return pd.DataFrame()
 
+        source_rows = home_rows.to_dict(orient="records")
+        fixture_rows: list[dict[str, Any]] = []
+        for row in source_rows:
+            kickoff_ts = row.get("date_time")
+            if pd.isna(kickoff_ts):
+                continue
+            match_id_raw = row.get("match_id")
+            if pd.isna(match_id_raw):
+                continue
+            home_team = str(row.get("team", "")).strip()
+            away_team = str(row.get("opponent", "")).strip()
+            if not home_team or not away_team:
+                continue
+            fixture_rows.append(
+                {
+                    "match_id": int(match_id_raw),
+                    "home_team": home_team,
+                    "away_team": away_team,
+                    "kickoff_time": kickoff_ts,
+                }
+            )
+        prices_by_fixture = self._resolve_historical_closing_prices_for_fixtures(fixture_rows)
+
         rows: list[dict[str, Any]] = []
-        for row in home_rows.to_dict(orient="records"):
+        for row in source_rows:
             kickoff_ts = row.get("date_time")
             if pd.isna(kickoff_ts):
                 continue
@@ -1754,11 +1841,12 @@ class HistoricalBetfairDataService:
             away_team = str(row.get("opponent", "")).strip()
             competition_name = str(row.get("competition_name", "")).strip()
             area_name = str(row.get("area_name", "")).strip()
-            closing_prices = self._lookup_historical_betfair_prices(
-                home_team=home_team,
-                away_team=away_team,
-                kickoff_ts=kickoff_ts,
+            fixture_key = self._historical_price_lookup_key(
+                normalize_team_name(home_team),
+                normalize_team_name(away_team),
+                pd.to_datetime(kickoff_ts, errors="coerce", utc=True),
             )
+            closing_prices = prices_by_fixture.get(fixture_key, self._historical_default_price_snapshot())
             scoreline = f"{home_goals}-{away_goals}"
 
             rows.append(
@@ -1978,6 +2066,23 @@ class HistoricalBetfairDataService:
             self._historical_team_mapping_cache = {}
 
         updated_df = historical_df.copy()
+        fixtures: list[dict[str, Any]] = []
+        for _, row in updated_df.iterrows():
+            kickoff_ts = row.get("kickoff_time")
+            home_team = str(row.get("home_raw", "")).strip()
+            away_team = str(row.get("away_raw", "")).strip()
+            if not home_team or not away_team or pd.isna(kickoff_ts):
+                continue
+            fixtures.append(
+                {
+                    "match_id": row.get("match_id"),
+                    "home_team": home_team,
+                    "away_team": away_team,
+                    "kickoff_time": kickoff_ts,
+                }
+            )
+        prices_by_fixture = self._resolve_historical_closing_prices_for_fixtures(fixtures)
+
         changed_games = 0
         updated_games = 0
         price_cols = (
@@ -1995,11 +2100,12 @@ class HistoricalBetfairDataService:
             if not home_team or not away_team or pd.isna(kickoff_ts):
                 continue
 
-            closing = self._lookup_historical_betfair_prices(
-                home_team=home_team,
-                away_team=away_team,
-                kickoff_ts=kickoff_ts,
+            fixture_key = self._historical_price_lookup_key(
+                normalize_team_name(home_team),
+                normalize_team_name(away_team),
+                pd.to_datetime(kickoff_ts, errors="coerce", utc=True),
             )
+            closing = prices_by_fixture.get(fixture_key, self._historical_default_price_snapshot())
             new_values = {
                 "mainline": str(closing.get("mainline", "-") or "-"),
                 "home_price": str(closing.get("home_price", "-") or "-"),

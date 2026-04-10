@@ -483,6 +483,7 @@ def build_predictions(
     manual_mapping_lookup: dict[str, str] | None = None,
     blocked_auto_mapping_norms: set[str] | None = None,
     manual_competition_mapping_lookup: dict[str, str] | None = None,
+    progress_callback: Any | None = None,
 ) -> pd.DataFrame:
     if betfair_games_df.empty:
         return pd.DataFrame()
@@ -703,6 +704,18 @@ def build_predictions(
             )
 
     model_idx = 0
+    progress_total = int(len(mapped_games))
+    progress_done = 0
+
+    def _report_progress(mapped_row: dict[str, Any]) -> None:
+        nonlocal progress_done
+        progress_done += 1
+        if callable(progress_callback):
+            try:
+                progress_callback(progress_done, progress_total, mapped_row)
+            except Exception:
+                pass
+
     for mapped in mapped_games:
         if not mapped.get("home_sofa") or not mapped.get("away_sofa"):
             pred_rows.append({
@@ -711,6 +724,7 @@ def build_predictions(
                 "xgd_competition_mismatch": False,
                 "xgd_domestic_fallback": False,
             })
+            _report_progress(mapped)
             continue
         if model_idx >= len(game_tables):
             pred_rows.append({
@@ -719,6 +733,7 @@ def build_predictions(
                 "xgd_competition_mismatch": False,
                 "xgd_domestic_fallback": False,
             })
+            _report_progress(mapped)
             continue
 
         _, _, _, _, reduced = game_tables[model_idx]
@@ -847,6 +862,7 @@ def build_predictions(
                                         "xgd_domestic_fallback": True,
                                     }
                                 )
+                            _report_progress(mapped)
                             continue
 
         if (not is_tier_zero) and home_sofa and away_sofa and (not pd.isna(kickoff_time)):
@@ -942,6 +958,7 @@ def build_predictions(
                     home_games_used=len(home_fixture_rows),
                     away_games_used=len(away_fixture_rows),
                 )
+                _report_progress(mapped)
                 continue
 
             strict_calc_form_df = pd.concat([strict_home_rows, strict_away_rows], ignore_index=True)
@@ -996,6 +1013,7 @@ def build_predictions(
                             "xgd_domestic_fallback": False,
                         }
                     )
+                _report_progress(mapped)
                 continue
 
             _append_empty_period_rows_for_market(
@@ -1004,6 +1022,7 @@ def build_predictions(
                 home_games_used=len(home_fixture_rows),
                 away_games_used=len(away_fixture_rows),
             )
+            _report_progress(mapped)
             continue
 
         xgd_competition_mismatch = source_competitions_differ_from_betfair_competition(
@@ -1059,6 +1078,7 @@ def build_predictions(
                     "xgd_domestic_fallback": False,
                 }
             )
+        _report_progress(mapped)
 
     out = pd.DataFrame(pred_rows)
     if "period" in out.columns:

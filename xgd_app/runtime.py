@@ -15,6 +15,7 @@ def main() -> None:
 
     print("[xgd_web_app] Stage 2/3: Initializing app state and refreshing games...", flush=True)
     state = AppState(args)
+    print("[xgd_web_app] Stage 2/3: App state ready. Refreshing upcoming games...", flush=True)
     state.refresh_games(force=True)
 
     print("[xgd_web_app] Stage 3/3: Starting HTTP server...", flush=True)

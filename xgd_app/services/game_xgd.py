@@ -187,6 +187,74 @@ class GameXgdService:
         year = int(ts.year)
         return year if int(ts.month) >= 7 else (year - 1)
 
+    @staticmethod
+    def _has_season_id(value: Any) -> bool:
+        return bool(GameXgdService._season_id_key(value))
+
+    @staticmethod
+    def _season_values_equal(left: Any, right: Any) -> bool:
+        left_key = GameXgdService._season_id_key(left)
+        right_key = GameXgdService._season_id_key(right)
+        return bool(left_key) and bool(right_key) and left_key == right_key
+
+    def _filter_rows_by_season_id(self, rows: pd.DataFrame, season_id_value: Any) -> pd.DataFrame:
+        if not isinstance(rows, pd.DataFrame) or rows.empty:
+            return pd.DataFrame()
+        if "season_id" not in rows.columns:
+            return rows.copy()
+        season_key = self._season_id_key(season_id_value)
+        if not season_key:
+            return rows.copy()
+        season_keys = rows["season_id"].map(self._season_id_key)
+        return rows[season_keys == season_key].copy()
+
+    def _infer_fixture_season_id(self, home_team: str, away_team: str, kickoff_time: Any) -> Any:
+        home_text = str(home_team or "").strip()
+        away_text = str(away_team or "").strip()
+        kickoff_ts = pd.to_datetime(kickoff_time, errors="coerce", utc=True)
+        if not home_text or not away_text or pd.isna(kickoff_ts):
+            return None
+        if self.form_df.empty:
+            return None
+        if "team" not in self.form_df.columns or "date_time" not in self.form_df.columns or "season_id" not in self.form_df.columns:
+            return None
+
+        rows = self.form_df.copy()
+        rows = rows[rows["team"].astype(str).isin({home_text, away_text})].copy()
+        if rows.empty:
+            return None
+
+        rows["date_time"] = pd.to_datetime(rows["date_time"], errors="coerce", utc=True)
+        rows = rows[rows["date_time"].notna() & (rows["date_time"] < kickoff_ts)].copy()
+        if rows.empty:
+            return None
+
+        rows["_season_key"] = rows["season_id"].map(self._season_id_key)
+        rows = rows[rows["_season_key"] != ""].copy()
+        if rows.empty:
+            return None
+
+        home_keys = set(rows.loc[rows["team"].astype(str) == home_text, "_season_key"].tolist())
+        away_keys = set(rows.loc[rows["team"].astype(str) == away_text, "_season_key"].tolist())
+        common_keys = home_keys & away_keys
+        if not common_keys:
+            return None
+
+        common_rows = rows[rows["_season_key"].isin(common_keys)].copy()
+        if common_rows.empty:
+            return None
+        common_rows = common_rows.sort_values("date_time", kind="mergesort")
+        selected_key = str(common_rows.iloc[-1]["_season_key"]).strip()
+        if not selected_key:
+            return None
+
+        selected_rows = rows[rows["_season_key"] == selected_key].copy()
+        selected_rows = selected_rows[selected_rows["season_id"].notna()].copy()
+        if selected_rows.empty:
+            return selected_key
+        selected_rows = selected_rows.sort_values("date_time", kind="mergesort")
+        return selected_rows.iloc[-1]["season_id"]
+
     def _filter_rows_for_hc_rankings_current_season(self, rows: pd.DataFrame) -> pd.DataFrame:
         if not isinstance(rows, pd.DataFrame) or rows.empty:
             return pd.DataFrame()
@@ -255,8 +323,6 @@ class GameXgdService:
         requested_team = str(team_name or "").strip()
         if not requested_team:
             return ""
-        if requested_team in self.team_matcher.team_set:
-            return requested_team
 
         manual_lookup = self.get_manual_mapping_lookup_snapshot()
         requested_key = normalize_team_name(requested_team)
@@ -264,6 +330,9 @@ class GameXgdService:
             manual_target = manual_lookup.get(requested_key)
             if manual_target and manual_target in self.team_matcher.team_set:
                 return manual_target
+
+        if requested_team in self.team_matcher.team_set:
+            return requested_team
 
         matched_team, _, _ = self.team_matcher.match(requested_team)
         if matched_team:
@@ -401,17 +470,25 @@ class GameXgdService:
             "total_competitions": len(competitions),
         }
 
-    def get_team_hc_rankings(self, xg_push_threshold: float = 0.1) -> dict[str, Any]:
+    def get_team_hc_rankings(
+        self,
+        xg_push_threshold: float = 0.1,
+        season_id: str | None = None,
+        competition_name: str | None = None,
+    ) -> dict[str, Any]:
         xg_threshold = self._to_float_or_none(xg_push_threshold)
         if xg_threshold is None or not math.isfinite(float(xg_threshold)):
             xg_threshold = 0.1
         xg_threshold = max(0.0, min(5.0, float(xg_threshold)))
+        requested_season_key = self._season_id_key(season_id)
+        requested_competition = str(competition_name or "").strip()
         historical_service = self.state.historical_data_service
-        source_rows = self._filter_rows_for_hc_rankings_current_season(
-            historical_service._prepare_historical_home_rows()
-        )
+        source_rows = historical_service._prepare_historical_home_rows()
         if not isinstance(source_rows, pd.DataFrame) or source_rows.empty:
             return {
+                "season": requested_season_key,
+                "seasons": [],
+                "seasons_by_competition": {},
                 "leagues": [],
                 "rows": [],
                 "total_leagues": 0,
@@ -420,6 +497,126 @@ class GameXgdService:
                 "venue_options": ["overall", "home", "away"],
                 "xg_push_threshold": xg_threshold,
             }
+
+        if "date_time" in source_rows.columns:
+            source_rows["date_time"] = pd.to_datetime(source_rows["date_time"], errors="coerce", utc=True)
+            source_rows = source_rows[source_rows["date_time"].notna()].copy()
+        if source_rows.empty:
+            return {
+                "season": requested_season_key,
+                "seasons": [],
+                "seasons_by_competition": {},
+                "leagues": [],
+                "rows": [],
+                "total_leagues": 0,
+                "total_teams": 0,
+                "sort_options": ["result", "xg", "pnl", "pnl_against"],
+                "venue_options": ["overall", "home", "away"],
+                "xg_push_threshold": xg_threshold,
+            }
+
+        if "season_id" in source_rows.columns:
+            source_rows["_season_key"] = source_rows["season_id"].map(self._season_id_key)
+        else:
+            source_rows["_season_key"] = ""
+        if not bool((source_rows["_season_key"] != "").any()):
+            source_rows["_season_key"] = source_rows["date_time"].map(self._season_start_year).map(
+                lambda value: "" if value is None else str(int(value))
+            )
+        source_rows = source_rows[source_rows["_season_key"].astype(str).str.strip() != ""].copy()
+        if source_rows.empty:
+            return {
+                "season": requested_season_key,
+                "seasons": [],
+                "seasons_by_competition": {},
+                "leagues": [],
+                "rows": [],
+                "total_leagues": 0,
+                "total_teams": 0,
+                "sort_options": ["result", "xg", "pnl", "pnl_against"],
+                "venue_options": ["overall", "home", "away"],
+                "xg_push_threshold": xg_threshold,
+            }
+
+        def build_season_summaries(rows: pd.DataFrame) -> list[dict[str, Any]]:
+            out: list[dict[str, Any]] = []
+            for season_key, season_rows in rows.groupby("_season_key", sort=False):
+                season_key_text = str(season_key or "").strip()
+                if not season_key_text:
+                    continue
+                latest_ts = pd.to_datetime(season_rows["date_time"], errors="coerce", utc=True).max()
+                latest_text = latest_ts.strftime("%Y-%m-%d %H:%M") if not pd.isna(latest_ts) else ""
+                season_label = ""
+                if "season_name" in season_rows.columns:
+                    season_name_rows = season_rows.copy()
+                    season_name_rows = season_name_rows.sort_values("date_time", kind="mergesort")
+                    season_name_text = str(season_name_rows.iloc[-1].get("season_name", "")).strip()
+                    if season_name_text:
+                        season_label = season_name_text
+                if not season_label:
+                    season_label = f"Season {season_key_text}"
+                out.append(
+                    {
+                        "season": season_key_text,
+                        "season_label": season_label,
+                        "games_count": int(len(season_rows)),
+                        "latest_game_utc": latest_text,
+                        "_latest_ts": latest_ts,
+                    }
+                )
+            out.sort(
+                key=lambda row: (
+                    (
+                        pd.to_datetime(row.get("_latest_ts"), errors="coerce", utc=True).timestamp()
+                        if not pd.isna(pd.to_datetime(row.get("_latest_ts"), errors="coerce", utc=True))
+                        else float("-inf")
+                    ),
+                    int(row.get("games_count", 0) or 0),
+                    str(row.get("season", "")).lower(),
+                ),
+                reverse=True,
+            )
+            return out
+
+        season_summaries = build_season_summaries(source_rows)
+        seasons_by_competition: dict[str, list[dict[str, Any]]] = {}
+        if "competition_name" in source_rows.columns:
+            comp_series = source_rows["competition_name"].fillna("").astype(str).str.strip()
+            source_rows["_competition_key"] = comp_series.where(comp_series != "", "Unknown")
+        else:
+            source_rows["_competition_key"] = "Unknown"
+        for competition_key, competition_rows in source_rows.groupby("_competition_key", sort=False):
+            competition_text = str(competition_key or "").strip() or "Unknown"
+            seasons_by_competition[competition_text] = build_season_summaries(competition_rows)
+
+        selected_competition_seasons = seasons_by_competition.get(requested_competition, [])
+        selected_competition_available_seasons = {
+            str(row.get("season", "")).strip()
+            for row in selected_competition_seasons
+            if str(row.get("season", "")).strip()
+        }
+        available_seasons = {
+            str(row.get("season", "")).strip()
+            for row in season_summaries
+            if str(row.get("season", "")).strip()
+        }
+        if requested_competition and selected_competition_available_seasons:
+            selected_season = (
+                requested_season_key if requested_season_key in selected_competition_available_seasons else ""
+            )
+            if not selected_season and selected_competition_seasons:
+                selected_season = str(selected_competition_seasons[0].get("season", "")).strip()
+        else:
+            selected_season = requested_season_key if requested_season_key in available_seasons else ""
+            if not selected_season and season_summaries:
+                selected_season = str(season_summaries[0].get("season", "")).strip()
+        if selected_season:
+            source_rows = source_rows[source_rows["_season_key"] == selected_season].copy()
+        for row in season_summaries:
+            row.pop("_latest_ts", None)
+        for competition_rows in seasons_by_competition.values():
+            for row in competition_rows:
+                row.pop("_latest_ts", None)
 
         prices_by_match_id = self._build_prices_by_match_id_for_home_rows(source_rows)
         league_team_stats: dict[str, dict[str, dict[str, Any]]] = {}
@@ -641,6 +838,9 @@ class GameXgdService:
             )
 
         return {
+            "season": selected_season,
+            "seasons": season_summaries,
+            "seasons_by_competition": seasons_by_competition,
             "leagues": leagues,
             "rows": rows,
             "total_leagues": len(leagues),
@@ -780,26 +980,32 @@ class GameXgdService:
             "games_count": len(rows_out),
         }
 
-    def get_team_page(self, team_name: str, competition_name: str | None = None) -> dict[str, Any]:
+    def get_team_page(
+        self,
+        team_name: str,
+        competition_name: str | None = None,
+        season_id: str | None = None,
+    ) -> dict[str, Any]:
         requested_team_text = str(team_name or "").strip()
         if not requested_team_text:
             raise ValueError("team is required")
 
         requested_competition = str(competition_name or "").strip()
+        requested_season_key = self._season_id_key(season_id)
         team_text = self._resolve_sofascore_team_name(
             requested_team_text,
             competition_name=(requested_competition or None),
         )
         historical_service = self.state.historical_data_service
-        source_rows = self._filter_rows_for_hc_rankings_current_season(
-            historical_service._prepare_historical_home_rows()
-        )
+        source_rows = historical_service._prepare_historical_home_rows()
 
         empty_payload = {
             "team": team_text,
             "requested_team": requested_team_text,
             "competition": requested_competition,
+            "season": requested_season_key,
             "competitions": [],
+            "seasons": [],
             "recent_rows": [],
             "team_venue_rows": {"home": [], "away": []},
             "season_handicap_rows": [],
@@ -820,6 +1026,12 @@ class GameXgdService:
         if work_source.empty:
             return empty_payload
 
+        if "date_time" in work_source.columns:
+            work_source["date_time"] = pd.to_datetime(work_source["date_time"], errors="coerce", utc=True)
+            work_source = work_source[work_source["date_time"].notna()].copy()
+        if work_source.empty:
+            return empty_payload
+
         competition_tier_map: dict[str, str] = {}
         if "competition_name" in source_rows.columns and "tier" in source_rows.columns:
             for row in source_rows.to_dict(orient="records"):
@@ -828,7 +1040,80 @@ class GameXgdService:
                 if competition and competition not in competition_tier_map:
                     competition_tier_map[competition] = tier
 
-        work_source["date_time"] = pd.to_datetime(work_source["date_time"], errors="coerce", utc=True)
+        if "season_id" in work_source.columns:
+            work_source["_season_key"] = work_source["season_id"].map(self._season_id_key)
+        else:
+            work_source["_season_key"] = ""
+        if not bool((work_source["_season_key"] != "").any()):
+            work_source["_season_key"] = work_source["date_time"].map(self._season_start_year).map(
+                lambda value: "" if value is None else str(int(value))
+            )
+
+        work_source = work_source[work_source["_season_key"].astype(str).str.strip() != ""].copy()
+        if work_source.empty:
+            return empty_payload
+
+        season_summaries: list[dict[str, Any]] = []
+        season_key_to_value: dict[str, Any] = {}
+        for season_key, season_rows in work_source.groupby("_season_key", sort=False):
+            season_key_text = str(season_key or "").strip()
+            if not season_key_text:
+                continue
+            latest_ts = pd.to_datetime(season_rows["date_time"], errors="coerce", utc=True).max()
+            latest_text = latest_ts.strftime("%Y-%m-%d %H:%M") if not pd.isna(latest_ts) else ""
+
+            season_id_value: Any = season_key_text
+            if "season_id" in season_rows.columns:
+                season_ids = [value for value in season_rows["season_id"].dropna().tolist() if self._season_id_key(value)]
+                if season_ids:
+                    season_id_value = season_ids[0]
+            season_key_to_value.setdefault(season_key_text, season_id_value)
+
+            season_label = ""
+            if "season_name" in season_rows.columns:
+                season_name_rows = season_rows.copy()
+                season_name_rows = season_name_rows.sort_values("date_time", kind="mergesort")
+                season_name_text = str(season_name_rows.iloc[-1].get("season_name", "")).strip()
+                if season_name_text:
+                    season_label = season_name_text
+            if not season_label:
+                season_label = f"Season {season_key_text}"
+
+            season_summaries.append(
+                {
+                    "season": season_key_text,
+                    "season_label": season_label,
+                    "games_count": int(len(season_rows)),
+                    "latest_game_utc": latest_text,
+                    "_latest_ts": latest_ts,
+                }
+            )
+
+        season_summaries.sort(
+            key=lambda row: (
+                (
+                    pd.to_datetime(row.get("_latest_ts"), errors="coerce", utc=True).timestamp()
+                    if not pd.isna(pd.to_datetime(row.get("_latest_ts"), errors="coerce", utc=True))
+                    else float("-inf")
+                ),
+                int(row.get("games_count", 0) or 0),
+                str(row.get("season", "")).lower(),
+            ),
+            reverse=True,
+        )
+
+        available_seasons = {
+            str(row.get("season", "")).strip()
+            for row in season_summaries
+            if str(row.get("season", "")).strip()
+        }
+        selected_season = requested_season_key if requested_season_key in available_seasons else ""
+        if not selected_season and season_summaries:
+            selected_season = str(season_summaries[0].get("season", "")).strip()
+        selected_season_value = season_key_to_value.get(selected_season, selected_season)
+        if selected_season:
+            work_source = work_source[work_source["_season_key"] == selected_season].copy()
+
         competition_summaries: list[dict[str, Any]] = []
         if "competition_name" in work_source.columns:
             comp_series = work_source["competition_name"].fillna("").astype(str).str.strip()
@@ -881,7 +1166,8 @@ class GameXgdService:
             if "competition_name" in team_form_rows.columns and available_competitions:
                 comp_values = team_form_rows["competition_name"].fillna("").astype(str).str.strip()
                 team_form_rows = team_form_rows[comp_values.isin(available_competitions)].copy()
-            team_form_rows = self._filter_rows_for_hc_rankings_current_season(team_form_rows)
+            if selected_season:
+                team_form_rows = self._filter_rows_by_season_id(team_form_rows, selected_season_value)
             if selected_competition and "competition_name" in team_form_rows.columns:
                 comp_values = team_form_rows["competition_name"].fillna("").astype(str).str.strip()
                 team_form_rows = team_form_rows[comp_values == selected_competition].copy()
@@ -894,6 +1180,8 @@ class GameXgdService:
 
         if selected_competition and not requested_competition:
             requested_competition = selected_competition
+        if selected_season and not requested_season_key:
+            requested_season_key = selected_season
 
         recent_rows = build_recent_form_rows(team_form_rows, recent_n=None)
         home_rows_df = (
@@ -911,24 +1199,37 @@ class GameXgdService:
             "away": build_recent_form_rows(away_rows_df, recent_n=None),
         }
 
-        hc_payload = self.get_team_hc_ranking_details(
-            team_name=team_text,
-            competition_name=(selected_competition or None),
+        latest_team_ts = pd.to_datetime(team_form_rows.get("date_time"), errors="coerce", utc=True).max() if (
+            isinstance(team_form_rows, pd.DataFrame) and (not team_form_rows.empty) and ("date_time" in team_form_rows.columns)
+        ) else pd.NaT
+        if pd.isna(latest_team_ts):
+            latest_team_ts = pd.to_datetime(work_source.get("date_time"), errors="coerce", utc=True).max() if (
+                isinstance(work_source, pd.DataFrame) and (not work_source.empty) and ("date_time" in work_source.columns)
+            ) else pd.NaT
+        cutoff_time = (
+            (latest_team_ts + pd.Timedelta(seconds=1))
+            if not pd.isna(latest_team_ts)
+            else pd.Timestamp.now(tz="UTC")
         )
-        season_handicap_rows = (
-            hc_payload.get("rows", [])
-            if isinstance(hc_payload, dict) and isinstance(hc_payload.get("rows"), list)
-            else []
+        season_handicap_rows = self._build_team_season_handicap_rows(
+            team_name=team_text,
+            season_id=selected_season_value,
+            kickoff_time=cutoff_time,
+            competition_name=(selected_competition or None),
         )
 
         for row in competition_summaries:
+            row.pop("_latest_ts", None)
+        for row in season_summaries:
             row.pop("_latest_ts", None)
 
         return {
             "team": team_text,
             "requested_team": requested_team_text,
             "competition": selected_competition,
+            "season": selected_season,
             "competitions": competition_summaries,
+            "seasons": season_summaries,
             "recent_rows": recent_rows,
             "team_venue_rows": team_venue_rows,
             "season_handicap_rows": season_handicap_rows,
@@ -995,12 +1296,13 @@ class GameXgdService:
             return []
         self._log_hcperf_timing(label, "filter_team_games", step_started_at, rows=int(len(team_df)))
 
-        if season_id is not None and (not pd.isna(season_id)) and "season_id" in team_df.columns:
+        if self._has_season_id(season_id) and "season_id" in team_df.columns:
             step_started_at = time.perf_counter()
-            season_filtered = team_df[team_df["season_id"] == season_id].copy()
-            if not season_filtered.empty:
-                team_df = season_filtered
+            team_df = self._filter_rows_by_season_id(team_df, season_id)
             self._log_hcperf_timing(label, "season_filter", step_started_at, rows=int(len(team_df)))
+            if team_df.empty:
+                self._log_hcperf_timing(label, "early_exit_no_games_in_fixture_season", step_started_at)
+                return []
 
         competition_text = str(competition_name or "").strip()
         if competition_text and "competition_name" in team_df.columns:
@@ -1253,6 +1555,20 @@ class GameXgdService:
             away_team = str(context.get("away_team", "")).strip()
             kickoff_time = context.get("kickoff_time")
             fixture_season_id = context.get("fixture_season_id")
+            if not self._has_season_id(fixture_season_id):
+                inferred_season_id = self._infer_fixture_season_id(
+                    home_team=home_team,
+                    away_team=away_team,
+                    kickoff_time=kickoff_time,
+                )
+                if self._has_season_id(inferred_season_id):
+                    fixture_season_id = inferred_season_id
+            self._log_hcperf_timing(
+                req_label,
+                "resolve_fixture_season",
+                req_started_at,
+                fixture_season_id=self._season_id_key(fixture_season_id),
+            )
             if not home_team or not away_team or pd.isna(kickoff_time):
                 self._log_hcperf_timing(req_label, "early_exit_invalid_context", req_started_at)
                 return {
@@ -1867,78 +2183,12 @@ class GameXgdService:
                 kickoff_time=kickoff_time,
             )
 
-            def _is_tier_one_value(raw_value: Any) -> bool:
-                tier_text = str(raw_value or "").strip().casefold()
-                if not tier_text:
-                    return False
-                return tier_text in {"tier 1", "tier1", "1"}
-
-            historical_rows_tier_scope = self.state.historical_data_service._prepare_historical_home_rows()
-
-            def _team_is_in_tier_one_competition(
-                team_name: str,
-                competition_name: str,
-                area_name: str,
-                cutoff_time: Any,
-            ) -> bool:
-                if not isinstance(historical_rows_tier_scope, pd.DataFrame) or historical_rows_tier_scope.empty:
-                    return False
-                if "competition_name" not in historical_rows_tier_scope.columns or "tier" not in historical_rows_tier_scope.columns:
-                    return False
-
-                rows = historical_rows_tier_scope.copy()
-                rows = rows[rows["competition_name"].fillna("").astype(str).str.strip() == str(competition_name)].copy()
-                if area_name and "area_name" in rows.columns:
-                    rows = rows[rows["area_name"].fillna("").astype(str).str.strip() == str(area_name)].copy()
-                if rows.empty:
-                    return False
-
-                cutoff_ts = pd.to_datetime(cutoff_time, errors="coerce", utc=True)
-                if (not pd.isna(cutoff_ts)) and ("date_time" in rows.columns):
-                    rows["date_time"] = pd.to_datetime(rows["date_time"], errors="coerce", utc=True)
-                    rows = rows[(rows["date_time"].notna()) & (rows["date_time"] < cutoff_ts)].copy()
-                if rows.empty:
-                    return False
-
-                team_series = (
-                    rows["team"].fillna("").astype(str).str.strip()
-                    if "team" in rows.columns
-                    else pd.Series("", index=rows.index, dtype=str)
-                )
-                opponent_series = (
-                    rows["opponent"].fillna("").astype(str).str.strip()
-                    if "opponent" in rows.columns
-                    else pd.Series("", index=rows.index, dtype=str)
-                )
-                tier_series = rows["tier"].fillna("").astype(str).str.strip()
-
-                def _team_has_tier_one(team_name: str) -> bool:
-                    mask = (team_series == str(team_name)) | (opponent_series == str(team_name))
-                    if not bool(mask.any()):
-                        return False
-                    tiers = tier_series[mask].tolist()
-                    return any(_is_tier_one_value(value) for value in tiers)
-
-                return _team_has_tier_one(team_name)
-
-            both_have_tier_one_domestic = (
+            has_domestic_competitions = (
                 bool(home_domestic_competition)
                 and bool(away_domestic_competition)
-                and _team_is_in_tier_one_competition(
-                    team_name=primary_home_sofa,
-                    competition_name=str(home_domestic_competition),
-                    area_name=str(home_domestic_area or ""),
-                    cutoff_time=kickoff_time,
-                )
-                and _team_is_in_tier_one_competition(
-                    team_name=primary_away_sofa,
-                    competition_name=str(away_domestic_competition),
-                    area_name=str(away_domestic_area or ""),
-                    cutoff_time=kickoff_time,
-                )
             )
 
-            if both_have_tier_one_domestic:
+            if has_domestic_competitions:
                 home_domestic_rows, home_domestic_season = select_team_competition_rows(
                     form_df=self.form_df,
                     team_name=primary_home_sofa,

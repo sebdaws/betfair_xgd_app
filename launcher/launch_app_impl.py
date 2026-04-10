@@ -16,10 +16,11 @@ from typing import Any
 
 
 SCRIPT_DIR = Path(__file__).resolve().parent
-DEFAULT_APP_SCRIPT = SCRIPT_DIR / "xgd_web_app.py"
+PROJECT_DIR = SCRIPT_DIR.parent
+DEFAULT_APP_SCRIPT = PROJECT_DIR / "xgd_web_app.py"
 DEFAULT_CONFIG_CANDIDATES = (
-    SCRIPT_DIR / "app_data" / "launcher_config.json",
-    SCRIPT_DIR / "launcher_config.json",
+    PROJECT_DIR / "app_data" / "launcher_config.json",
+    PROJECT_DIR / "launcher_config.json",
 )
 
 
@@ -76,6 +77,7 @@ def resolve_path(path_value: str | Path, base_dir: Path | None = None) -> Path:
     if base_dir is not None:
         candidates.append((base_dir / raw).resolve())
     candidates.append((Path.cwd() / raw).resolve())
+    candidates.append((PROJECT_DIR / raw).resolve())
     candidates.append((SCRIPT_DIR / raw).resolve())
 
     for candidate in candidates:
@@ -334,7 +336,7 @@ def stop_child_process(proc: subprocess.Popen[Any], timeout_seconds: float = 8.0
 def run_app_command(command: list[str], run_env: dict[str, str]) -> int:
     process = subprocess.Popen(
         command,
-        cwd=str(SCRIPT_DIR),
+        cwd=str(PROJECT_DIR),
         env=run_env,
     )
     try:

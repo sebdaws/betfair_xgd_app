@@ -444,26 +444,117 @@ main {
 .games-table td:nth-child(3) { font-weight: 600; }
 .main-games-table th.league-col,
 .main-games-table td.league-col {
-  width: 170px;
-  min-width: 170px;
+  width: 110px;
+  min-width: 110px;
 }
 .main-games-table th.home-team-col,
 .main-games-table td.home-team-col,
 .main-games-table th.away-team-col,
 .main-games-table td.away-team-col {
-  width: 180px;
-  min-width: 180px;
+  width: 120px;
+  min-width: 120px;
 }
 .games-table td.home-team-col .team-link-btn,
 .games-table td.away-team-col .team-link-btn { white-space: nowrap; }
 .games-table th.vs-team-col,
 .games-table td.vs-team-col {
-  width: 28px;
-  min-width: 28px;
+  width: 16px;
+  min-width: 16px;
   padding-left: 4px;
   padding-right: 4px;
   color: #64748b;
   font-weight: 700;
+}
+.main-games-table th,
+.main-games-table td {
+  padding-left: 8px;
+  padding-right: 8px;
+}
+.main-games-table td.home-team-col .team-link-btn,
+.main-games-table td.away-team-col .team-link-btn {
+  display: inline-block;
+  max-width: 100%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  vertical-align: bottom;
+}
+.historical-games-table th.home-team-col,
+.historical-games-table td.home-team-col,
+.historical-games-table th.away-team-col,
+.historical-games-table td.away-team-col {
+  width: 80px;
+  min-width: 80px;
+  max-width: 80px;
+  padding-left: 4px;
+  padding-right: 4px;
+}
+.historical-games-table {
+  table-layout: fixed;
+}
+.historical-games-table th,
+.historical-games-table td {
+  padding-left: 4px;
+  padding-right: 4px;
+}
+.historical-games-table th.league-col,
+.historical-games-table td.league-col {
+  width: 86px;
+  min-width: 86px;
+  max-width: 86px;
+}
+.historical-games-table th.kickoff-col,
+.historical-games-table td.kickoff-col {
+  width: 68px;
+  min-width: 68px;
+  max-width: 68px;
+}
+.historical-games-table th.vs-team-col,
+.historical-games-table td.vs-team-col {
+  width: 12px;
+  min-width: 12px;
+  max-width: 12px;
+  padding-left: 2px;
+  padding-right: 2px;
+}
+.historical-games-table td.league-col,
+.historical-games-table td.home-team-col,
+.historical-games-table td.away-team-col {
+  white-space: normal;
+  word-break: break-word;
+  line-height: 1.12;
+}
+.historical-games-table td.kickoff-col {
+  white-space: normal;
+  word-break: normal;
+  line-height: 1.1;
+}
+.historical-games-table td.home-team-col .team-link-btn,
+.historical-games-table td.away-team-col .team-link-btn {
+  display: -webkit-box;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 2;
+  max-width: 100%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: normal;
+  line-height: 1.12;
+  vertical-align: top;
+}
+.historical-games-table td.metric-stack-cell {
+  padding-top: 4px;
+  padding-bottom: 4px;
+}
+.historical-games-table .metric-stack-row {
+  grid-template-columns: 14px 36px;
+  gap: 4px;
+}
+.historical-games-table .metric-stack-label {
+  min-width: 14px;
+  font-size: 0.6rem;
+}
+.historical-games-table .metric-stack-value {
+  min-width: 36px;
+  font-size: 0.72rem;
 }
 #saveGameBtn.is-saved {
   border-color: #0f766e;
