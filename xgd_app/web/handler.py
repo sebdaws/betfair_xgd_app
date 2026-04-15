@@ -110,7 +110,12 @@ class AppHandler(BaseHTTPRequestHandler):
             query = parse_qs(parsed.query)
             team_name = (query.get("team") or [""])[0]
             competition_name = (query.get("competition") or [""])[0]
-            return self._serve_team_hc_ranking_details(team_name=team_name, competition_name=competition_name)
+            season_id = (query.get("season") or [""])[0]
+            return self._serve_team_hc_ranking_details(
+                team_name=team_name,
+                competition_name=competition_name,
+                season_id=season_id,
+            )
         if path == "/api/team-page":
             query = parse_qs(parsed.query)
             team_name = (query.get("team") or [""])[0]
@@ -240,7 +245,12 @@ class AppHandler(BaseHTTPRequestHandler):
         except Exception as exc:
             self._json({"error": str(exc)}, status=HTTPStatus.INTERNAL_SERVER_ERROR)
 
-    def _serve_team_hc_ranking_details(self, team_name: str, competition_name: str) -> None:
+    def _serve_team_hc_ranking_details(
+        self,
+        team_name: str,
+        competition_name: str,
+        season_id: str = "",
+    ) -> None:
         team_text = str(team_name or "").strip()
         if not team_text:
             self._json({"error": "team is required"}, status=HTTPStatus.BAD_REQUEST)
@@ -249,6 +259,7 @@ class AppHandler(BaseHTTPRequestHandler):
             payload = self.state.get_team_hc_ranking_details(
                 team_name=team_text,
                 competition_name=str(competition_name or "").strip() or None,
+                season_id=str(season_id or "").strip() or None,
             )
             self._json(payload)
         except ValueError as exc:

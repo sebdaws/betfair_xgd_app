@@ -115,20 +115,10 @@
           <option value="pnl">PnL (For)</option>
           <option value="pnl_against">PnL (Against)</option>
         </select>
+        <label for="teamHcRankingsCompetitionSelect" class="control-label">Competition</label>
+        <select id="teamHcRankingsCompetitionSelect" aria-label="HC rankings competition"></select>
         <label for="teamHcRankingsSeasonSelect" class="control-label">Season</label>
         <select id="teamHcRankingsSeasonSelect" aria-label="HC rankings season"></select>
-        <label for="teamHcRankingsLeagueFilterBtn" class="control-label">League</label>
-        <div class="league-filter" id="teamHcRankingsLeagueFilter">
-          <button id="teamHcRankingsLeagueFilterBtn" type="button" aria-haspopup="true" aria-expanded="false">
-            Select League
-          </button>
-          <div
-            id="teamHcRankingsLeagueFilterMenu"
-            class="league-filter-menu hidden"
-            role="menu"
-            aria-label="HC rankings league options"
-          ></div>
-        </div>
         <button id="teamHcRankingsRefreshBtn" type="button">Refresh Rankings</button>
       </section>
       <section id="teamHcRankingsView" class="calendar-view"></section>

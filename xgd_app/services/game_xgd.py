@@ -850,25 +850,49 @@ class GameXgdService:
             "xg_push_threshold": xg_threshold,
         }
 
-    def get_team_hc_ranking_details(self, team_name: str, competition_name: str | None = None) -> dict[str, Any]:
+    def get_team_hc_ranking_details(
+        self,
+        team_name: str,
+        competition_name: str | None = None,
+        season_id: str | None = None,
+    ) -> dict[str, Any]:
         requested_team_text = str(team_name or "").strip()
         if not requested_team_text:
             raise ValueError("team is required")
 
         competition_text = str(competition_name or "").strip()
+        requested_season_key = self._season_id_key(season_id)
         team_text = self._resolve_sofascore_team_name(
             requested_team_text,
             competition_name=(competition_text or None),
         )
         historical_service = self.state.historical_data_service
-        source_rows = self._filter_rows_for_hc_rankings_current_season(
-            historical_service._prepare_historical_home_rows()
-        )
+        source_rows_raw = historical_service._prepare_historical_home_rows()
+        if requested_season_key:
+            work_rows = source_rows_raw.copy() if isinstance(source_rows_raw, pd.DataFrame) else pd.DataFrame()
+            if isinstance(work_rows, pd.DataFrame) and (not work_rows.empty) and ("date_time" in work_rows.columns):
+                work_rows["date_time"] = pd.to_datetime(work_rows["date_time"], errors="coerce", utc=True)
+                work_rows = work_rows[work_rows["date_time"].notna()].copy()
+                if "season_id" in work_rows.columns:
+                    work_rows["_season_key"] = work_rows["season_id"].map(self._season_id_key)
+                else:
+                    work_rows["_season_key"] = ""
+                if not bool((work_rows["_season_key"] != "").any()):
+                    work_rows["_season_key"] = work_rows["date_time"].map(self._season_start_year).map(
+                        lambda value: "" if value is None else str(int(value))
+                    )
+                work_rows = work_rows[work_rows["_season_key"].astype(str).str.strip() != ""].copy()
+                source_rows = work_rows[work_rows["_season_key"] == requested_season_key].copy()
+            else:
+                source_rows = pd.DataFrame()
+        else:
+            source_rows = self._filter_rows_for_hc_rankings_current_season(source_rows_raw)
         if not isinstance(source_rows, pd.DataFrame) or source_rows.empty:
             return {
                 "team": team_text,
                 "requested_team": requested_team_text,
                 "competition": competition_text,
+                "season": requested_season_key,
                 "rows": [],
                 "games_count": 0,
             }
@@ -882,6 +906,7 @@ class GameXgdService:
                 "team": team_text,
                 "requested_team": requested_team_text,
                 "competition": competition_text,
+                "season": requested_season_key,
                 "rows": [],
                 "games_count": 0,
             }
@@ -894,6 +919,7 @@ class GameXgdService:
                 "team": team_text,
                 "requested_team": requested_team_text,
                 "competition": competition_text,
+                "season": requested_season_key,
                 "rows": [],
                 "games_count": 0,
             }
@@ -976,6 +1002,7 @@ class GameXgdService:
             "team": team_text,
             "requested_team": requested_team_text,
             "competition": competition_text,
+            "season": requested_season_key,
             "rows": rows_out,
             "games_count": len(rows_out),
         }
@@ -1183,22 +1210,6 @@ class GameXgdService:
         if selected_season and not requested_season_key:
             requested_season_key = selected_season
 
-        recent_rows = build_recent_form_rows(team_form_rows, recent_n=None)
-        home_rows_df = (
-            team_form_rows[team_form_rows["venue"].fillna("").astype(str).str.strip().str.lower() == "home"].copy()
-            if ("venue" in team_form_rows.columns)
-            else pd.DataFrame()
-        )
-        away_rows_df = (
-            team_form_rows[team_form_rows["venue"].fillna("").astype(str).str.strip().str.lower() == "away"].copy()
-            if ("venue" in team_form_rows.columns)
-            else pd.DataFrame()
-        )
-        team_venue_rows = {
-            "home": build_recent_form_rows(home_rows_df, recent_n=None),
-            "away": build_recent_form_rows(away_rows_df, recent_n=None),
-        }
-
         latest_team_ts = pd.to_datetime(team_form_rows.get("date_time"), errors="coerce", utc=True).max() if (
             isinstance(team_form_rows, pd.DataFrame) and (not team_form_rows.empty) and ("date_time" in team_form_rows.columns)
         ) else pd.NaT
@@ -1211,6 +1222,28 @@ class GameXgdService:
             if not pd.isna(latest_team_ts)
             else pd.Timestamp.now(tz="UTC")
         )
+        team_venue_rows_raw = build_team_venue_recent_rows(
+            form_df=self.form_df,
+            team_name=team_text,
+            kickoff_time=cutoff_time,
+            recent_n=None,
+            season_id=(selected_season_value if selected_season else None),
+            competition_name=(selected_competition or None),
+            area_name=None,
+        )
+        team_venue_rows = {
+            "home": list(team_venue_rows_raw.get("home") or []),
+            "away": list(team_venue_rows_raw.get("away") or []),
+            "home_prev_season_rows": list(team_venue_rows_raw.get("home_prev_season_rows") or []),
+            "away_prev_season_rows": list(team_venue_rows_raw.get("away_prev_season_rows") or []),
+        }
+        recent_rows = merge_recent_rows_by_venue(
+            {
+                "home": team_venue_rows["home"],
+                "away": team_venue_rows["away"],
+            }
+        )
+
         season_handicap_rows = self._build_team_season_handicap_rows(
             team_name=team_text,
             season_id=selected_season_value,
@@ -1296,20 +1329,10 @@ class GameXgdService:
             return []
         self._log_hcperf_timing(label, "filter_team_games", step_started_at, rows=int(len(team_df)))
 
-        if self._has_season_id(season_id) and "season_id" in team_df.columns:
-            step_started_at = time.perf_counter()
-            team_df = self._filter_rows_by_season_id(team_df, season_id)
-            self._log_hcperf_timing(label, "season_filter", step_started_at, rows=int(len(team_df)))
-            if team_df.empty:
-                self._log_hcperf_timing(label, "early_exit_no_games_in_fixture_season", step_started_at)
-                return []
-
         competition_text = str(competition_name or "").strip()
         if competition_text and "competition_name" in team_df.columns:
             step_started_at = time.perf_counter()
-            competition_filtered = team_df[team_df["competition_name"].astype(str) == competition_text].copy()
-            if not competition_filtered.empty:
-                team_df = competition_filtered
+            team_df = team_df[team_df["competition_name"].astype(str) == competition_text].copy()
             self._log_hcperf_timing(
                 label,
                 "competition_filter",
@@ -1317,13 +1340,19 @@ class GameXgdService:
                 rows=int(len(team_df)),
                 competition=competition_text,
             )
+            if team_df.empty:
+                self._log_hcperf_timing(
+                    label,
+                    "early_exit_no_games_in_competition",
+                    step_started_at,
+                    competition=competition_text,
+                )
+                return []
 
         area_text = str(area_name or "").strip()
         if area_text and "area_name" in team_df.columns:
             step_started_at = time.perf_counter()
-            area_filtered = team_df[team_df["area_name"].astype(str) == area_text].copy()
-            if not area_filtered.empty:
-                team_df = area_filtered
+            team_df = team_df[team_df["area_name"].astype(str) == area_text].copy()
             self._log_hcperf_timing(
                 label,
                 "area_filter",
@@ -1331,6 +1360,22 @@ class GameXgdService:
                 rows=int(len(team_df)),
                 area=area_text,
             )
+            if team_df.empty:
+                self._log_hcperf_timing(
+                    label,
+                    "early_exit_no_games_in_area",
+                    step_started_at,
+                    area=area_text,
+                )
+                return []
+
+        if self._has_season_id(season_id) and "season_id" in team_df.columns:
+            step_started_at = time.perf_counter()
+            team_df = self._filter_rows_by_season_id(team_df, season_id)
+            self._log_hcperf_timing(label, "season_filter", step_started_at, rows=int(len(team_df)))
+            if team_df.empty:
+                self._log_hcperf_timing(label, "early_exit_no_games_in_fixture_season", step_started_at)
+                return []
 
         step_started_at = time.perf_counter()
         team_df = team_df.sort_values("date_time", ascending=False).reset_index(drop=True)

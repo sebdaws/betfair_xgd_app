@@ -2034,6 +2034,10 @@ def build_recent_form_rows(source_df: Any, recent_n: int | None = None) -> list[
         "xGA",
         "xGoT",
         "xGoTA",
+        "season_id",
+        "season_name",
+        "season_start_date",
+        "season_end_date",
         "corners_for",
         "corners_against",
         "cards_for",
@@ -2079,38 +2083,110 @@ def build_team_venue_recent_rows(
     competition_name: str | None = None,
     area_name: str | None = None,
 ) -> dict[str, list[dict[str, Any]]]:
+    empty_rows = {
+        "home": [],
+        "away": [],
+        "home_prev_season_rows": [],
+        "away_prev_season_rows": [],
+    }
     if not team_name or form_df.empty:
-        return {"home": [], "away": []}
+        return empty_rows
 
     df = form_df[form_df["team"] == team_name].copy()
     if df.empty:
-        return {"home": [], "away": []}
+        return empty_rows
 
     kickoff_ts = pd.to_datetime(kickoff_time, errors="coerce", utc=True)
     if not pd.isna(kickoff_ts) and "date_time" in df.columns:
         df["date_time"] = pd.to_datetime(df["date_time"], errors="coerce", utc=True)
         df = df[df["date_time"] < kickoff_ts]
 
-    if season_id is not None and not pd.isna(season_id) and "season_id" in df.columns:
-        season_target_num = pd.to_numeric(pd.Series([season_id]), errors="coerce").iloc[0]
-        if pd.notna(season_target_num):
-            season_col_num = pd.to_numeric(df["season_id"], errors="coerce")
-            df = df[season_col_num == season_target_num]
-        else:
-            season_target_text = str(season_id).strip()
-            df = df[df["season_id"].astype(str).str.strip() == season_target_text]
-
     if competition_name and "competition_name" in df.columns:
         df = df[df["competition_name"] == competition_name]
     if area_name and "area_name" in df.columns:
         df = df[df["area_name"] == area_name]
 
-    home_df = df[df["venue"].astype(str).str.lower() == "home"].copy() if "venue" in df.columns else df.iloc[0:0].copy()
-    away_df = df[df["venue"].astype(str).str.lower() == "away"].copy() if "venue" in df.columns else df.iloc[0:0].copy()
+    scoped_df = df.copy()
+    current_season_df = scoped_df.copy()
+    previous_season_df = scoped_df.iloc[0:0].copy()
+    if season_id is not None and not pd.isna(season_id) and "season_id" in scoped_df.columns:
+        season_target_num = pd.to_numeric(pd.Series([season_id]), errors="coerce").iloc[0]
+        if pd.notna(season_target_num):
+            season_col_num = pd.to_numeric(scoped_df["season_id"], errors="coerce")
+            current_season_df = scoped_df[season_col_num == season_target_num].copy()
+        else:
+            season_target_text = str(season_id).strip()
+            current_season_df = scoped_df[scoped_df["season_id"].astype(str).str.strip() == season_target_text].copy()
 
+        if not current_season_df.empty and "date_time" in scoped_df.columns:
+            def _season_key(value: Any) -> str:
+                try:
+                    if value is None or pd.isna(value):
+                        return ""
+                except Exception:
+                    pass
+                text = str(value).strip()
+                if not text:
+                    return ""
+                numeric = pd.to_numeric(pd.Series([text]), errors="coerce").iloc[0]
+                if pd.notna(numeric) and float(numeric).is_integer():
+                    return str(int(numeric))
+                return text
+
+            season_key_series = scoped_df["season_id"].map(_season_key)
+            scoped_with_keys = scoped_df.copy()
+            scoped_with_keys["_season_key"] = season_key_series
+            scoped_with_keys = scoped_with_keys[scoped_with_keys["_season_key"] != ""].copy()
+            if not scoped_with_keys.empty:
+                current_keys = current_season_df["season_id"].map(_season_key).tolist()
+                current_key = str(current_keys[0]).strip() if current_keys else ""
+                if current_key:
+                    latest_by_season = scoped_with_keys.groupby("_season_key")["date_time"].max()
+                    current_latest_ts = latest_by_season.get(current_key, pd.NaT)
+                    candidate_by_season = latest_by_season.drop(labels=[current_key], errors="ignore")
+                    prev_key = ""
+                    if not candidate_by_season.empty:
+                        if not pd.isna(current_latest_ts):
+                            earlier = candidate_by_season[candidate_by_season < current_latest_ts]
+                            if not earlier.empty:
+                                prev_key = str(earlier.idxmax())
+                            else:
+                                prev_key = str(candidate_by_season.idxmax())
+                        else:
+                            prev_key = str(candidate_by_season.idxmax())
+                    if prev_key:
+                        previous_season_df = scoped_with_keys[scoped_with_keys["_season_key"] == prev_key].copy()
+                        previous_season_df = previous_season_df.drop(columns=["_season_key"], errors="ignore")
+    if not current_season_df.empty:
+        current_season_df = current_season_df.copy()
+    else:
+        current_season_df = scoped_df.iloc[0:0].copy()
+
+    home_df = (
+        current_season_df[current_season_df["venue"].astype(str).str.lower() == "home"].copy()
+        if "venue" in current_season_df.columns
+        else current_season_df.iloc[0:0].copy()
+    )
+    away_df = (
+        current_season_df[current_season_df["venue"].astype(str).str.lower() == "away"].copy()
+        if "venue" in current_season_df.columns
+        else current_season_df.iloc[0:0].copy()
+    )
+    prev_home_df = (
+        previous_season_df[previous_season_df["venue"].astype(str).str.lower() == "home"].copy()
+        if "venue" in previous_season_df.columns
+        else previous_season_df.iloc[0:0].copy()
+    )
+    prev_away_df = (
+        previous_season_df[previous_season_df["venue"].astype(str).str.lower() == "away"].copy()
+        if "venue" in previous_season_df.columns
+        else previous_season_df.iloc[0:0].copy()
+    )
     return {
         "home": build_recent_form_rows(home_df, recent_n=recent_n),
         "away": build_recent_form_rows(away_df, recent_n=recent_n),
+        "home_prev_season_rows": build_recent_form_rows(prev_home_df, recent_n=None),
+        "away_prev_season_rows": build_recent_form_rows(prev_away_df, recent_n=None),
     }
 
 

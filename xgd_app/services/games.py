@@ -6,6 +6,7 @@ import argparse
 import datetime as dt
 import importlib.util
 import os
+import re
 import sys
 from pathlib import Path
 from typing import Any, Callable
@@ -65,6 +66,25 @@ class GamesService:
         self.extract_period_metrics = extract_period_metrics
         self.format_float_value = format_float_value
         self.format_day_label = format_day_label
+        self._credentials_module_path: Path | None = None
+
+    def _resolve_credentials_module_path(self, config_module: str) -> Path:
+        cfg_filename = f"{config_module}.py"
+        local_cfg = self.app_dir / cfg_filename
+        configured_cfg_base = get_external_path("betfair_credentials")
+        configured_cfg: Path | None = None
+        if configured_cfg_base is not None:
+            if configured_cfg_base.is_dir():
+                configured_cfg = configured_cfg_base / cfg_filename
+            elif configured_cfg_base.name == cfg_filename:
+                configured_cfg = configured_cfg_base
+            else:
+                configured_cfg = configured_cfg_base.parent / cfg_filename
+        if local_cfg.exists():
+            return local_cfg
+        if configured_cfg is not None and configured_cfg.exists():
+            return configured_cfg
+        return local_cfg
 
     @staticmethod
     def load_module_settings(module_path: Path) -> dict[str, str | None]:
@@ -85,23 +105,8 @@ class GamesService:
         }
 
     def resolve_credentials(self, args: argparse.Namespace) -> dict[str, str | None]:
-        cfg_filename = f"{args.config_module}.py"
-        local_cfg = self.app_dir / cfg_filename
-        configured_cfg_base = get_external_path("betfair_credentials")
-        configured_cfg: Path | None = None
-        if configured_cfg_base is not None:
-            if configured_cfg_base.is_dir():
-                configured_cfg = configured_cfg_base / cfg_filename
-            elif configured_cfg_base.name == cfg_filename:
-                configured_cfg = configured_cfg_base
-            else:
-                configured_cfg = configured_cfg_base.parent / cfg_filename
-        if local_cfg.exists():
-            module_path = local_cfg
-        elif configured_cfg is not None and configured_cfg.exists():
-            module_path = configured_cfg
-        else:
-            module_path = local_cfg
+        module_path = self._resolve_credentials_module_path(args.config_module)
+        self._credentials_module_path = module_path
         settings = self.load_module_settings(module_path)
 
         def pick(cli_value: str | None, env_name: str, file_key: str) -> str | None:
@@ -132,6 +137,96 @@ class GamesService:
             )
         return creds
 
+    def _has_cert_bundle(self) -> bool:
+        return bool(
+            str(self.state.credentials.get("username") or "").strip()
+            and str(self.state.credentials.get("password") or "").strip()
+            and str(self.state.credentials.get("cert_file") or "").strip()
+            and str(self.state.credentials.get("key_file") or "").strip()
+        )
+
+    def _prompt_for_new_session_token(self) -> str:
+        while True:
+            try:
+                token = input(
+                    "[xgd_web_app] Betfair session expired. Enter a new session token (ssoid): "
+                )
+            except EOFError as exc:
+                raise RuntimeError(
+                    "Betfair session expired, but no terminal input is available for entering a new session token."
+                ) from exc
+            token = str(token or "").strip()
+            if token:
+                return token
+            print(
+                "[xgd_web_app] Session token cannot be empty.",
+                file=sys.stderr,
+                flush=True,
+            )
+
+    def _persist_session_token(self, session_token: str) -> Path:
+        config_module = str(getattr(getattr(self.state, "args", None), "config_module", "") or "betfair_credentials")
+        module_path = self._credentials_module_path or self._resolve_credentials_module_path(config_module)
+        module_path.parent.mkdir(parents=True, exist_ok=True)
+        existing = module_path.read_text(encoding="utf-8") if module_path.exists() else ""
+        newline = "\r\n" if "\r\n" in existing else "\n"
+        token_line = f"BETFAIR_SESSION_TOKEN = {session_token!r}"
+        token_pattern = r"(?m)^[ \t]*BETFAIR_SESSION_TOKEN[ \t]*=.*$"
+        if re.search(token_pattern, existing):
+            updated = re.sub(token_pattern, token_line, existing, count=1)
+        else:
+            updated = existing
+            if updated and not updated.endswith(("\n", "\r")):
+                updated += newline
+            updated += f"{token_line}{newline}"
+        module_path.write_text(updated, encoding="utf-8")
+        self._credentials_module_path = module_path
+        return module_path
+
+    def _try_session_token_for_competitions(self, session_token: str):
+        previous_token = self.state.credentials.get("session_token")
+        self.state.credentials["session_token"] = session_token
+        try:
+            client = self._login_client()
+            competitions = client.list_competitions()
+            return client, competitions
+        except Exception:
+            self.state.credentials["session_token"] = previous_token
+            raise
+
+    def _recover_expired_session_from_terminal(self, max_attempts: int = 3):
+        print(
+            "[xgd_web_app] Betfair session is invalid/expired. Paste a fresh ssoid token to continue.",
+            flush=True,
+        )
+        last_invalid_error: RuntimeError | None = None
+        for attempt in range(1, max_attempts + 1):
+            token = self._prompt_for_new_session_token()
+            try:
+                client, competitions = self._try_session_token_for_competitions(token)
+            except RuntimeError as exc:
+                if self._is_invalid_session_error(exc):
+                    last_invalid_error = exc
+                    if attempt < max_attempts:
+                        print(
+                            "[xgd_web_app] Betfair rejected that session token. Please try again.",
+                            file=sys.stderr,
+                            flush=True,
+                        )
+                        continue
+                raise
+
+            module_path = self._persist_session_token(token)
+            print(
+                f"[xgd_web_app] Saved updated session token to {module_path}",
+                flush=True,
+            )
+            return client, competitions
+
+        raise RuntimeError(
+            f"Betfair session token remained invalid after {max_attempts} attempts."
+        ) from last_invalid_error
+
     def _build_client(self, use_session_token: bool):
         cfg = self.state.betfair_module.Config(
             username=str(self.state.credentials.get("username") or "") or None,
@@ -154,12 +249,7 @@ class GamesService:
 
     def _login_client(self):
         has_session = bool(str(self.state.credentials.get("session_token") or "").strip())
-        has_cert_bundle = bool(
-            str(self.state.credentials.get("username") or "").strip()
-            and str(self.state.credentials.get("password") or "").strip()
-            and str(self.state.credentials.get("cert_file") or "").strip()
-            and str(self.state.credentials.get("key_file") or "").strip()
-        )
+        has_cert_bundle = self._has_cert_bundle()
 
         client = self._build_client(use_session_token=has_session)
         try:
@@ -288,16 +378,13 @@ class GamesService:
         try:
             competitions = client.list_competitions()
         except RuntimeError as exc:
-            has_cert_bundle = bool(
-                str(self.state.credentials.get("username") or "").strip()
-                and str(self.state.credentials.get("password") or "").strip()
-                and str(self.state.credentials.get("cert_file") or "").strip()
-                and str(self.state.credentials.get("key_file") or "").strip()
-            )
+            has_cert_bundle = self._has_cert_bundle()
             if has_cert_bundle and self._is_invalid_session_error(exc):
                 client = self._build_client(use_session_token=False)
                 client.login()
                 competitions = client.list_competitions()
+            elif (not has_cert_bundle) and self._is_invalid_session_error(exc):
+                client, competitions = self._recover_expired_session_from_terminal()
             else:
                 raise
         self.state.betfair_module.write_all_leagues_file(str(self.default_all_leagues), competitions)

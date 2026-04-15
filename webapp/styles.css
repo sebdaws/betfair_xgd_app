@@ -1388,6 +1388,28 @@ main {
   display: inline-block;
 }
 
+.trend-swatch-dashed {
+  border-top-width: 2px;
+  border-top-style: dashed;
+}
+
+.trend-controls {
+  margin-top: 8px;
+}
+
+.trend-control-label {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 0.82rem;
+  color: #475569;
+  font-weight: 600;
+}
+
+.trend-control-label .trendline-degree-input {
+  width: 84px;
+}
+
 .warning {
   padding: 10px 12px;
   border: 1px solid #fcd34d;

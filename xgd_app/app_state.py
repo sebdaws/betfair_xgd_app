@@ -516,8 +516,17 @@ class AppState:
             competition_name=competition_name,
         )
 
-    def get_team_hc_ranking_details(self, team_name: str, competition_name: str | None = None) -> dict[str, Any]:
-        return self.game_xgd_service.get_team_hc_ranking_details(team_name=team_name, competition_name=competition_name)
+    def get_team_hc_ranking_details(
+        self,
+        team_name: str,
+        competition_name: str | None = None,
+        season_id: str | None = None,
+    ) -> dict[str, Any]:
+        return self.game_xgd_service.get_team_hc_ranking_details(
+            team_name=team_name,
+            competition_name=competition_name,
+            season_id=season_id,
+        )
 
     def get_team_page(
         self,

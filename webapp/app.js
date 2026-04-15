@@ -31,10 +31,8 @@ const teamHcRankingsGeneralTabBtn = document.getElementById("teamHcRankingsGener
 const teamHcRankingsHomeTabBtn = document.getElementById("teamHcRankingsHomeTabBtn");
 const teamHcRankingsAwayTabBtn = document.getElementById("teamHcRankingsAwayTabBtn");
 const teamHcRankingsSortSelect = document.getElementById("teamHcRankingsSortSelect");
+const teamHcRankingsCompetitionSelect = document.getElementById("teamHcRankingsCompetitionSelect");
 const teamHcRankingsSeasonSelect = document.getElementById("teamHcRankingsSeasonSelect");
-const teamHcRankingsLeagueFilter = document.getElementById("teamHcRankingsLeagueFilter");
-const teamHcRankingsLeagueFilterBtn = document.getElementById("teamHcRankingsLeagueFilterBtn");
-const teamHcRankingsLeagueFilterMenu = document.getElementById("teamHcRankingsLeagueFilterMenu");
 const teamHcRankingsRefreshBtn = document.getElementById("teamHcRankingsRefreshBtn");
 const teamHcPerfPanel = document.getElementById("teamHcPerfPanel");
 const teamHcPerfTitle = document.getElementById("teamHcPerfTitle");
@@ -98,6 +96,9 @@ let teamSearchQuery = "";
 let gamesShownCount = 0;
 let gamesShownAuto = true;
 let rollingWindowCount = 10;
+const TRENDLINE_DEGREE_DEFAULT = 1;
+const TRENDLINE_DEGREE_MAX = 10;
+let trendlineDegree = TRENDLINE_DEGREE_DEFAULT;
 let showTrendCharts = false;
 let recentTeamView = "home";
 let statsVenueGamesShownCount = 0;
@@ -132,9 +133,8 @@ let teamHcRankingsLoaded = false;
 let teamHcRankingsErrorText = "";
 let teamHcRankingsVenueMode = "overall";
 let teamHcRankingsSortMetric = "result";
-let selectedTeamHcRankingsLeague = "";
+let selectedTeamHcRankingsCompetition = "";
 let selectedTeamHcRankingsSeason = "";
-let teamHcRankingsLeagueSearch = "";
 let teamsDirectoryRows = [];
 let teamsDirectoryLoaded = false;
 let teamsDirectoryLoading = false;
@@ -162,6 +162,7 @@ const TEAM_DETAILS_XG_GAMES_DEFAULT = 9999; // effectively "all games"
 const TEAM_DETAILS_XG_ROLLING_DEFAULT = 10;
 let teamDetailsXgGamesShownCount = TEAM_DETAILS_XG_GAMES_DEFAULT;
 let teamDetailsXgRollingWindowCount = TEAM_DETAILS_XG_ROLLING_DEFAULT;
+let teamDetailsTrendlineDegree = TRENDLINE_DEGREE_DEFAULT;
 const DEFAULT_XG_PUSH_THRESHOLD = 0.1;
 const MIN_XG_PUSH_THRESHOLD = 0.0;
 const MAX_XG_PUSH_THRESHOLD = 5.0;
@@ -588,9 +589,6 @@ function setActiveTab(tabName) {
   }
   if (activeTab !== "rankings" && teamHcPerfPanel) {
     teamHcPerfPanel.classList.add("hidden");
-  }
-  if (activeTab !== "rankings") {
-    setTeamHcRankingsLeagueFilterOpen(false);
   }
   if (mappingActive) {
     setMappingSubTab(mappingSubTab);
@@ -1589,6 +1587,13 @@ function clampRecentMatchesCount(value) {
   return Math.max(1, parsed);
 }
 
+function clampTrendlineDegree(value, maxDegree = TRENDLINE_DEGREE_MAX) {
+  const parsed = Number.parseInt(String(value || ""), 10);
+  const safeMax = Number.isFinite(maxDegree) ? Math.max(1, Math.floor(maxDegree)) : TRENDLINE_DEGREE_MAX;
+  if (Number.isNaN(parsed)) return TRENDLINE_DEGREE_DEFAULT;
+  return Math.max(1, Math.min(safeMax, parsed));
+}
+
 function formatMetricValue(value, decimals = 2) {
   if (value == null || value === "") return "-";
   const num = Number(value);
@@ -2351,9 +2356,34 @@ function toMetricNumber(value) {
   return Number.isFinite(num) ? num : null;
 }
 
-function buildMetricTrendPlotHtml(rows, title, relevantTeamName = "", rollingWindowGames = 10) {
+function normalizeRollingSeedRowsByVenue(rowsObj) {
+  return {
+    home: Array.isArray(rowsObj?.home_prev_season_rows) ? rowsObj.home_prev_season_rows : [],
+    away: Array.isArray(rowsObj?.away_prev_season_rows) ? rowsObj.away_prev_season_rows : [],
+  };
+}
+
+function mergeRollingSeedRowsByVenue(rowsByVenue) {
+  const homeRows = Array.isArray(rowsByVenue?.home) ? rowsByVenue.home : [];
+  const awayRows = Array.isArray(rowsByVenue?.away) ? rowsByVenue.away : [];
+  return [...homeRows, ...awayRows].sort((a, b) =>
+    String(b?.date_time || "").localeCompare(String(a?.date_time || ""))
+  );
+}
+
+function buildMetricTrendPlotHtml(
+  rows,
+  title,
+  relevantTeamName = "",
+  rollingWindowGames = 10,
+  options = {}
+) {
   const headingPrefix = relevantTeamName ? `<strong>${escapeHtml(relevantTeamName)}</strong> - ` : "";
   const safeRows = Array.isArray(rows) ? rows : [];
+  const rollingSeedRows = Array.isArray(options?.rollingSeedRows) ? options.rollingSeedRows : [];
+  const requestedTrendlineDegree = clampTrendlineDegree(options?.trendlineDegree);
+  const showTrendlineControl = Boolean(options?.showTrendlineControl);
+  const trendlineControlClass = String(options?.trendlineControlClass || "").trim();
   if (!safeRows.length) {
     return `
       <section class="recent-team-block">
@@ -2376,13 +2406,32 @@ function buildMetricTrendPlotHtml(rows, title, relevantTeamName = "", rollingWin
 
   const points = safeRows
     .map((row, idx) => {
-      const xg = toMetricNumber(row.xG);
-      const xga = toMetricNumber(row.xGA);
+      const xg = toMetricNumber(row?.xG);
+      const xga = toMetricNumber(row?.xGA);
       return {
         idx,
-        row,
-        sortTs: parseSortTs(row.date_time),
-        dateText: String(row.date_time || "").trim(),
+        sortTs: parseSortTs(row?.date_time),
+        dateText: String(row?.date_time || "").trim(),
+        xg,
+        xga,
+      };
+    })
+    .sort((a, b) => {
+      const aTsValid = Number.isFinite(a.sortTs);
+      const bTsValid = Number.isFinite(b.sortTs);
+      if (aTsValid && bTsValid) return a.sortTs - b.sortTs;
+      if (aTsValid) return -1;
+      if (bTsValid) return 1;
+      return a.idx - b.idx;
+    });
+
+  const seedPoints = rollingSeedRows
+    .map((row, idx) => {
+      const xg = toMetricNumber(row?.xG);
+      const xga = toMetricNumber(row?.xGA);
+      return {
+        idx,
+        sortTs: parseSortTs(row?.date_time),
         xg,
         xga,
       };
@@ -2416,28 +2465,143 @@ function buildMetricTrendPlotHtml(rows, title, relevantTeamName = "", rollingWin
       const value = point[metricKey];
       return Number.isFinite(value) ? value : null;
     });
+    const seedValues = seedPoints.map((point) => {
+      const value = point[metricKey];
+      return Number.isFinite(value) ? value : null;
+    });
     const validCount = rawValues.reduce((count, value) => (value == null ? count : count + 1), 0);
     if (!validCount) return [];
+    const hasSeedValues = seedValues.some((value) => value != null);
 
     return rawValues.map((_, index) => {
-      let sum = 0;
-      let count = 0;
-      const start = Math.max(0, index - windowSize + 1);
-      const end = index;
-      for (let pos = start; pos <= end; pos += 1) {
+      const valuesForWindow = [];
+      for (const value of seedValues) {
+        if (value == null) continue;
+        valuesForWindow.push(value);
+      }
+      for (let pos = 0; pos <= index; pos += 1) {
         const value = rawValues[pos];
         if (value == null) continue;
-        sum += value;
-        count += 1;
+        valuesForWindow.push(value);
       }
-      if (!count) return null;
-      return sum / count;
+      const windowValues = valuesForWindow.slice(-windowSize);
+      if (!windowValues.length) return null;
+      if (!hasSeedValues && index === 0) return null;
+      let sum = 0;
+      for (const value of windowValues) {
+        sum += value;
+      }
+      return sum / windowValues.length;
     });
+  };
+
+  const solveLinearSystem = (matrix, vector) => {
+    const n = Array.isArray(vector) ? vector.length : 0;
+    if (!n || !Array.isArray(matrix) || matrix.length !== n) return null;
+    const a = matrix.map((row) => (Array.isArray(row) ? row.slice() : []));
+    const b = vector.slice();
+
+    for (let col = 0; col < n; col += 1) {
+      let pivotRow = col;
+      let pivotAbs = Math.abs(a[col][col] || 0);
+      for (let row = col + 1; row < n; row += 1) {
+        const nextAbs = Math.abs(a[row][col] || 0);
+        if (nextAbs > pivotAbs) {
+          pivotAbs = nextAbs;
+          pivotRow = row;
+        }
+      }
+      if (!Number.isFinite(pivotAbs) || pivotAbs < 1e-12) {
+        return null;
+      }
+      if (pivotRow !== col) {
+        const tmpRow = a[col];
+        a[col] = a[pivotRow];
+        a[pivotRow] = tmpRow;
+        const tmpValue = b[col];
+        b[col] = b[pivotRow];
+        b[pivotRow] = tmpValue;
+      }
+      const pivot = a[col][col];
+      for (let j = col; j < n; j += 1) {
+        a[col][j] /= pivot;
+      }
+      b[col] /= pivot;
+
+      for (let row = 0; row < n; row += 1) {
+        if (row === col) continue;
+        const factor = a[row][col];
+        if (!Number.isFinite(factor) || Math.abs(factor) < 1e-15) continue;
+        for (let j = col; j < n; j += 1) {
+          a[row][j] -= factor * a[col][j];
+        }
+        b[row] -= factor * b[col];
+      }
+    }
+    if (b.some((value) => !Number.isFinite(value))) return null;
+    return b;
+  };
+
+  const fitPolynomialSeries = (series, degree) => {
+    const safeSeries = Array.isArray(series) ? series : [];
+    const samples = [];
+    for (let idx = 0; idx < safeSeries.length; idx += 1) {
+      const value = safeSeries[idx];
+      if (!Number.isFinite(value)) continue;
+      samples.push({ x: idx, y: value });
+    }
+    if (samples.length < 2) {
+      return { series: [], degreeUsed: 0 };
+    }
+    const maxDegree = Math.max(1, Math.min(clampTrendlineDegree(degree), samples.length - 1));
+
+    for (let useDegree = maxDegree; useDegree >= 1; useDegree -= 1) {
+      const dimension = useDegree + 1;
+      const matrix = Array.from({ length: dimension }, () => Array(dimension).fill(0));
+      const vector = Array(dimension).fill(0);
+      for (let row = 0; row < dimension; row += 1) {
+        for (let col = 0; col < dimension; col += 1) {
+          let sum = 0;
+          for (const sample of samples) {
+            sum += sample.x ** (row + col);
+          }
+          matrix[row][col] = sum;
+        }
+        let rhs = 0;
+        for (const sample of samples) {
+          rhs += sample.y * (sample.x ** row);
+        }
+        vector[row] = rhs;
+      }
+      const coeffs = solveLinearSystem(matrix, vector);
+      if (!Array.isArray(coeffs)) {
+        continue;
+      }
+      const trendSeries = Array(safeSeries.length).fill(null);
+      const firstIdx = samples[0].x;
+      const lastIdx = samples[samples.length - 1].x;
+      for (let idx = firstIdx; idx <= lastIdx; idx += 1) {
+        let predicted = 0;
+        for (let power = 0; power < coeffs.length; power += 1) {
+          predicted += coeffs[power] * (idx ** power);
+        }
+        trendSeries[idx] = Number.isFinite(predicted) ? predicted : null;
+      }
+      return { series: trendSeries, degreeUsed: useDegree };
+    }
+
+    return { series: [], degreeUsed: 0 };
   };
 
   const xgSmoothed = buildSmoothedSeries("xg");
   const xgaSmoothed = buildSmoothedSeries("xga");
-  const plottedValues = [...xgSmoothed, ...xgaSmoothed].filter((value) => Number.isFinite(value));
+  const xgTrendFit = fitPolynomialSeries(xgSmoothed, requestedTrendlineDegree);
+  const xgaTrendFit = fitPolynomialSeries(xgaSmoothed, requestedTrendlineDegree);
+  const xgPolySeries = Array.isArray(xgTrendFit.series) ? xgTrendFit.series : [];
+  const xgaPolySeries = Array.isArray(xgaTrendFit.series) ? xgaTrendFit.series : [];
+
+  const plottedValues = [...xgSmoothed, ...xgaSmoothed, ...xgPolySeries, ...xgaPolySeries]
+    .filter((value) => Number.isFinite(value));
   if (!plottedValues.length) {
     return `
       <section class="recent-team-block">
@@ -2472,11 +2636,11 @@ function buildMetricTrendPlotHtml(rows, title, relevantTeamName = "", rollingWin
   const yForValue = (value) => padTop + (((yMax - value) / yRange) * plotHeight);
 
   const buildTrendPathFromSeries = (series) => {
-    const smoothed = Array.isArray(series) ? series : [];
+    const safeSeries = Array.isArray(series) ? series : [];
     const parts = [];
     let drawMode = "M";
-    for (let i = 0; i < smoothed.length; i += 1) {
-      const value = smoothed[i];
+    for (let i = 0; i < safeSeries.length; i += 1) {
+      const value = safeSeries[i];
       if (!Number.isFinite(value)) {
         drawMode = "M";
         continue;
@@ -2504,8 +2668,10 @@ function buildMetricTrendPlotHtml(rows, title, relevantTeamName = "", rollingWin
 
   const xgColor = "#0f766e";
   const xgaColor = "#b91c1c";
-  const xgTrendPath = buildTrendPathFromSeries(xgSmoothed);
-  const xgaTrendPath = buildTrendPathFromSeries(xgaSmoothed);
+  const xgRollingPath = buildTrendPathFromSeries(xgSmoothed);
+  const xgaRollingPath = buildTrendPathFromSeries(xgaSmoothed);
+  const xgPolyPath = buildTrendPathFromSeries(xgPolySeries);
+  const xgaPolyPath = buildTrendPathFromSeries(xgaPolySeries);
 
   return `
     <section class="recent-team-block">
@@ -2513,7 +2679,7 @@ function buildMetricTrendPlotHtml(rows, title, relevantTeamName = "", rollingWin
       <div class="recent-table-wrap">
         <div class="trend-plot-wrap">
           <svg class="trend-plot" viewBox="0 0 ${width} ${height}" role="img" aria-label="${escapeHtml(
-            `${relevantTeamName || "Team"} trendlines for xG and xGA`
+            `${relevantTeamName || "Team"} rolling averages and polynomial trendlines for xG and xGA`
           )}">
             ${horizontalGridTicks
               .map(
@@ -2543,15 +2709,37 @@ function buildMetricTrendPlotHtml(rows, title, relevantTeamName = "", rollingWin
               .join("")}
             <line x1="${padLeft}" y1="${padTop}" x2="${padLeft}" y2="${height - padBottom}" class="trend-axis-line" />
             <line x1="${padLeft}" y1="${height - padBottom}" x2="${width - padRight}" y2="${height - padBottom}" class="trend-axis-line" />
-            ${xgaTrendPath ? `<path d="${xgaTrendPath}" fill="none" stroke="${xgaColor}" stroke-width="2.5" />` : ""}
-            ${xgTrendPath ? `<path d="${xgTrendPath}" fill="none" stroke="${xgColor}" stroke-width="2.5" />` : ""}
+            ${xgaPolyPath
+    ? `<path d="${xgaPolyPath}" fill="none" stroke="${xgaColor}" stroke-width="2" stroke-opacity="0.62" stroke-dasharray="7 5" />`
+    : ""}
+            ${xgPolyPath
+    ? `<path d="${xgPolyPath}" fill="none" stroke="${xgColor}" stroke-width="2" stroke-opacity="0.62" stroke-dasharray="7 5" />`
+    : ""}
+            ${xgaRollingPath ? `<path d="${xgaRollingPath}" fill="none" stroke="${xgaColor}" stroke-width="2.5" />` : ""}
+            ${xgRollingPath ? `<path d="${xgRollingPath}" fill="none" stroke="${xgColor}" stroke-width="2.5" />` : ""}
             <text x="${padLeft}" y="${height - 8}" text-anchor="start" class="trend-axis-text">${escapeHtml(firstLabel)}</text>
             <text x="${width - padRight}" y="${height - 8}" text-anchor="end" class="trend-axis-text">${escapeHtml(lastLabel)}</text>
           </svg>
           <div class="trend-legend">
-            <span class="trend-legend-item"><i class="trend-swatch" style="--swatch-color:${xgColor};"></i>xG</span>
-            <span class="trend-legend-item"><i class="trend-swatch" style="--swatch-color:${xgaColor};"></i>xGA</span>
+            <span class="trend-legend-item"><i class="trend-swatch" style="--swatch-color:${xgColor};"></i>xG rolling</span>
+            <span class="trend-legend-item"><i class="trend-swatch" style="--swatch-color:${xgaColor};"></i>xGA rolling</span>
+            ${xgPolyPath
+    ? `<span class="trend-legend-item"><i class="trend-swatch trend-swatch-dashed" style="--swatch-color:${xgColor};"></i>xG poly (d=${xgTrendFit.degreeUsed || requestedTrendlineDegree})</span>`
+    : ""}
+            ${xgaPolyPath
+    ? `<span class="trend-legend-item"><i class="trend-swatch trend-swatch-dashed" style="--swatch-color:${xgaColor};"></i>xGA poly (d=${xgaTrendFit.degreeUsed || requestedTrendlineDegree})</span>`
+    : ""}
           </div>
+          ${showTrendlineControl
+    ? `
+          <div class="trend-controls">
+            <label class="trend-control-label">
+              Trendline degree
+              <input class="trendline-degree-input ${escapeHtml(trendlineControlClass)}" type="number" min="1" max="${TRENDLINE_DEGREE_MAX}" step="1" value="${requestedTrendlineDegree}" />
+            </label>
+          </div>
+          `
+    : ""}
         </div>
       </div>
     </section>
@@ -3258,7 +3446,10 @@ function buildSeasonHandicapPerformanceTableHtml(teamLabel, rows, options = {}) 
                   const awayGoalsNum = Number(row?.away_goals);
                   const homeXgNum = Number(row?.home_xg);
                   const awayXgNum = Number(row?.away_xg);
-                  const homeHcNum = Number(row?.closing_mainline);
+                  const rawMainline = String(row?.closing_mainline || row?.mainline || "").trim();
+                  const homeHcNum = Number(rawMainline);
+                  const homePriceText = String(row?.closing_home_price || row?.home_price || "-");
+                  const awayPriceText = String(row?.closing_away_price || row?.away_price || "-");
                   const xgd = Number.isFinite(homeXgNum) && Number.isFinite(awayXgNum)
                     ? (homeXgNum - awayXgNum)
                     : null;
@@ -3334,9 +3525,9 @@ function buildSeasonHandicapPerformanceTableHtml(teamLabel, rows, options = {}) 
                 <td>${formatMetricValue(row?.home_xg, 2)}</td>
                 <td>${formatMetricValue(row?.away_xg, 2)}</td>
                 <td>${formatSignedMetricValue(xgd, 2)}</td>
-                <td class="hcperf-odds-col hcperf-odds-col-start">${escapeHtml(row?.closing_home_price || "-")}</td>
-                <td class="hcperf-odds-line-col">${escapeHtml(row?.closing_mainline || "-")}</td>
-                <td class="hcperf-odds-col hcperf-odds-col-end">${escapeHtml(row?.closing_away_price || "-")}</td>
+                <td class="hcperf-odds-col hcperf-odds-col-start">${escapeHtml(homePriceText || "-")}</td>
+                <td class="hcperf-odds-line-col">${escapeHtml(rawMainline || "-")}</td>
+                <td class="hcperf-odds-col hcperf-odds-col-end">${escapeHtml(awayPriceText || "-")}</td>
                 <td><span class="${resultPickClass}">${escapeHtml(resultPickText)}</span></td>
                 <td><span class="${xgPickClass}">${escapeHtml(xgPickText)}</span></td>
               </tr>
@@ -3496,13 +3687,38 @@ function buildHcPerfSwitchHtml(homeLabel, awayLabel) {
   `;
 }
 
-function buildVenueSplitSectionHtml(teamLabel, homeRows, awayRows, rollingWindowGames = 10, includeChart = true) {
+function buildVenueSplitSectionHtml(
+  teamLabel,
+  homeRows,
+  awayRows,
+  rollingWindowGames = 10,
+  includeChart = true,
+  rollingSeedRowsByVenue = null,
+  trendlineDegreeValue = TRENDLINE_DEGREE_DEFAULT
+) {
   const mergedRows = [...homeRows, ...awayRows].sort((a, b) =>
     String(b.date_time || "").localeCompare(String(a.date_time || ""))
   );
+  const mergedSeedRows = mergeRollingSeedRowsByVenue({
+    home: Array.isArray(rollingSeedRowsByVenue?.home) ? rollingSeedRowsByVenue.home : [],
+    away: Array.isArray(rollingSeedRowsByVenue?.away) ? rollingSeedRowsByVenue.away : [],
+  });
   return `
     <h3 class="section-title">${escapeHtml(teamLabel)}: Home & Away Matches</h3>
-    ${includeChart ? buildMetricTrendPlotHtml(mergedRows, "Total games trend", teamLabel, rollingWindowGames) : ""}
+    ${includeChart
+    ? buildMetricTrendPlotHtml(
+      mergedRows,
+      "Total games trend",
+      teamLabel,
+      rollingWindowGames,
+      {
+        rollingSeedRows: mergedSeedRows,
+        trendlineDegree: trendlineDegreeValue,
+        showTrendlineControl: true,
+        trendlineControlClass: "trendline-degree-input-main",
+      }
+    )
+    : ""}
     ${buildRecentMatchesTableHtml("All matches", mergedRows, teamLabel)}
   `;
 }
@@ -4477,21 +4693,89 @@ function getRankingGamesWithHandicap(row, venueKey) {
   return Number.isFinite(fromResultTotalNum) ? Math.max(0, Math.trunc(fromResultTotalNum)) : 0;
 }
 
-function setSelectedTeamHcRankingsLeague(competitionName) {
+function setSelectedTeamHcRankingsCompetition(competitionName) {
   const next = String(competitionName || "").trim();
-  selectedTeamHcRankingsLeague = next;
+  selectedTeamHcRankingsCompetition = next;
 }
 
-function setTeamHcRankingsLeagueFilterOpen(isOpen) {
-  if (!teamHcRankingsLeagueFilterMenu || !teamHcRankingsLeagueFilterBtn) return;
-  teamHcRankingsLeagueFilterMenu.classList.toggle("hidden", !isOpen);
-  teamHcRankingsLeagueFilterBtn.setAttribute("aria-expanded", isOpen ? "true" : "false");
+function getTeamHcRankingsCompetitionNames() {
+  const names = [];
+  const seen = new Set();
+  const seasonsByCompetition = (
+    teamHcRankingsSeasonsByCompetition
+    && typeof teamHcRankingsSeasonsByCompetition === "object"
+  )
+    ? teamHcRankingsSeasonsByCompetition
+    : {};
+  for (const key of Object.keys(seasonsByCompetition)) {
+    const name = String(key || "").trim();
+    if (!name) continue;
+    const norm = name.toLowerCase();
+    if (seen.has(norm)) continue;
+    seen.add(norm);
+    names.push(name);
+  }
+  for (const row of (Array.isArray(teamHcRankingsLeagues) ? teamHcRankingsLeagues : [])) {
+    const name = String(row?.competition || "").trim();
+    if (!name) continue;
+    const norm = name.toLowerCase();
+    if (seen.has(norm)) continue;
+    seen.add(norm);
+    names.push(name);
+  }
+  names.sort((a, b) => a.localeCompare(b));
+  return names;
 }
 
-function updateTeamHcRankingsLeagueFilterButtonLabel() {
-  if (!teamHcRankingsLeagueFilterBtn) return;
-  const selectedText = String(selectedTeamHcRankingsLeague || "").trim();
-  teamHcRankingsLeagueFilterBtn.textContent = selectedText || "Select League";
+function findDefaultTeamHcRankingsCompetition(leagues) {
+  const candidates = Array.isArray(leagues) ? leagues : [];
+  const normalizedCompetitionName = (value) => String(value || "").trim().toLowerCase();
+  const candidateNames = candidates.map((row) => String(row?.competition || "").trim()).filter((value) => !!value);
+  const pool = candidateNames.length ? candidateNames : getTeamHcRankingsCompetitionNames();
+  const findCompetition = (predicate) => pool.find((name) => predicate(normalizedCompetitionName(name)));
+  const englishPremierLeague = (
+    findCompetition((name) => name === "english premier league")
+    || findCompetition((name) => name === "england premier league")
+    || findCompetition((name) => name.includes("english") && name.includes("premier league"))
+    || findCompetition((name) => name.includes("england") && name.includes("premier league"))
+    || findCompetition((name) => name === "premier league")
+  );
+  return String(englishPremierLeague || pool[0] || "").trim();
+}
+
+function updateTeamHcRankingsCompetitionSelectOptions() {
+  if (!(teamHcRankingsCompetitionSelect instanceof HTMLSelectElement)) return;
+  const competitionNames = getTeamHcRankingsCompetitionNames();
+
+  teamHcRankingsCompetitionSelect.innerHTML = "";
+  if (!competitionNames.length) {
+    const option = document.createElement("option");
+    option.value = "";
+    option.textContent = "No competition data";
+    teamHcRankingsCompetitionSelect.appendChild(option);
+    teamHcRankingsCompetitionSelect.disabled = true;
+    selectedTeamHcRankingsCompetition = "";
+    return;
+  }
+
+  if (!competitionNames.includes(selectedTeamHcRankingsCompetition)) {
+    selectedTeamHcRankingsCompetition = findDefaultTeamHcRankingsCompetition(teamHcRankingsLeagues);
+  }
+
+  for (const competitionName of competitionNames) {
+    const option = document.createElement("option");
+    option.value = competitionName;
+    option.textContent = competitionName;
+    if (competitionName === selectedTeamHcRankingsCompetition) {
+      option.selected = true;
+    }
+    teamHcRankingsCompetitionSelect.appendChild(option);
+  }
+
+  if (!teamHcRankingsCompetitionSelect.value && selectedTeamHcRankingsCompetition) {
+    teamHcRankingsCompetitionSelect.value = selectedTeamHcRankingsCompetition;
+  }
+  teamHcRankingsCompetitionSelect.disabled = false;
 }
 
 function getTeamHcRankingsSeasonsForCompetition(competitionName) {
@@ -4509,13 +4793,13 @@ function getTeamHcRankingsSeasonsForCompetition(competitionName) {
 
 function updateTeamHcRankingsSeasonSelectOptions() {
   if (!(teamHcRankingsSeasonSelect instanceof HTMLSelectElement)) return;
-  const selectedLeague = String(selectedTeamHcRankingsLeague || "").trim();
-  const seasons = getTeamHcRankingsSeasonsForCompetition(selectedLeague);
+  const selectedCompetition = String(selectedTeamHcRankingsCompetition || "").trim();
+  const seasons = getTeamHcRankingsSeasonsForCompetition(selectedCompetition);
   teamHcRankingsSeasonSelect.innerHTML = "";
-  if (!selectedLeague) {
+  if (!selectedCompetition) {
     const option = document.createElement("option");
     option.value = "";
-    option.textContent = "Select league first";
+    option.textContent = "Select competition first";
     teamHcRankingsSeasonSelect.appendChild(option);
     teamHcRankingsSeasonSelect.disabled = true;
     return;
@@ -4549,66 +4833,6 @@ function updateTeamHcRankingsSeasonSelectOptions() {
     teamHcRankingsSeasonSelect.value = selectedTeamHcRankingsSeason;
   }
   teamHcRankingsSeasonSelect.disabled = false;
-}
-
-function updateTeamHcRankingsLeagueFilterMenu() {
-  if (!teamHcRankingsLeagueFilterMenu) return;
-  teamHcRankingsLeagueFilterMenu.innerHTML = "";
-  const leagueNames = (Array.isArray(teamHcRankingsLeagues) ? teamHcRankingsLeagues : [])
-    .map((row) => String(row?.competition || "").trim())
-    .filter((name) => !!name);
-  if (!leagueNames.length) {
-    const empty = document.createElement("p");
-    empty.className = "league-filter-empty";
-    empty.textContent = "No leagues available.";
-    teamHcRankingsLeagueFilterMenu.appendChild(empty);
-    return;
-  }
-
-  const searchWrap = document.createElement("div");
-  searchWrap.className = "league-filter-search";
-  const searchInput = document.createElement("input");
-  searchInput.type = "search";
-  searchInput.className = "league-filter-search-input";
-  searchInput.placeholder = "Search leagues...";
-  searchInput.value = teamHcRankingsLeagueSearch;
-  searchInput.addEventListener("input", () => {
-    teamHcRankingsLeagueSearch = String(searchInput.value || "");
-    updateTeamHcRankingsLeagueFilterMenu();
-    const nextInput = teamHcRankingsLeagueFilterMenu.querySelector(".league-filter-search-input");
-    if (nextInput instanceof HTMLInputElement) {
-      nextInput.focus();
-    }
-  });
-  searchWrap.appendChild(searchInput);
-  teamHcRankingsLeagueFilterMenu.appendChild(searchWrap);
-
-  const query = teamHcRankingsLeagueSearch.trim().toLowerCase();
-  const visibleLeagues = !query
-    ? leagueNames
-    : leagueNames.filter((league) => league.toLowerCase().includes(query));
-  if (!visibleLeagues.length) {
-    const empty = document.createElement("p");
-    empty.className = "league-filter-empty";
-    empty.textContent = "No leagues match search.";
-    teamHcRankingsLeagueFilterMenu.appendChild(empty);
-    return;
-  }
-
-  for (const leagueName of visibleLeagues) {
-    const row = document.createElement("label");
-    row.className = "league-option";
-    const input = document.createElement("input");
-    input.type = "radio";
-    input.name = "teamHcRankingsLeague";
-    input.value = leagueName;
-    input.checked = leagueName === selectedTeamHcRankingsLeague;
-    const text = document.createElement("span");
-    text.textContent = leagueName;
-    row.appendChild(input);
-    row.appendChild(text);
-    teamHcRankingsLeagueFilterMenu.appendChild(row);
-  }
 }
 
 function sortTeamHcRankingRows(rows) {
@@ -4700,6 +4924,10 @@ async function loadTeamHcRankingTeamDetails(teamName, competitionName) {
     const query = new URLSearchParams();
     query.set("team", teamText);
     query.set("competition", competitionText);
+    const seasonText = String(selectedTeamHcRankingsSeason || "").trim();
+    if (seasonText) {
+      query.set("season", seasonText);
+    }
     query.set("xg_threshold", String(getCurrentXgPushThreshold()));
     const res = await fetch(`/api/team-hc-rankings/details?${query.toString()}`);
     const payload = await parseApiResponse(res);
@@ -4719,9 +4947,8 @@ async function loadTeamHcRankingTeamDetails(teamName, competitionName) {
 function renderTeamHcRankings() {
   if (!teamHcRankingsView) return;
   teamHcRankingsView.innerHTML = "";
+  updateTeamHcRankingsCompetitionSelectOptions();
   updateTeamHcRankingsSeasonSelectOptions();
-  updateTeamHcRankingsLeagueFilterButtonLabel();
-  updateTeamHcRankingsLeagueFilterMenu();
   if (teamHcRankingsLoading) {
     teamHcRankingsView.innerHTML = "<p>Loading HC rankings...</p>";
     return;
@@ -4730,13 +4957,13 @@ function renderTeamHcRankings() {
     teamHcRankingsView.innerHTML = `<p>${escapeHtml(teamHcRankingsErrorText)}</p>`;
     return;
   }
-  const selectedLeague = teamHcRankingsLeagues.find(
-    (row) => String(row?.competition || "").trim() === selectedTeamHcRankingsLeague
+  const selectedCompetition = teamHcRankingsLeagues.find(
+    (row) => String(row?.competition || "").trim() === selectedTeamHcRankingsCompetition
   );
-  const leagueRows = Array.isArray(selectedLeague?.rows) ? selectedLeague.rows : [];
-  const sortedRows = sortTeamHcRankingRows(leagueRows);
+  const competitionRows = Array.isArray(selectedCompetition?.rows) ? selectedCompetition.rows : [];
+  const sortedRows = sortTeamHcRankingRows(competitionRows);
   if (!sortedRows.length) {
-    teamHcRankingsView.innerHTML = "<p>No ranked teams found for this league.</p>";
+    teamHcRankingsView.innerHTML = "<p>No ranked teams found for this competition.</p>";
     return;
   }
   const venueKey = teamHcRankingsVenueMode === "home" || teamHcRankingsVenueMode === "away"
@@ -4849,7 +5076,7 @@ function renderTeamHcRankings() {
 async function loadTeamHcRankings(options = {}) {
   if (teamHcRankingsLoading) return false;
   const silent = Boolean(options?.silent);
-  const skipLeagueSeasonReload = Boolean(options?.skipLeagueSeasonReload);
+  const skipCompetitionSeasonReload = Boolean(options?.skipCompetitionSeasonReload);
   teamHcRankingsLoading = true;
   if (!silent) {
     statusText.textContent = "Loading team HC rankings...";
@@ -4858,13 +5085,13 @@ async function loadTeamHcRankings(options = {}) {
   try {
     const query = new URLSearchParams();
     query.set("xg_threshold", String(getCurrentXgPushThreshold()));
-    const competitionText = String(selectedTeamHcRankingsLeague || "").trim();
-    if (competitionText) {
-      query.set("competition", competitionText);
+    const requestedCompetition = String(selectedTeamHcRankingsCompetition || "").trim();
+    if (requestedCompetition) {
+      query.set("competition", requestedCompetition);
     }
-    const seasonText = String(selectedTeamHcRankingsSeason || "").trim();
-    if (seasonText) {
-      query.set("season", seasonText);
+    const requestedSeason = String(selectedTeamHcRankingsSeason || "").trim();
+    if (requestedSeason) {
+      query.set("season", requestedSeason);
     }
     const res = await fetch(`/api/team-hc-rankings?${query.toString()}`);
     const payload = await parseApiResponse(res);
@@ -4884,52 +5111,48 @@ async function loadTeamHcRankings(options = {}) {
     }
     teamHcRankingsLeagues = Array.isArray(payload?.leagues) ? payload.leagues : [];
     teamHcRankingsRows = Array.isArray(payload?.rows) ? payload.rows : [];
+    const availableCompetitionNames = getTeamHcRankingsCompetitionNames();
     if (
-      !selectedTeamHcRankingsLeague
-      || !teamHcRankingsLeagues.some((row) => String(row?.competition || "").trim() === selectedTeamHcRankingsLeague)
+      !selectedTeamHcRankingsCompetition
+      || !availableCompetitionNames.includes(selectedTeamHcRankingsCompetition)
     ) {
-      const normalizedLeagueName = (row) => String(row?.competition || "").trim().toLowerCase();
-      const findLeague = (predicate) => teamHcRankingsLeagues.find((row) => predicate(normalizedLeagueName(row)));
-      const englishPremierLeague = (
-        findLeague((name) => name === "english premier league")
-        || findLeague((name) => name === "england premier league")
-        || findLeague((name) => name.includes("english") && name.includes("premier league"))
-        || findLeague((name) => name.includes("england") && name.includes("premier league"))
-        || findLeague((name) => name === "premier league")
-      );
-      const defaultLeague = englishPremierLeague || teamHcRankingsLeagues[0];
-      selectedTeamHcRankingsLeague = String(defaultLeague?.competition || "").trim();
+      selectedTeamHcRankingsCompetition = findDefaultTeamHcRankingsCompetition(teamHcRankingsLeagues);
     }
-    const leagueSeasons = getTeamHcRankingsSeasonsForCompetition(selectedTeamHcRankingsLeague);
-    if (leagueSeasons.length) {
+    const competitionSeasons = getTeamHcRankingsSeasonsForCompetition(selectedTeamHcRankingsCompetition);
+    if (competitionSeasons.length) {
       const currentSeason = String(selectedTeamHcRankingsSeason || "").trim();
-      const hasCurrentSeason = leagueSeasons.some((entry) => String(entry?.season || "").trim() === currentSeason);
+      const hasCurrentSeason = competitionSeasons.some((entry) => String(entry?.season || "").trim() === currentSeason);
       if (!hasCurrentSeason) {
-        selectedTeamHcRankingsSeason = String(leagueSeasons[0]?.season || "").trim();
+        selectedTeamHcRankingsSeason = String(competitionSeasons[0]?.season || "").trim();
       }
+    } else if (!payloadSeason) {
+      selectedTeamHcRankingsSeason = "";
     }
-    const shouldReloadForLeagueSeason = (
-      !skipLeagueSeasonReload
-      && !competitionText
-      && leagueSeasons.length > 0
-      && String(payloadSeason || "").trim() !== ""
-      && String(selectedTeamHcRankingsSeason || "").trim() !== String(payloadSeason || "").trim()
+    const shouldReloadForCompetitionSeason = (
+      !skipCompetitionSeasonReload
+      && (
+        String(selectedTeamHcRankingsCompetition || "").trim() !== requestedCompetition
+        || (
+          String(payloadSeason || "").trim() !== ""
+          && String(selectedTeamHcRankingsSeason || "").trim() !== String(payloadSeason || "").trim()
+        )
+      )
     );
     teamHcRankingsLoaded = true;
     teamHcRankingsErrorText = "";
     if (activeTab === "rankings" && !silent) {
       const seasonLabel = (
-        getTeamHcRankingsSeasonsForCompetition(selectedTeamHcRankingsLeague).find(
+        getTeamHcRankingsSeasonsForCompetition(selectedTeamHcRankingsCompetition).find(
           (entry) => String(entry?.season || "").trim() === String(selectedTeamHcRankingsSeason || "").trim()
         )?.season_label
       ) || selectedTeamHcRankingsSeason;
       const seasonPrefix = seasonLabel ? `${seasonLabel}: ` : "";
-      statusText.textContent = `${seasonPrefix}Loaded HC rankings for ${Number(payload?.total_teams) || 0} teams across ${Number(payload?.total_leagues) || 0} leagues`;
+      statusText.textContent = `${seasonPrefix}Loaded HC rankings for ${Number(payload?.total_teams) || 0} teams across ${Number(payload?.total_leagues) || 0} competitions`;
     }
     renderTeamHcRankings();
-    if (shouldReloadForLeagueSeason) {
+    if (shouldReloadForCompetitionSeason) {
       window.setTimeout(() => {
-        loadTeamHcRankings({ silent: true, skipLeagueSeasonReload: true });
+        loadTeamHcRankings({ silent: true, skipCompetitionSeasonReload: true });
       }, 0);
     }
     return true;
@@ -5324,6 +5547,8 @@ function renderXgd(payload) {
   const normalizeVenueRows = (rowsObj) => ({
     home: Array.isArray(rowsObj?.home) ? rowsObj.home : [],
     away: Array.isArray(rowsObj?.away) ? rowsObj.away : [],
+    home_prev_season_rows: Array.isArray(rowsObj?.home_prev_season_rows) ? rowsObj.home_prev_season_rows : [],
+    away_prev_season_rows: Array.isArray(rowsObj?.away_prev_season_rows) ? rowsObj.away_prev_season_rows : [],
   });
   const normalizeSeasonHandicapRows = (rowsObj) => ({
     home: Array.isArray(rowsObj?.home) ? rowsObj.home : [],
@@ -5373,6 +5598,8 @@ function renderXgd(payload) {
   const activeLabel = activeIsAway ? awayLabel : homeLabel;
   const activeRows = activeIsAway ? awayRecentRows : homeRecentRows;
   const activeVenueRows = activeIsAway ? awayTeamVenueRows : homeTeamVenueRows;
+  const activeVenueSeedRows = normalizeRollingSeedRowsByVenue(activeVenueRows);
+  const activeRollingSeedRows = activeIsAway ? activeVenueSeedRows.away : activeVenueSeedRows.home;
   const activeHomeVenueRows = Array.isArray(activeVenueRows.home) ? activeVenueRows.home : [];
   const activeAwayVenueRows = Array.isArray(activeVenueRows.away) ? activeVenueRows.away : [];
   const allVenueRowsCount = activeHomeVenueRows.length + activeAwayVenueRows.length;
@@ -5385,6 +5612,7 @@ function renderXgd(payload) {
   }
   gamesShownCount = Math.max(1, Math.min(maxGamesShown, clampRecentMatchesCount(gamesShownCount)));
   rollingWindowCount = Math.max(1, Math.min(maxRollingWindow, clampRecentMatchesCount(rollingWindowCount)));
+  trendlineDegree = clampTrendlineDegree(trendlineDegree);
   const shownRows = activeRows.slice(0, gamesShownCount);
   const teamSummaryTables = buildTeamXgdSummaryTablesHtml(homeLabel, awayLabel, homeRecentRows, awayRecentRows);
   const recentMatchesSection = `
@@ -5392,9 +5620,30 @@ function renderXgd(payload) {
     ${buildGamesShownControlHtml(gamesShownCount, maxGamesShown, maxRollingWindow)}
     ${buildRecentSwitchHtml(homeLabel, awayLabel)}
     ${buildRecentAveragesTableHtml(activeRows, gamesShownCount, activeLabel)}
-    ${showTrendCharts ? buildMetricTrendPlotHtml(shownRows, "Venue games trend", activeLabel, rollingWindowCount) : ""}
+    ${showTrendCharts
+    ? buildMetricTrendPlotHtml(
+      shownRows,
+      "Venue games trend",
+      activeLabel,
+      rollingWindowCount,
+      {
+        rollingSeedRows: activeRollingSeedRows,
+        trendlineDegree,
+        showTrendlineControl: true,
+        trendlineControlClass: "trendline-degree-input-main",
+      }
+    )
+    : ""}
     ${buildRecentMatchesTableHtml("Fixture-side matches", shownRows, activeLabel)}
-    ${buildVenueSplitSectionHtml(activeLabel, activeHomeVenueRows, activeAwayVenueRows, rollingWindowCount, showTrendCharts)}
+    ${buildVenueSplitSectionHtml(
+      activeLabel,
+      activeHomeVenueRows,
+      activeAwayVenueRows,
+      rollingWindowCount,
+      showTrendCharts,
+      activeVenueSeedRows,
+      trendlineDegree
+    )}
   `;
   const historicalResultSection = buildHistoricalResultSection(payload);
 
@@ -5611,6 +5860,14 @@ function renderXgd(payload) {
       if (lastXgdPayload) renderXgd(lastXgdPayload);
     });
   }
+  const trendlineDegreeInputsInline = linesContainer.querySelectorAll(".trendline-degree-input-main");
+  for (const input of trendlineDegreeInputsInline) {
+    if (!(input instanceof HTMLInputElement)) continue;
+    input.addEventListener("change", () => {
+      trendlineDegree = clampTrendlineDegree(input.value);
+      if (lastXgdPayload) renderXgd(lastXgdPayload);
+    });
+  }
 
   const showTrendChartsToggle = linesContainer.querySelector("#showTrendChartsToggle");
   if (showTrendChartsToggle) {
@@ -5729,6 +5986,8 @@ function renderTeamDetailsPanel(payload) {
     : { home: [], away: [] };
   const homeVenueRows = Array.isArray(teamVenueRows?.home) ? teamVenueRows.home : [];
   const awayVenueRows = Array.isArray(teamVenueRows?.away) ? teamVenueRows.away : [];
+  const teamVenueSeedRows = normalizeRollingSeedRowsByVenue(teamVenueRows);
+  const allVenueSeedRows = mergeRollingSeedRowsByVenue(teamVenueSeedRows);
   const seasonHandicapRows = Array.isArray(payload?.season_handicap_rows) ? payload.season_handicap_rows : [];
   const homeHcRows = seasonHandicapRows.filter((row) => String(row?.venue || "").trim().toLowerCase() === "home");
   const awayHcRows = seasonHandicapRows.filter((row) => String(row?.venue || "").trim().toLowerCase() === "away");
@@ -5808,23 +6067,36 @@ function renderTeamDetailsPanel(payload) {
     1,
     Math.min(xgGamesShown, clampRecentMatchesCount(teamDetailsXgRollingWindowCount))
   );
+  const xgTrendlineDegree = clampTrendlineDegree(teamDetailsTrendlineDegree);
   teamDetailsXgGamesShownCount = xgGamesShown;
   teamDetailsXgRollingWindowCount = xgRollingWindow;
+  teamDetailsTrendlineDegree = xgTrendlineDegree;
   const limitedAllRows = recentRows.slice(0, xgGamesShown);
   const limitedHomeRows = homeVenueRows.slice(0, xgGamesShown);
   const limitedAwayRows = awayVenueRows.slice(0, xgGamesShown);
-  const buildTeamXgSectionHtml = (sectionTitle, rows, tableTitle) => `
+  const buildTeamXgSectionHtml = (sectionTitle, rows, tableTitle, rollingSeedRows = []) => `
     <h3 class="section-title">${escapeHtml(sectionTitle)}</h3>
     ${buildRecentAveragesTableHtml(rows, Math.max(1, rows.length || 1), teamText)}
-    ${buildMetricTrendPlotHtml(rows, `${sectionTitle} trend`, teamText, xgRollingWindow)}
+    ${buildMetricTrendPlotHtml(
+    rows,
+    `${sectionTitle} trend`,
+    teamText,
+    xgRollingWindow,
+    {
+      rollingSeedRows,
+      trendlineDegree: xgTrendlineDegree,
+      showTrendlineControl: true,
+      trendlineControlClass: "trendline-degree-input-team",
+    }
+  )}
     ${buildRecentMatchesTableHtml(tableTitle, rows, teamText)}
   `;
   const xgTabContent = `
     <h3 class="section-title">Season Games With xG</h3>
     ${buildTeamXgControlsHtml(xgGamesShown, maxTeamXgGames, xgRollingWindow, xgGamesShown)}
-    ${buildTeamXgSectionHtml("All Games", limitedAllRows, "All games")}
-    ${buildTeamXgSectionHtml("Home Games", limitedHomeRows, "Home games")}
-    ${buildTeamXgSectionHtml("Away Games", limitedAwayRows, "Away games")}
+    ${buildTeamXgSectionHtml("All Games", limitedAllRows, "All games", allVenueSeedRows)}
+    ${buildTeamXgSectionHtml("Home Games", limitedHomeRows, "Home games", teamVenueSeedRows.home)}
+    ${buildTeamXgSectionHtml("Away Games", limitedAwayRows, "Away games", teamVenueSeedRows.away)}
   `;
   const statsTabContent = `
     <h3 class="section-title">Season Stats</h3>
@@ -5912,6 +6184,16 @@ function renderTeamDetailsPanel(payload) {
       }
     });
   }
+  const teamXgTrendlineDegreeInputs = teamDetailsContent.querySelectorAll(".trendline-degree-input-team");
+  for (const input of teamXgTrendlineDegreeInputs) {
+    if (!(input instanceof HTMLInputElement)) continue;
+    input.addEventListener("change", () => {
+      teamDetailsTrendlineDegree = clampTrendlineDegree(input.value);
+      if (teamDetailsPayload) {
+        renderTeamDetailsPanel(teamDetailsPayload);
+      }
+    });
+  }
 
   const gamestateModeButtons = teamDetailsContent.querySelectorAll(".gamestate-mode-btn");
   for (const button of gamestateModeButtons) {
@@ -5943,6 +6225,7 @@ async function openTeamPage(teamName, competitionName = null, seasonKey = null, 
     teamDetailsMainTab = "xg";
     teamDetailsXgGamesShownCount = TEAM_DETAILS_XG_GAMES_DEFAULT;
     teamDetailsXgRollingWindowCount = TEAM_DETAILS_XG_ROLLING_DEFAULT;
+    teamDetailsTrendlineDegree = TRENDLINE_DEGREE_DEFAULT;
   }
   teamDetailsTeam = teamText;
   teamDetailsCompetition = competitionText;
@@ -6079,6 +6362,7 @@ async function loadGameXgd(marketId) {
   gamesShownCount = 0;
   gamesShownAuto = true;
   rollingWindowCount = 10;
+  trendlineDegree = TRENDLINE_DEGREE_DEFAULT;
   showTrendCharts = false;
   detailsMainTab = "xgd";
   recentTeamView = "home";
@@ -6354,44 +6638,15 @@ if (teamHcRankingsSeasonSelect instanceof HTMLSelectElement) {
     loadTeamHcRankings();
   });
 }
-if (teamHcRankingsLeagueFilterBtn instanceof HTMLButtonElement) {
-  teamHcRankingsLeagueFilterBtn.addEventListener("click", (event) => {
-    event.stopPropagation();
-    const willOpen = teamHcRankingsLeagueFilterMenu?.classList.contains("hidden");
-    setTeamHcRankingsLeagueFilterOpen(Boolean(willOpen));
-    if (willOpen) {
-      setLeagueFilterOpen(false);
-      setTierFilterOpen(false);
-      window.setTimeout(() => {
-        const searchInput = teamHcRankingsLeagueFilterMenu?.querySelector(".league-filter-search-input");
-        if (searchInput instanceof HTMLInputElement) {
-          searchInput.focus();
-        }
-      }, 0);
-    }
-  });
-}
-if (teamHcRankingsLeagueFilterMenu instanceof HTMLDivElement) {
-  teamHcRankingsLeagueFilterMenu.addEventListener("change", (event) => {
-    const target = event.target;
-    if (!(target instanceof HTMLInputElement) || target.type !== "radio") return;
-    const selectedLeague = String(target.value || "").trim();
-    if (!selectedLeague) return;
-    if (selectedLeague !== selectedTeamHcRankingsLeague) {
-      setSelectedTeamHcRankingsLeague(selectedLeague);
-      const leagueSeasons = getTeamHcRankingsSeasonsForCompetition(selectedLeague);
-      const currentSeason = String(selectedTeamHcRankingsSeason || "").trim();
-      const hasCurrentSeason = leagueSeasons.some((entry) => String(entry?.season || "").trim() === currentSeason);
-      if (!hasCurrentSeason) {
-        selectedTeamHcRankingsSeason = String(leagueSeasons[0]?.season || "").trim();
-      }
-      closeTeamHcPerfPanel();
-      setTeamHcRankingsLeagueFilterOpen(false);
-      loadTeamHcRankings();
-      return;
-    }
-    setTeamHcRankingsLeagueFilterOpen(false);
-    renderTeamHcRankings();
+if (teamHcRankingsCompetitionSelect instanceof HTMLSelectElement) {
+  teamHcRankingsCompetitionSelect.addEventListener("change", () => {
+    const nextCompetition = String(teamHcRankingsCompetitionSelect.value || "").trim();
+    if (!nextCompetition || nextCompetition === selectedTeamHcRankingsCompetition) return;
+    setSelectedTeamHcRankingsCompetition(nextCompetition);
+    const competitionSeasons = getTeamHcRankingsSeasonsForCompetition(nextCompetition);
+    selectedTeamHcRankingsSeason = String(competitionSeasons[0]?.season || "").trim();
+    closeTeamHcPerfPanel();
+    loadTeamHcRankings();
   });
 }
 if (teamHcRankingsRefreshBtn instanceof HTMLButtonElement) {
@@ -6469,15 +6724,11 @@ document.addEventListener("click", (event) => {
   if (!tierFilter.contains(event.target)) {
     setTierFilterOpen(false);
   }
-  if (teamHcRankingsLeagueFilter && !teamHcRankingsLeagueFilter.contains(event.target)) {
-    setTeamHcRankingsLeagueFilterOpen(false);
-  }
 });
 document.addEventListener("keydown", (event) => {
   if (event.key === "Escape") {
     setLeagueFilterOpen(false);
     setTierFilterOpen(false);
-    setTeamHcRankingsLeagueFilterOpen(false);
     closeTeamDetailsPanel();
   }
 });
