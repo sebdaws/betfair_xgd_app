@@ -4,13 +4,10 @@ from __future__ import annotations
 
 import re
 import sqlite3
-import sys
 from pathlib import Path
 from typing import Any
 
 import pandas as pd
-
-from xgd_app.default_paths import get_external_path
 
 FINISHED_STATUSES = {
     "ended",
@@ -20,6 +17,19 @@ FINISHED_STATUSES = {
     "ap",
     "penalties",
     "ft",
+    "full-time",
+    "full time",
+    "finished",
+}
+
+NOT_STARTED_STATUSES = {
+    "not started",
+    "notstarted",
+    "not_started",
+    "not-started",
+    "scheduled",
+    "upcoming",
+    "fixture",
 }
 
 REQUIRED_SOFASCORE_TABLES = {
@@ -289,71 +299,30 @@ def _sqlite_table_names(path: Path) -> set[str]:
 
 
 def resolve_sofascore_db_path(db_path: str) -> Path:
-    requested = Path(db_path).expanduser().resolve()
-    configured_fallback = get_external_path("sofascore_db")
+    requested_text = str(db_path or "").strip()
+    if not requested_text:
+        raise RuntimeError("A source DB path is required (--db-path).")
 
-    candidates: list[Path] = []
-    candidate_values: list[Path | None] = [requested, configured_fallback]
-    for candidate in candidate_values:
-        if candidate is None:
-            continue
-        if candidate not in candidates:
-            candidates.append(candidate)
+    requested = Path(requested_text).expanduser()
+    requested = requested.resolve() if requested.is_absolute() else (Path.cwd() / requested).resolve()
+    if not requested.exists():
+        raise RuntimeError(
+            f"Source DB not found: {requested}\n"
+            "Set --db-path in app_data/launcher_config.json to a valid DB file."
+        )
 
-    checked: list[tuple[Path, set[str] | None]] = []
-    selected_path: Path | None = None
-    for candidate in candidates:
-        if not candidate.exists():
-            checked.append((candidate, None))
-            continue
-        try:
-            tables = _sqlite_table_names(candidate)
-        except Exception:
-            checked.append((candidate, None))
-            continue
-        checked.append((candidate, tables))
-        if REQUIRED_SOFASCORE_TABLES.issubset(tables):
-            selected_path = candidate
-            break
+    try:
+        tables = _sqlite_table_names(requested)
+    except Exception as exc:
+        raise RuntimeError(f"Source DB is unreadable: {requested} ({exc})") from exc
 
-    if selected_path is not None:
-        if selected_path != requested:
-            requested_status = "not found"
-            requested_tables = next((tables for path, tables in checked if path == requested), None)
-            if requested.exists():
-                if requested_tables is None:
-                    requested_status = "unreadable"
-                else:
-                    missing = sorted(REQUIRED_SOFASCORE_TABLES - requested_tables)
-                    requested_status = (
-                        "valid"
-                        if not missing
-                        else f"missing tables: {', '.join(missing)}"
-                    )
-            print(
-                "Warning: using fallback SofaScore DB path "
-                f"{selected_path} (requested {requested}: {requested_status}).",
-                file=sys.stderr,
-            )
-        return selected_path
-
-    detail_lines: list[str] = []
-    for candidate, tables in checked:
-        if tables is None:
-            if candidate.exists():
-                detail_lines.append(f"- {candidate}: unreadable or invalid sqlite file")
-            else:
-                detail_lines.append(f"- {candidate}: not found")
-            continue
-        missing = sorted(REQUIRED_SOFASCORE_TABLES - tables)
-        detail_lines.append(f"- {candidate}: missing tables: {', '.join(missing)}")
-
-    details = "\n".join(detail_lines)
-    raise RuntimeError(
-        "SofaScore DB is missing required schema (expected tables like 'matches'). "
-        "Set --db-path to a valid sofascore_local.db.\n"
-        f"Checked:\n{details}"
-    )
+    missing = sorted(REQUIRED_SOFASCORE_TABLES - tables)
+    if missing:
+        raise RuntimeError(
+            "Source DB is missing required schema "
+            f"(missing tables: {', '.join(missing)}): {requested}"
+        )
+    return requested
 
 
 def load_sofascore_inputs(db_path: str) -> tuple[pd.DataFrame, pd.DataFrame, list[str], Path]:
@@ -368,7 +337,7 @@ def load_sofascore_inputs(db_path: str) -> tuple[pd.DataFrame, pd.DataFrame, lis
         FROM match_stats ms
         JOIN stat_definitions sd
             ON sd.id = ms.stat_definition_id
-        WHERE LOWER(COALESCE(sd.metric, '')) = 'expected goals'
+        WHERE LOWER(TRIM(COALESCE(sd.metric, ''))) LIKE 'expected goals%'
           AND UPPER(COALESCE(ms.period, '')) = 'ALL'
         GROUP BY ms.match_id
     ),
@@ -391,6 +360,21 @@ def load_sofascore_inputs(db_path: str) -> tuple[pd.DataFrame, pd.DataFrame, lis
             ) AS home_xg_shots,
             SUM(
                 CASE
+                    WHEN ms.is_home = 1
+                     AND LOWER(TRIM(COALESCE(ms.situation, ''))) <> 'penalty'
+                     AND (
+                        UPPER(TRIM(COALESCE(m.status, ''))) NOT IN ('AET', 'AP')
+                        OR (
+                            NULLIF(TRIM(COALESCE(ms.time_minute, '')), '') IS NOT NULL
+                            AND CAST(NULLIF(TRIM(COALESCE(ms.time_minute, '')), '') AS REAL) <= 90
+                        )
+                     )
+                    THEN COALESCE(CAST(NULLIF(ms.xg, '') AS REAL), 0)
+                    ELSE 0
+                END
+            ) AS home_npxg_shots,
+            SUM(
+                CASE
                     WHEN ms.is_home = 0
                      AND (
                         UPPER(TRIM(COALESCE(m.status, ''))) NOT IN ('AET', 'AP')
@@ -403,6 +387,21 @@ def load_sofascore_inputs(db_path: str) -> tuple[pd.DataFrame, pd.DataFrame, lis
                     ELSE 0
                 END
             ) AS away_xg_shots,
+            SUM(
+                CASE
+                    WHEN ms.is_home = 0
+                     AND LOWER(TRIM(COALESCE(ms.situation, ''))) <> 'penalty'
+                     AND (
+                        UPPER(TRIM(COALESCE(m.status, ''))) NOT IN ('AET', 'AP')
+                        OR (
+                            NULLIF(TRIM(COALESCE(ms.time_minute, '')), '') IS NOT NULL
+                            AND CAST(NULLIF(TRIM(COALESCE(ms.time_minute, '')), '') AS REAL) <= 90
+                        )
+                     )
+                    THEN COALESCE(CAST(NULLIF(ms.xg, '') AS REAL), 0)
+                    ELSE 0
+                END
+            ) AS away_npxg_shots,
             SUM(
                 CASE
                     WHEN ms.is_home = 1
@@ -646,6 +645,8 @@ def load_sofascore_inputs(db_path: str) -> tuple[pd.DataFrame, pd.DataFrame, lis
         END AS away_xg_stat,
         sa.home_xg_shots,
         sa.away_xg_shots,
+        sa.home_npxg_shots,
+        sa.away_npxg_shots,
         sa.home_xgot_shots,
         sa.away_xgot_shots,
         CASE
@@ -713,6 +714,7 @@ def load_sofascore_inputs(db_path: str) -> tuple[pd.DataFrame, pd.DataFrame, lis
         m.id AS match_id,
         m.season_id,
         m.kickoff_ts AS date_time,
+        m.status AS match_status,
         c.name AS competition_name,
         c.country AS area_name,
         ht.name AS home_team_name,
@@ -721,8 +723,7 @@ def load_sofascore_inputs(db_path: str) -> tuple[pd.DataFrame, pd.DataFrame, lis
     JOIN teams ht ON ht.id = m.home_team_id
     JOIN teams at ON at.id = m.away_team_id
     LEFT JOIN competitions c ON c.id = m.competition_id
-    WHERE LOWER(TRIM(COALESCE(m.status, ''))) = 'not started'
-      AND m.kickoff_ts IS NOT NULL
+    WHERE m.kickoff_ts IS NOT NULL
     """
 
     conn = sqlite3.connect(str(path))
@@ -804,6 +805,8 @@ def load_sofascore_inputs(db_path: str) -> tuple[pd.DataFrame, pd.DataFrame, lis
         "away_xg_stat",
         "home_xg_shots",
         "away_xg_shots",
+        "home_npxg_shots",
+        "away_npxg_shots",
         "home_xgot_shots",
         "away_xgot_shots",
         "home_goalkeeper_goals_prevented",
@@ -833,6 +836,14 @@ def load_sofascore_inputs(db_path: str) -> tuple[pd.DataFrame, pd.DataFrame, lis
 
     raw_finished["home_xg"] = raw_finished["home_xg_stat"].where(raw_finished["home_xg_stat"].notna(), raw_finished["home_xg_shots"])
     raw_finished["away_xg"] = raw_finished["away_xg_stat"].where(raw_finished["away_xg_stat"].notna(), raw_finished["away_xg_shots"])
+    raw_finished["home_npxg"] = raw_finished["home_npxg_shots"].where(
+        raw_finished["home_npxg_shots"].notna(),
+        raw_finished["home_xg"],
+    )
+    raw_finished["away_npxg"] = raw_finished["away_npxg_shots"].where(
+        raw_finished["away_npxg_shots"].notna(),
+        raw_finished["away_xg"],
+    )
     raw_finished["home_xgot_keeper"] = raw_finished["home_goals"] + raw_finished["away_goalkeeper_goals_prevented"]
     raw_finished["away_xgot_keeper"] = raw_finished["away_goals"] + raw_finished["home_goalkeeper_goals_prevented"]
 
@@ -905,6 +916,8 @@ def load_sofascore_inputs(db_path: str) -> tuple[pd.DataFrame, pd.DataFrame, lis
             "away_goals",
             "home_xg",
             "away_xg",
+            "home_npxg",
+            "away_npxg",
             "home_xgot",
             "away_xgot",
             "home_corners",
@@ -931,6 +944,8 @@ def load_sofascore_inputs(db_path: str) -> tuple[pd.DataFrame, pd.DataFrame, lis
             "GA": finished["away_goals"],
             "xG": finished["home_xg"],
             "xGA": finished["away_xg"],
+            "NPxG": finished["home_npxg"].where(finished["home_npxg"].notna(), finished["home_xg"]),
+            "NPxGA": finished["away_npxg"].where(finished["away_npxg"].notna(), finished["away_xg"]),
             "xGoT": finished["home_xgot"].where(finished["home_xgot"].notna(), finished["home_xg"]),
             "xGoTA": finished["away_xgot"].where(finished["away_xgot"].notna(), finished["away_xg"]),
             "corners_for": finished["home_corners"],
@@ -961,6 +976,8 @@ def load_sofascore_inputs(db_path: str) -> tuple[pd.DataFrame, pd.DataFrame, lis
             "GA": finished["home_goals"],
             "xG": finished["away_xg"],
             "xGA": finished["home_xg"],
+            "NPxG": finished["away_npxg"].where(finished["away_npxg"].notna(), finished["away_xg"]),
+            "NPxGA": finished["home_npxg"].where(finished["home_npxg"].notna(), finished["home_xg"]),
             "xGoT": finished["away_xgot"].where(finished["away_xgot"].notna(), finished["away_xg"]),
             "xGoTA": finished["home_xgot"].where(finished["home_xgot"].notna(), finished["home_xg"]),
             "corners_for": finished["away_corners"],
@@ -985,6 +1002,9 @@ def load_sofascore_inputs(db_path: str) -> tuple[pd.DataFrame, pd.DataFrame, lis
     form_df = form_df.sort_values(["date_time", "match_id", "venue"], kind="mergesort").reset_index(drop=True)
 
     fixtures_df["date_time"] = pd.to_datetime(fixtures_df["date_time"], errors="coerce", utc=True)
+    fixtures_df["status_norm"] = fixtures_df["match_status"].fillna("").astype(str).str.strip().str.lower()
+    fixtures_df = fixtures_df[fixtures_df["status_norm"].isin(NOT_STARTED_STATUSES)].copy()
+    fixtures_df = fixtures_df.drop(columns=["match_status", "status_norm"], errors="ignore")
     fixtures_df = fixtures_df.dropna(subset=["date_time", "home_team_name", "away_team_name"]).reset_index(drop=True)
 
     # Restrict matcher pool to teams that actually appear in SofaScore matches.

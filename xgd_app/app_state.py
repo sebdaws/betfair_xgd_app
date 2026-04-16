@@ -36,10 +36,12 @@ from xgd_app.core import (
     match_competition_name,
     normalize_competition_key,
     normalize_team_name,
+    normalize_xg_metric_mode,
     parse_iso_utc,
     parse_list_csv,
     parse_periods,
     period_rows_from_reduced_table,
+    source_specific_app_data_path,
     source_competitions_differ_from_betfair_competition,
     split_event_teams,
 )
@@ -118,18 +120,30 @@ class AppState:
         self.credentials = self.games_service.resolve_credentials(args)
 
         load_sofa_started_at = time.perf_counter()
-        print("[xgd_web_app] Stage 2/3: Loading SofaScore inputs...", flush=True)
-        self.form_df, self.fixtures_df, teams, self.sofascore_db_path = load_sofascore_inputs(args.db_path)
+        print("[xgd_web_app] Stage 2/3: Loading match inputs...", flush=True)
+        self.form_df, self.fixtures_df, teams, resolved_db_path = load_sofascore_inputs(args.db_path)
+        self._form_df_metric_cache: dict[str, pd.DataFrame] = {}
+        self.npxg_available = self._detect_npxg_availability(self.form_df)
+        self.source_db_path = Path(resolved_db_path).expanduser().resolve()
+        # Backward-compatible alias used across existing modules/UI payloads.
+        self.sofascore_db_path = self.source_db_path
         print(
-            "[xgd_web_app] Stage 2/3: SofaScore inputs loaded "
+            "[xgd_web_app] Stage 2/3: Match inputs loaded "
             f"({len(self.form_df)} form rows, {len(self.fixtures_df)} fixtures) "
+            f"from {self.source_db_path} "
             f"in {(time.perf_counter() - load_sofa_started_at):.1f}s",
             flush=True,
         )
         self.team_matcher = TeamMatcher(teams)
 
-        self.manual_mappings_path = DEFAULT_MANUAL_TEAM_MAPPINGS
-        self.manual_competition_mappings_path = DEFAULT_MANUAL_COMPETITION_MAPPINGS
+        self.manual_mappings_path = source_specific_app_data_path(
+            DEFAULT_MANUAL_TEAM_MAPPINGS,
+            self.source_db_path,
+        )
+        self.manual_competition_mappings_path = source_specific_app_data_path(
+            DEFAULT_MANUAL_COMPETITION_MAPPINGS,
+            self.source_db_path,
+        )
         self.saved_games_path = DEFAULT_SAVED_GAMES
 
         sofa_competitions = sorted(self._load_sofa_competitions_from_db())
@@ -191,6 +205,10 @@ class AppState:
         self.games_df = pd.DataFrame()
         self.historical_games_df = pd.DataFrame()
         self.upcoming_metrics_cache: dict[str, dict[str, Any]] = {}
+        self.upcoming_metrics_cache_by_mode: dict[str, dict[str, dict[str, Any]]] = {
+            "xg": self.upcoming_metrics_cache,
+            "npxg": {},
+        }
         self.saved_market_ids = self._load_saved_market_ids()
         historical_init_started_at = time.perf_counter()
         print("[xgd_web_app] Stage 2/3: Initializing historical games cache...", flush=True)
@@ -234,10 +252,53 @@ class AppState:
             if row and str(row[0]).strip()
         }
 
+    @staticmethod
+    def _detect_npxg_availability(form_df: pd.DataFrame) -> bool:
+        if not isinstance(form_df, pd.DataFrame) or form_df.empty:
+            return False
+        if "NPxG" not in form_df.columns or "NPxGA" not in form_df.columns:
+            return False
+        npxg = pd.to_numeric(form_df["NPxG"], errors="coerce")
+        npxga = pd.to_numeric(form_df["NPxGA"], errors="coerce")
+        return bool(npxg.notna().any() and npxga.notna().any())
+
+    def normalize_xg_metric_mode(self, value: Any) -> str:
+        mode = normalize_xg_metric_mode(value)
+        if mode == "npxg" and not bool(getattr(self, "npxg_available", False)):
+            return "xg"
+        return mode
+
+    def get_form_df_for_metric_mode(self, metric_mode: Any) -> pd.DataFrame:
+        resolved_mode = self.normalize_xg_metric_mode(metric_mode)
+        if resolved_mode == "xg":
+            return self.form_df
+        cached = self._form_df_metric_cache.get(resolved_mode)
+        if isinstance(cached, pd.DataFrame):
+            return cached
+
+        out = self.form_df.copy()
+        if out.empty:
+            self._form_df_metric_cache[resolved_mode] = out
+            return out
+        if ("NPxG" in out.columns) and ("NPxGA" in out.columns):
+            out["xG"] = out["NPxG"].where(out["NPxG"].notna(), out.get("xG"))
+            out["xGA"] = out["NPxGA"].where(out["NPxGA"].notna(), out.get("xGA"))
+        self._form_df_metric_cache[resolved_mode] = out
+        return out
+
     def hard_refresh_xgd_data(self) -> dict[str, Any]:
-        current_db_path = Path(self.sofascore_db_path).expanduser().resolve()
+        current_db_path = Path(self.source_db_path).expanduser().resolve()
         form_df, fixtures_df, teams, resolved_db_path = load_sofascore_inputs(str(current_db_path))
         team_matcher = TeamMatcher(teams)
+        source_db_path = Path(resolved_db_path).expanduser().resolve()
+        manual_mappings_path = source_specific_app_data_path(
+            DEFAULT_MANUAL_TEAM_MAPPINGS,
+            source_db_path,
+        )
+        manual_competition_mappings_path = source_specific_app_data_path(
+            DEFAULT_MANUAL_COMPETITION_MAPPINGS,
+            source_db_path,
+        )
         sofa_competitions = sorted(self._load_sofa_competitions_from_db(db_path=resolved_db_path))
         sofa_competition_set = set(sofa_competitions)
         sofa_competition_by_norm: dict[str, str] = {}
@@ -248,19 +309,37 @@ class AppState:
 
         with self.lock:
             self.form_df = form_df
+            self._form_df_metric_cache = {}
+            self.npxg_available = self._detect_npxg_availability(form_df)
             self.fixtures_df = fixtures_df
             self.team_matcher = team_matcher
-            self.sofascore_db_path = resolved_db_path
+            self.source_db_path = source_db_path
+            self.sofascore_db_path = source_db_path
+            self.manual_mappings_path = manual_mappings_path
+            self.manual_competition_mappings_path = manual_competition_mappings_path
             self.sofa_competitions = sofa_competitions
             self.sofa_competition_set = sofa_competition_set
             self.sofa_competition_by_norm = sofa_competition_by_norm
             # Clear cached xGD period metrics so they are rebuilt against fresh DB data.
             self.upcoming_metrics_cache = {}
+            self.upcoming_metrics_cache_by_mode = {
+                "xg": self.upcoming_metrics_cache,
+                "npxg": {},
+            }
             self.games_df = pd.DataFrame()
             self.historical_games_df = pd.DataFrame()
             self.last_refresh = None
 
-        # Rebuild historical and upcoming game tables using refreshed SofaScore inputs.
+        self.mapping_service.refresh_mapping_paths()
+        with self.lock:
+            self.manual_team_mappings = self.mapping_service.load_manual_team_mappings()
+            self.manual_mapping_lookup = self.mapping_service.build_manual_mapping_lookup(self.manual_team_mappings)
+            self.manual_competition_mappings = self.mapping_service.load_manual_competition_mappings()
+            self.manual_competition_mapping_lookup = self.mapping_service.build_manual_competition_mapping_lookup(
+                self.manual_competition_mappings
+            )
+
+        # Rebuild historical and upcoming game tables using refreshed database inputs.
         self.historical_data_service.initialize_historical_games(initial_days=7)
         self.refresh_games(force=True)
 
@@ -269,7 +348,7 @@ class AppState:
             historical_games_count = int(len(self.historical_games_df))
 
         return {
-            "db_path": str(resolved_db_path),
+            "db_path": str(source_db_path),
             "teams_count": int(len(teams)),
             "form_rows_count": int(len(form_df)),
             "fixtures_count": int(len(fixtures_df)),
@@ -489,8 +568,17 @@ class AppState:
     def refresh_games(self, force: bool = False) -> None:
         self.games_service.refresh(force=force)
 
-    def list_games_grouped_by_day(self, mode: str = "upcoming", load_more_historical: bool = False) -> dict[str, Any]:
-        return self.games_service.list_grouped_by_day(mode=mode, load_more_historical=load_more_historical)
+    def list_games_grouped_by_day(
+        self,
+        mode: str = "upcoming",
+        load_more_historical: bool = False,
+        xg_metric_mode: str = "xg",
+    ) -> dict[str, Any]:
+        return self.games_service.list_grouped_by_day(
+            mode=mode,
+            load_more_historical=load_more_historical,
+            xg_metric_mode=xg_metric_mode,
+        )
 
     def calculate_historical_day_xgd(self, day_iso: str) -> dict[str, Any]:
         return self.historical_service.calculate_day_xgd(day_iso=day_iso)
@@ -498,11 +586,31 @@ class AppState:
     def rescan_historical_closing_prices(self) -> dict[str, Any]:
         return self.historical_data_service.rescan_loaded_historical_closing_prices()
 
-    def get_game_xgd(self, market_id: str, recent_n: int = 5, venue_recent_n: int = 5) -> dict[str, Any]:
-        return self.game_xgd_service.get_game_xgd(market_id=market_id, recent_n=recent_n, venue_recent_n=venue_recent_n)
+    def get_game_xgd(
+        self,
+        market_id: str,
+        recent_n: int = 5,
+        venue_recent_n: int = 5,
+        xg_metric_mode: str = "xg",
+    ) -> dict[str, Any]:
+        return self.game_xgd_service.get_game_xgd(
+            market_id=market_id,
+            recent_n=recent_n,
+            venue_recent_n=venue_recent_n,
+            xg_metric_mode=xg_metric_mode,
+        )
 
-    def get_game_hc_performance(self, market_id: str, verbose: bool = False) -> dict[str, Any]:
-        return self.game_xgd_service.get_game_hc_performance(market_id=market_id, verbose=bool(verbose))
+    def get_game_hc_performance(
+        self,
+        market_id: str,
+        verbose: bool = False,
+        xg_metric_mode: str = "xg",
+    ) -> dict[str, Any]:
+        return self.game_xgd_service.get_game_hc_performance(
+            market_id=market_id,
+            verbose=bool(verbose),
+            xg_metric_mode=xg_metric_mode,
+        )
 
     def get_team_hc_rankings(
         self,
@@ -533,11 +641,13 @@ class AppState:
         team_name: str,
         competition_name: str | None = None,
         season_id: str | None = None,
+        xg_metric_mode: str = "xg",
     ) -> dict[str, Any]:
         return self.game_xgd_service.get_team_page(
             team_name=team_name,
             competition_name=competition_name,
             season_id=season_id,
+            xg_metric_mode=xg_metric_mode,
         )
 
     def list_teams_directory(self) -> dict[str, Any]:

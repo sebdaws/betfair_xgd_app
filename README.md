@@ -1,6 +1,6 @@
 # Football Handicap Viewer
 
-Web app version of the Betfair + SofaScore xGD workflow (no Streamlit).
+Web app version of the Betfair + Database xGD workflow (no Streamlit).
 
 ## Quick Start
 
@@ -51,7 +51,7 @@ The launcher auto-discovers conda when possible (`--conda-exe` still overrides).
 - `xgd_app/app_state.py`: central app state and service wiring
 - `xgd_app/web/handler.py`: HTTP routes (`/api/*`) and static asset serving
 - `xgd_app/services/`: business logic split by area
-- `xgd_app/data/`: SofaScore + historical Betfair data loading
+- `xgd_app/data/`: database + historical Betfair data loading
 - `xgd_app/markets/`: handicap and goal-line market parsing helpers
 - `xgd_app/integrations/`: local Betfair scraper and form model modules loaded by `AppState`
 - `webapp/`: frontend assets (`index.html`, `app.js`, `styles.css`)
@@ -70,11 +70,12 @@ Use `betfair_credentials.example.py` as a template.
 
 ## Data
 
-Default SofaScore DB path:
-- `./sofascore_local.db` if present
-- otherwise `external_paths.sofascore_db` from `app_data/default_paths.json`
+Source DB is taken from launcher/app args (`--db-path`), typically via `app_data/launcher_config.json`.
 
-You can override with `--db-path`.
+Example:
+- `--db-path ../Sofascore_scraper/fotmob_local.db`
+
+If you run without launcher args, the app still falls back to local defaults.
 
 ## Default Paths
 
@@ -135,11 +136,15 @@ Team details panel:
   - `HC Perf`: handicap performance and summary tables
 
 ### Mapping
-- Used to resolve Betfair vs SofaScore naming mismatches.
+- Used to resolve Betfair vs Database naming mismatches.
 - Sub-tabs:
-  - `Teams`: map unmatched teams to SofaScore names.
+  - `Teams`: map unmatched teams to Database names.
   - `Competitions`: map unmatched competition names.
 - Includes save/delete actions and bulk save for selected rows.
+- Mapping files are source-specific by DB stem:
+  - `app_data/manual_team_mappings.<db_stem>.json`
+  - `app_data/manual_competition_mappings.<db_stem>.json`
+  - Example for FotMob: `manual_team_mappings.fotmob_local.json`
 
 ## Notes
 

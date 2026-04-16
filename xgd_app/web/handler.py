@@ -78,7 +78,12 @@ class AppHandler(BaseHTTPRequestHandler):
             mode = (query.get("mode") or ["upcoming"])[0]
             load_more_raw = (query.get("load_more") or ["0"])[0]
             load_more_historical = str(load_more_raw or "").strip().lower() in {"1", "true", "yes", "on"}
-            return self._serve_games(mode=mode, load_more_historical=load_more_historical)
+            xg_metric_mode = (query.get("xg_mode") or ["xg"])[0]
+            return self._serve_games(
+                mode=mode,
+                load_more_historical=load_more_historical,
+                xg_metric_mode=xg_metric_mode,
+            )
         if path == "/api/game-xgd":
             query = parse_qs(parsed.query)
             market_id = (query.get("market_id") or [""])[0]
@@ -86,11 +91,13 @@ class AppHandler(BaseHTTPRequestHandler):
             recent_n = _clamp_int(recent_n_raw, default=5, min_value=1, max_value=20)
             venue_recent_n_raw = (query.get("venue_recent_n") or ["5"])[0]
             venue_recent_n = _clamp_int(venue_recent_n_raw, default=5, min_value=1, max_value=20)
-            return self._serve_game_xgd(market_id, recent_n, venue_recent_n)
+            xg_metric_mode = (query.get("xg_mode") or ["xg"])[0]
+            return self._serve_game_xgd(market_id, recent_n, venue_recent_n, xg_metric_mode=xg_metric_mode)
         if path == "/api/game-hcperf":
             query = parse_qs(parsed.query)
             market_id = (query.get("market_id") or [""])[0]
-            return self._serve_game_hc_performance(market_id)
+            xg_metric_mode = (query.get("xg_mode") or ["xg"])[0]
+            return self._serve_game_hc_performance(market_id, xg_metric_mode=xg_metric_mode)
         if path == "/api/manual-mappings":
             return self._serve_manual_mappings()
         if path == "/api/saved-games":
@@ -121,7 +128,13 @@ class AppHandler(BaseHTTPRequestHandler):
             team_name = (query.get("team") or [""])[0]
             competition_name = (query.get("competition") or [""])[0]
             season_id = (query.get("season") or [""])[0]
-            return self._serve_team_page(team_name=team_name, competition_name=competition_name, season_id=season_id)
+            xg_metric_mode = (query.get("xg_mode") or ["xg"])[0]
+            return self._serve_team_page(
+                team_name=team_name,
+                competition_name=competition_name,
+                season_id=season_id,
+                xg_metric_mode=xg_metric_mode,
+            )
         if path == "/api/teams":
             return self._serve_teams_directory()
 
@@ -156,29 +169,40 @@ class AppHandler(BaseHTTPRequestHandler):
 
         self._json({"error": "Not found"}, status=HTTPStatus.NOT_FOUND)
 
-    def _serve_games(self, mode: str = "upcoming", load_more_historical: bool = False) -> None:
+    def _serve_games(
+        self,
+        mode: str = "upcoming",
+        load_more_historical: bool = False,
+        xg_metric_mode: str = "xg",
+    ) -> None:
         try:
             payload = self.state.list_games_grouped_by_day(
                 mode=mode,
                 load_more_historical=bool(load_more_historical),
+                xg_metric_mode=xg_metric_mode,
             )
             self._json(payload)
         except Exception as exc:
             self._json({"error": str(exc)}, status=HTTPStatus.INTERNAL_SERVER_ERROR)
 
-    def _serve_game_xgd(self, market_id: str, recent_n: int, venue_recent_n: int) -> None:
+    def _serve_game_xgd(self, market_id: str, recent_n: int, venue_recent_n: int, xg_metric_mode: str = "xg") -> None:
         if not market_id:
             self._json({"error": "market_id is required"}, status=HTTPStatus.BAD_REQUEST)
             return
         try:
-            payload = self.state.get_game_xgd(market_id, recent_n=recent_n, venue_recent_n=venue_recent_n)
+            payload = self.state.get_game_xgd(
+                market_id,
+                recent_n=recent_n,
+                venue_recent_n=venue_recent_n,
+                xg_metric_mode=xg_metric_mode,
+            )
             self._json(payload)
         except KeyError:
             self._json({"error": "Market not found"}, status=HTTPStatus.NOT_FOUND)
         except Exception as exc:
             self._json({"error": str(exc)}, status=HTTPStatus.INTERNAL_SERVER_ERROR)
 
-    def _serve_game_hc_performance(self, market_id: str) -> None:
+    def _serve_game_hc_performance(self, market_id: str, xg_metric_mode: str = "xg") -> None:
         if not market_id:
             self._json({"error": "market_id is required"}, status=HTTPStatus.BAD_REQUEST)
             return
@@ -187,7 +211,11 @@ class AppHandler(BaseHTTPRequestHandler):
             query = parse_qs(parsed.query)
             verbose_raw = (query.get("verbose") or ["0"])[0]
             verbose = str(verbose_raw or "").strip().lower() in {"1", "true", "yes", "on"}
-            payload = self.state.get_game_hc_performance(market_id, verbose=verbose)
+            payload = self.state.get_game_hc_performance(
+                market_id,
+                verbose=verbose,
+                xg_metric_mode=xg_metric_mode,
+            )
             self._json(payload)
         except KeyError:
             self._json({"error": "Market not found"}, status=HTTPStatus.NOT_FOUND)
@@ -267,7 +295,13 @@ class AppHandler(BaseHTTPRequestHandler):
         except Exception as exc:
             self._json({"error": str(exc)}, status=HTTPStatus.INTERNAL_SERVER_ERROR)
 
-    def _serve_team_page(self, team_name: str, competition_name: str, season_id: str) -> None:
+    def _serve_team_page(
+        self,
+        team_name: str,
+        competition_name: str,
+        season_id: str,
+        xg_metric_mode: str = "xg",
+    ) -> None:
         team_text = str(team_name or "").strip()
         if not team_text:
             self._json({"error": "team is required"}, status=HTTPStatus.BAD_REQUEST)
@@ -277,6 +311,7 @@ class AppHandler(BaseHTTPRequestHandler):
                 team_name=team_text,
                 competition_name=str(competition_name or "").strip() or None,
                 season_id=str(season_id or "").strip() or None,
+                xg_metric_mode=xg_metric_mode,
             )
             self._json(payload)
         except ValueError as exc:

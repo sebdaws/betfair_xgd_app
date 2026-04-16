@@ -8,7 +8,9 @@
       "--host",
       "127.0.0.1",
       "--port",
-      "8090"
+      "8090",
+      "--db-path",
+      "../Sofascore_scraper/fotmob_local.db"
     ],
     "env_vars": {
       "BETFAIR_USERNAME": "replace_me"

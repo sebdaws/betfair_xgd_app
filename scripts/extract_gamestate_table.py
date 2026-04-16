@@ -23,8 +23,8 @@ def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(
         description="Extract gamestate cards/corners totals table for a given fixture."
     )
-    parser.add_argument("--home", required=True, help="Home team name (SofaScore naming).")
-    parser.add_argument("--away", required=True, help="Away team name (SofaScore naming).")
+    parser.add_argument("--home", required=True, help="Home team name (Database naming).")
+    parser.add_argument("--away", required=True, help="Away team name (Database naming).")
     parser.add_argument(
         "--kickoff",
         required=True,
@@ -36,8 +36,11 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--area-name", default=None)
     parser.add_argument(
         "--team-mappings-path",
-        default=str(app.DEFAULT_MANUAL_TEAM_MAPPINGS),
-        help="Path to manual team mappings JSON (raw betfair name -> sofa name).",
+        default="",
+        help=(
+            "Optional manual team mappings JSON path. "
+            "Defaults to source-specific app_data file for the active --db-path."
+        ),
     )
     parser.add_argument("--sample-size", type=int, default=None, help="Limit to latest N source matches per team.")
     parser.add_argument("--min-games", type=int, default=3)
@@ -495,11 +498,19 @@ def main() -> int:
         raise ValueError(f"Could not parse --kickoff value: {args.kickoff!r}")
 
     form_df, _, teams, db_used = app.load_sofascore_inputs(args.db_path)
+    default_mapping_path = app.source_specific_app_data_path(
+        app.DEFAULT_MANUAL_TEAM_MAPPINGS,
+        db_used,
+    )
+    selected_mapping_path = Path(
+        str(args.team_mappings_path).strip() or str(default_mapping_path)
+    ).expanduser().resolve()
+
     home_team, away_team, name_match_meta = resolve_team_names(
         home_raw=args.home,
         away_raw=args.away,
         teams=teams,
-        mappings_path=args.team_mappings_path,
+        mappings_path=str(selected_mapping_path),
     )
     if not home_team:
         raise RuntimeError(

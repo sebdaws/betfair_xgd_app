@@ -36,9 +36,31 @@ class MappingService:
         self.normalize_competition_key = normalize_competition_key
         self.map_betfair_games = map_betfair_games
         self.match_competition_name = match_competition_name
+        self.disabled_auto_team_mappings_path = Path(DISABLED_AUTO_TEAM_MAPPINGS_FILENAME)
+        self.disabled_auto_team_mappings_by_norm: dict[str, str] = {}
+        self.refresh_mapping_paths()
+
+    def refresh_mapping_paths(self) -> None:
         manual_path = Path(getattr(self.state, "manual_mappings_path", "manual_team_mappings.json"))
-        self.disabled_auto_team_mappings_path = manual_path.with_name(DISABLED_AUTO_TEAM_MAPPINGS_FILENAME)
+        source_suffix = ""
+        manual_stem = str(manual_path.stem or "").strip()
+        prefix = "manual_team_mappings."
+        if manual_stem.startswith(prefix):
+            source_suffix = manual_stem[len(prefix):].strip()
+        if source_suffix:
+            disabled_filename = f"disabled_auto_team_mappings.{source_suffix}{manual_path.suffix}"
+        else:
+            disabled_filename = DISABLED_AUTO_TEAM_MAPPINGS_FILENAME
+        self.disabled_auto_team_mappings_path = manual_path.with_name(disabled_filename)
         self.disabled_auto_team_mappings_by_norm = self._load_disabled_auto_team_mappings()
+
+    def _active_db_path(self) -> Path:
+        db_path_raw = getattr(
+            self.state,
+            "source_db_path",
+            getattr(self.state, "sofascore_db_path", ""),
+        )
+        return Path(db_path_raw).expanduser().resolve()
 
     @staticmethod
     def _parse_mapping_file(path: Path) -> list[tuple[str, str]]:
@@ -200,7 +222,7 @@ class MappingService:
         if not raw_text or not sofa_text:
             return
 
-        db_path = Path(getattr(self.state, "sofascore_db_path", "")).expanduser().resolve()
+        db_path = self._active_db_path()
         if not db_path.exists():
             return
 
@@ -285,7 +307,7 @@ class MappingService:
         if not raw_text:
             return
 
-        db_path = Path(getattr(self.state, "sofascore_db_path", "")).expanduser().resolve()
+        db_path = self._active_db_path()
         if not db_path.exists():
             return
 
@@ -346,7 +368,7 @@ class MappingService:
         if not mappings:
             return
 
-        db_path = Path(getattr(self.state, "sofascore_db_path", "")).expanduser().resolve()
+        db_path = self._active_db_path()
         if not db_path.exists():
             return
 
@@ -485,7 +507,7 @@ class MappingService:
         *,
         allowed_competitions: set[str] | None = None,
     ) -> list[dict[str, Any]]:
-        db_path = Path(getattr(self.state, "sofascore_db_path", "")).expanduser().resolve()
+        db_path = self._active_db_path()
         if not db_path.exists():
             return []
 
@@ -1063,6 +1085,8 @@ class MappingService:
             "unmatched": unmatched_rows,
             "unmatched_total": unmatched_total_count,
             "sofa_teams": sofa_teams,
+            "source_db_path": str(self._active_db_path()),
+            "database_db_path": str(self._active_db_path()),
             "sofascore_db_path": str(self.state.sofascore_db_path),
             "manual_count": len(mappings),
             "auto_count": len(auto_mapping_rows),
@@ -1082,7 +1106,7 @@ class MappingService:
         if not sofa_team:
             raise ValueError("sofa_name is required")
         if sofa_team not in self.state.team_matcher.team_set:
-            raise ValueError(f"Unknown SofaScore team: {sofa_team}")
+            raise ValueError(f"Unknown Database team: {sofa_team}")
 
         raw_norm = self.normalize_team_name(raw_team)
         with self.state.lock:
@@ -1180,7 +1204,7 @@ class MappingService:
         if not sofa_comp:
             raise ValueError("sofa_name is required")
         if sofa_comp not in self.state.sofa_competition_set:
-            raise ValueError(f"Unknown SofaScore competition: {sofa_comp}")
+            raise ValueError(f"Unknown Database competition: {sofa_comp}")
 
         with self.state.lock:
             self.state.manual_competition_mappings[raw_comp] = sofa_comp

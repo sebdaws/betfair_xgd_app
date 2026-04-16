@@ -7,6 +7,7 @@ import datetime as dt
 import importlib.util
 import json
 import re
+import shlex
 import sys
 import threading
 import unicodedata
@@ -34,7 +35,6 @@ from xgd_app.data.sofascore_loader import (
     gamestate_for_perspective,
     load_sofascore_inputs,
 )
-from xgd_app.default_paths import get_external_path
 from xgd_app.services.games import GamesService
 from xgd_app.services.historical import HistoricalService
 from xgd_app.services.mappings import MappingService
@@ -44,11 +44,112 @@ from xgd_app.web.handler import AppHandler
 APP_DIR = Path(__file__).resolve().parents[1]
 WEBAPP_DIR = APP_DIR / "webapp"
 APP_DATA_DIR = APP_DIR / "app_data"
+DEFAULT_LAUNCHER_CONFIG = APP_DATA_DIR / "launcher_config.json"
+LEGACY_LAUNCHER_CONFIG = APP_DIR / "launcher_config.json"
+
+
+def _resolve_from_app_dir(path_value: str | Path | None) -> Path | None:
+    text = str(path_value or "").strip()
+    if not text:
+        return None
+    raw = Path(text).expanduser()
+    if raw.is_absolute():
+        return raw.resolve()
+    return (APP_DIR / raw).resolve()
+
+
+def _load_launcher_config_payload() -> dict[str, Any]:
+    for candidate in (DEFAULT_LAUNCHER_CONFIG, LEGACY_LAUNCHER_CONFIG):
+        if not candidate.exists():
+            continue
+        try:
+            payload = json.loads(candidate.read_text(encoding="utf-8"))
+        except Exception:
+            continue
+        if isinstance(payload, dict):
+            return payload
+    return {}
+
+
+def _extract_launcher_app_args(payload: dict[str, Any]) -> list[str]:
+    if not isinstance(payload, dict):
+        return []
+    launcher = payload.get("launcher")
+    if not isinstance(launcher, dict):
+        launcher = payload
+    raw_app_args = launcher.get("app_args")
+    if raw_app_args is None:
+        return []
+    if isinstance(raw_app_args, list):
+        return [str(value) for value in raw_app_args]
+    if isinstance(raw_app_args, str):
+        try:
+            return shlex.split(raw_app_args)
+        except Exception:
+            return []
+    return []
+
+
+def _app_args_to_flag_values(values: list[str]) -> dict[str, str]:
+    out: dict[str, str] = {}
+    idx = 0
+    while idx < len(values):
+        token = str(values[idx] or "").strip()
+        if not token.startswith("--"):
+            idx += 1
+            continue
+        if "=" in token:
+            flag, raw_value = token.split("=", 1)
+            out[str(flag).strip()] = str(raw_value).strip()
+            idx += 1
+            continue
+        next_value = str(values[idx + 1] or "").strip() if (idx + 1) < len(values) else ""
+        if next_value and (not next_value.startswith("--")):
+            out[token] = next_value
+            idx += 2
+            continue
+        out[token] = "true"
+        idx += 1
+    return out
+
+
+def _parse_int_or_default(raw_value: str | None, default: int) -> int:
+    text = str(raw_value or "").strip()
+    if not text:
+        return int(default)
+    try:
+        return int(text)
+    except Exception:
+        return int(default)
+
+
+def source_db_label(db_path: str | Path | None) -> str:
+    resolved = _resolve_from_app_dir(db_path)
+    stem = str((resolved.stem if resolved is not None else "") or "").strip().lower()
+    label = re.sub(r"[^a-z0-9]+", "_", stem).strip("_")
+    return label or "default"
+
+
+def source_specific_app_data_path(
+    base_path: Path,
+    db_path: str | Path | None,
+    preserve_base_for_sofascore: bool = True,
+) -> Path:
+    base = Path(base_path)
+    label = source_db_label(db_path)
+    if preserve_base_for_sofascore and label.startswith("sofascore"):
+        return base
+    return base.with_name(f"{base.stem}.{label}{base.suffix}")
+
+
+_launcher_arg_values = _app_args_to_flag_values(
+    _extract_launcher_app_args(_load_launcher_config_payload())
+)
 
 DEFAULT_SOFASCORE_DB = APP_DIR / "sofascore_local.db"
-_configured_sofascore_db = get_external_path("sofascore_db")
-if (not DEFAULT_SOFASCORE_DB.exists()) and _configured_sofascore_db is not None:
-    DEFAULT_SOFASCORE_DB = _configured_sofascore_db
+_configured_db_from_launcher = _resolve_from_app_dir(_launcher_arg_values.get("--db-path"))
+if _configured_db_from_launcher is not None:
+    DEFAULT_SOFASCORE_DB = _configured_db_from_launcher
 
 DEFAULT_SELECTED_LEAGUES = APP_DATA_DIR / "selected_leagues.txt"
 DEFAULT_ALL_LEAGUES = APP_DATA_DIR / "all_leagues.txt"
@@ -135,12 +236,23 @@ STOP_WORDS = {
 ASIAN_GOAL_MARKET_TYPES = [
     "ALT_TOTAL_GOALS",
 ]
+XG_METRIC_MODE_DEFAULT = "xg"
+XG_METRIC_MODES = ("xg", "npxg")
+
+
+def normalize_xg_metric_mode(value: Any) -> str:
+    text = str(value or "").strip().lower()
+    return "npxg" if text == "npxg" else XG_METRIC_MODE_DEFAULT
+
+
+def xg_metric_mode_label(value: Any) -> str:
+    return "NPxG" if normalize_xg_metric_mode(value) == "npxg" else "xG"
 
 
 def parse_args() -> argparse.Namespace:
-    p = argparse.ArgumentParser(description="Betfair + SofaScore xGD web app")
-    p.add_argument("--host", default="127.0.0.1")
-    p.add_argument("--port", type=int, default=8090)
+    p = argparse.ArgumentParser(description="Betfair + Database xGD web app")
+    p.add_argument("--host", default=str(_launcher_arg_values.get("--host", "127.0.0.1")))
+    p.add_argument("--port", type=int, default=_parse_int_or_default(_launcher_arg_values.get("--port"), 8090))
     p.add_argument("--config-module", default="betfair_credentials")
     p.add_argument("--username")
     p.add_argument("--password")
@@ -151,7 +263,11 @@ def parse_args() -> argparse.Namespace:
     p.add_argument("--max-markets", type=int, default=1000)
     p.add_argument("--horizon-days", type=int, default=0)
     p.add_argument("--market-types", default="ASIAN_HANDICAP")
-    p.add_argument("--refresh-seconds", type=int, default=45)
+    p.add_argument(
+        "--refresh-seconds",
+        type=int,
+        default=_parse_int_or_default(_launcher_arg_values.get("--refresh-seconds"), 45),
+    )
     p.add_argument("--db-path", default=str(DEFAULT_SOFASCORE_DB))
     p.add_argument("--periods", default="Season,5,3")
     p.add_argument("--min-games", type=int, default=3)

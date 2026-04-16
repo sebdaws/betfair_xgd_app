@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import math
+import threading
 import time
 
 from xgd_app.core import *  # noqa: F401,F403
@@ -12,9 +13,22 @@ class GameXgdService:
         self.state = state
         self._verbose_timing = False
         self._betfair_commission_rate = 0.02
+        self._request_ctx = threading.local()
 
     def __getattr__(self, name: str) -> Any:
         return getattr(self.state, name)
+
+    def _set_request_xg_metric_mode(self, value: Any) -> str:
+        resolved = self.state.normalize_xg_metric_mode(value)
+        self._request_ctx.xg_metric_mode = resolved
+        return resolved
+
+    def _get_request_xg_metric_mode(self) -> str:
+        return self.state.normalize_xg_metric_mode(getattr(self._request_ctx, "xg_metric_mode", "xg"))
+
+    @property
+    def form_df(self) -> pd.DataFrame:
+        return self.state.get_form_df_for_metric_mode(self._get_request_xg_metric_mode())
 
     def _log_hcperf_timing(self, label: str, step: str, started_at: float, **meta: Any) -> None:
         if not bool(getattr(self, "_verbose_timing", False)):
@@ -1012,7 +1026,9 @@ class GameXgdService:
         team_name: str,
         competition_name: str | None = None,
         season_id: str | None = None,
+        xg_metric_mode: str = "xg",
     ) -> dict[str, Any]:
+        resolved_metric_mode = self._set_request_xg_metric_mode(xg_metric_mode)
         requested_team_text = str(team_name or "").strip()
         if not requested_team_text:
             raise ValueError("team is required")
@@ -1031,6 +1047,7 @@ class GameXgdService:
             "requested_team": requested_team_text,
             "competition": requested_competition,
             "season": requested_season_key,
+            "xg_metric_mode": resolved_metric_mode,
             "competitions": [],
             "seasons": [],
             "recent_rows": [],
@@ -1261,6 +1278,7 @@ class GameXgdService:
             "requested_team": requested_team_text,
             "competition": selected_competition,
             "season": selected_season,
+            "xg_metric_mode": resolved_metric_mode,
             "competitions": competition_summaries,
             "seasons": season_summaries,
             "recent_rows": recent_rows,
@@ -1577,7 +1595,13 @@ class GameXgdService:
             "is_historical": False,
         }
 
-    def get_game_hc_performance(self, market_id: str, verbose: bool = False) -> dict[str, Any]:
+    def get_game_hc_performance(
+        self,
+        market_id: str,
+        verbose: bool = False,
+        xg_metric_mode: str = "xg",
+    ) -> dict[str, Any]:
+        resolved_metric_mode = self._set_request_xg_metric_mode(xg_metric_mode)
         previous_verbose = bool(getattr(self, "_verbose_timing", False))
         historical_service = self.state.historical_data_service
         previous_price_verbose = bool(getattr(historical_service, "_verbose_timing", False))
@@ -1620,6 +1644,7 @@ class GameXgdService:
                     "market_id": str(context.get("market_id", market_id)),
                     "home_label": str(context.get("home_label", "Home team")),
                     "away_label": str(context.get("away_label", "Away team")),
+                    "xg_metric_mode": resolved_metric_mode,
                     "season_handicap_rows": {"home": [], "away": []},
                     "is_historical": bool(context.get("is_historical")),
                 }
@@ -1652,6 +1677,7 @@ class GameXgdService:
                 "market_id": str(context.get("market_id", market_id)),
                 "home_label": str(context.get("home_label", home_team)),
                 "away_label": str(context.get("away_label", away_team)),
+                "xg_metric_mode": resolved_metric_mode,
                 "season_handicap_rows": {
                     "home": home_rows,
                     "away": away_rows,
@@ -1662,17 +1688,27 @@ class GameXgdService:
             self._verbose_timing = previous_verbose
             historical_service._verbose_timing = previous_price_verbose
 
-    def get_game_xgd(self, market_id: str, recent_n: int = 5, venue_recent_n: int = 5) -> dict[str, Any]:
+    def get_game_xgd(
+        self,
+        market_id: str,
+        recent_n: int = 5,
+        venue_recent_n: int = 5,
+        xg_metric_mode: str = "xg",
+    ) -> dict[str, Any]:
+        resolved_metric_mode = self._set_request_xg_metric_mode(xg_metric_mode)
         recent_n = clamp_int(recent_n, default=5, min_value=1, max_value=20)
         venue_recent_n = clamp_int(venue_recent_n, default=5, min_value=1, max_value=20)
 
         historical_match_id = self._parse_historical_match_id(market_id)
         if historical_match_id is not None:
-            return self._get_historical_game_xgd(
+            payload = self._get_historical_game_xgd(
                 match_id=historical_match_id,
                 recent_n=recent_n,
                 venue_recent_n=venue_recent_n,
             )
+            if isinstance(payload, dict):
+                payload["xg_metric_mode"] = resolved_metric_mode
+            return payload
 
         self.refresh_games(force=False)
         with self.lock:
@@ -1892,21 +1928,9 @@ class GameXgdService:
                 if not away_recent_rows:
                     away_recent_rows = merge_recent_rows_by_venue(away_team_venue_rows)
 
-                fixture_season_id = fixture_season_value
-                season_handicap_rows = {
-                    "home": self._build_team_season_handicap_rows(
-                        team_name=str(home_sofa),
-                        season_id=fixture_season_id,
-                        kickoff_time=kickoff_time,
-                        resolve_from_archive=True,
-                    ),
-                    "away": self._build_team_season_handicap_rows(
-                        team_name=str(away_sofa),
-                        season_id=fixture_season_id,
-                        kickoff_time=kickoff_time,
-                        resolve_from_archive=True,
-                    ),
-                }
+                # Keep `/api/game-xgd` fast; HC performance rows are loaded on demand
+                # through `/api/game-hcperf` when the HC Perf tab is opened.
+                season_handicap_rows = {"home": [], "away": []}
 
                 # Apply fixture competition-scoped extraction for all tiers, including tier 0.
                 apply_fixture_scope = True
@@ -2290,30 +2314,14 @@ class GameXgdService:
                             f"Domestic leagues - {primary_home_sofa}: {home_domestic_competition} | "
                             f"{primary_away_sofa}: {away_domestic_competition}"
                         )
-                        domestic_view["season_handicap_rows"] = {
-                            "home": self._build_team_season_handicap_rows(
-                                team_name=primary_home_sofa,
-                                season_id=home_domestic_season,
-                                kickoff_time=kickoff_time,
-                                resolve_from_archive=True,
-                                competition_name=home_domestic_competition,
-                                area_name=home_domestic_area,
-                            ),
-                            "away": self._build_team_season_handicap_rows(
-                                team_name=primary_away_sofa,
-                                season_id=away_domestic_season,
-                                kickoff_time=kickoff_time,
-                                resolve_from_archive=True,
-                                competition_name=away_domestic_competition,
-                                area_name=away_domestic_area,
-                            ),
-                        }
+                        domestic_view["season_handicap_rows"] = {"home": [], "away": []}
                         xgd_views.append(domestic_view)
 
         return {
             "market_id": market_id,
             "event_name": str(game_row.get("event_name", "")),
             "competition": str(game_row.get("competition", "")),
+            "xg_metric_mode": resolved_metric_mode,
             "kickoff_raw": str(game_row.get("kickoff_raw", "")),
             "mainline": str(game_row.get("mainline", "-")),
             "home_price": str(game_row.get("home_price", "-")),

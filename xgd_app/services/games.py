@@ -294,6 +294,7 @@ class GamesService:
         self,
         games_df: pd.DataFrame,
         market_ids: set[str],
+        xg_metric_mode: str = "xg",
     ) -> pd.DataFrame:
         if not isinstance(games_df, pd.DataFrame) or games_df.empty or not market_ids:
             return pd.DataFrame()
@@ -307,10 +308,11 @@ class GamesService:
         manual_mapping_lookup = self.state.get_manual_mapping_lookup_snapshot()
         blocked_auto_mapping_norms = self.state.get_disabled_auto_team_mapping_norms_snapshot()
         manual_competition_mapping_lookup = self.state.get_manual_competition_mapping_lookup_snapshot()
+        form_df_for_mode = self.state.get_form_df_for_metric_mode(xg_metric_mode)
         try:
             prediction_df = self.build_predictions(
                 betfair_games_df=target_games_df,
-                form_df=self.state.form_df,
+                form_df=form_df_for_mode,
                 fixtures_df=self.state.fixtures_df,
                 team_matcher=self.state.team_matcher,
                 calc_wyscout_form_tables=self.state.form_model_module.calc_wyscout_form_tables,
@@ -331,6 +333,90 @@ class GamesService:
             return pd.DataFrame()
         return period_metrics_df[["market_id", *metric_cols]].drop_duplicates(subset=["market_id"], keep="first")
 
+    def _overlay_cached_metric_rows(
+        self,
+        games_df: pd.DataFrame,
+        metrics_cache: dict[str, dict[str, Any]],
+    ) -> pd.DataFrame:
+        out = games_df.copy()
+        if out.empty:
+            return out
+        for col in self.period_metric_columns:
+            if col in out.columns:
+                out = out.drop(columns=[col], errors="ignore")
+        market_ids = [str(value).strip() for value in out["market_id"].tolist() if str(value).strip()]
+        cached_metric_rows: list[dict[str, Any]] = []
+        for market_id in market_ids:
+            metrics = metrics_cache.get(market_id)
+            if not isinstance(metrics, dict):
+                continue
+            row = {"market_id": market_id}
+            for col in self.period_metric_columns:
+                row[col] = metrics.get(col)
+            cached_metric_rows.append(row)
+        if cached_metric_rows:
+            cached_metrics_df = pd.DataFrame(cached_metric_rows).drop_duplicates(
+                subset=["market_id"],
+                keep="first",
+            )
+            out = out.merge(cached_metrics_df, on="market_id", how="left")
+        for col in self.period_metric_columns:
+            if col not in out.columns:
+                out[col] = None
+        return out
+
+    def _apply_metric_mode_period_metrics(self, games_df: pd.DataFrame, xg_metric_mode: str) -> tuple[pd.DataFrame, str]:
+        resolved_mode = self.state.normalize_xg_metric_mode(xg_metric_mode)
+        if resolved_mode == "xg":
+            return games_df, resolved_mode
+        if not isinstance(games_df, pd.DataFrame) or games_df.empty:
+            return games_df, resolved_mode
+
+        with self.state.lock:
+            by_mode = dict(getattr(self.state, "upcoming_metrics_cache_by_mode", {}) or {})
+            mode_cache = dict(by_mode.get(resolved_mode, {}) or {})
+
+        market_ids = [str(value).strip() for value in games_df["market_id"].tolist() if str(value).strip()]
+
+        def _has_complete_cached_metrics(market_id: str) -> bool:
+            cached = mode_cache.get(market_id)
+            if not isinstance(cached, dict):
+                return False
+            if int(cached.get("_xgd_cache_version", 0) or 0) != int(self.XGD_CACHE_VERSION):
+                return False
+            return all(col in cached for col in self.period_metric_columns)
+
+        missing_market_ids = {market_id for market_id in market_ids if not _has_complete_cached_metrics(market_id)}
+        if missing_market_ids:
+            metric_rows_df = self._compute_period_metrics_for_market_ids(
+                games_df=games_df,
+                market_ids=missing_market_ids,
+                xg_metric_mode=resolved_mode,
+            )
+            if not metric_rows_df.empty:
+                for row in metric_rows_df.to_dict(orient="records"):
+                    market_id = str(row.get("market_id", "")).strip()
+                    if not market_id:
+                        continue
+                    mode_cache[market_id] = {col: row.get(col) for col in self.period_metric_columns}
+                    mode_cache[market_id]["_xgd_cache_version"] = int(self.XGD_CACHE_VERSION)
+            for market_id in missing_market_ids:
+                mode_cache.setdefault(
+                    market_id,
+                    {
+                        **{col: None for col in self.period_metric_columns},
+                        "_xgd_cache_version": int(self.XGD_CACHE_VERSION),
+                    },
+                )
+            with self.state.lock:
+                cache_by_mode = getattr(self.state, "upcoming_metrics_cache_by_mode", None)
+                if not isinstance(cache_by_mode, dict):
+                    cache_by_mode = {"xg": dict(getattr(self.state, "upcoming_metrics_cache", {}) or {})}
+                cache_by_mode[resolved_mode] = mode_cache
+                self.state.upcoming_metrics_cache_by_mode = cache_by_mode
+
+        return self._overlay_cached_metric_rows(games_df, mode_cache), resolved_mode
+
     def refresh(self, force: bool = False) -> None:
         now = dt.datetime.now(dt.timezone.utc)
         if force:
@@ -341,7 +427,11 @@ class GamesService:
         with self.state.lock:
             games_df_snapshot = self.state.games_df.copy()
             last_refresh = self.state.last_refresh
-            metrics_cache = dict(getattr(self.state, "upcoming_metrics_cache", {}))
+            metrics_cache_by_mode = getattr(self.state, "upcoming_metrics_cache_by_mode", None)
+            if isinstance(metrics_cache_by_mode, dict):
+                metrics_cache = dict(metrics_cache_by_mode.get("xg", {}) or {})
+            else:
+                metrics_cache = dict(getattr(self.state, "upcoming_metrics_cache", {}))
 
         if not force and last_refresh is not None:
             delta = (now - last_refresh).total_seconds()
@@ -372,6 +462,11 @@ class GamesService:
                     with self.state.lock:
                         self.state.games_df = updated_games_df
                         self.state.upcoming_metrics_cache = metrics_cache
+                        cache_by_mode = getattr(self.state, "upcoming_metrics_cache_by_mode", None)
+                        if not isinstance(cache_by_mode, dict):
+                            cache_by_mode = {}
+                        cache_by_mode["xg"] = metrics_cache
+                        self.state.upcoming_metrics_cache_by_mode = cache_by_mode
                 return
 
         client = self._login_client()
@@ -710,6 +805,11 @@ class GamesService:
             self.state.games_df = games_df
             self.state.last_refresh = dt.datetime.now(dt.timezone.utc)
             self.state.upcoming_metrics_cache = metrics_cache
+            cache_by_mode = getattr(self.state, "upcoming_metrics_cache_by_mode", None)
+            if not isinstance(cache_by_mode, dict):
+                cache_by_mode = {}
+            cache_by_mode["xg"] = metrics_cache
+            self.state.upcoming_metrics_cache_by_mode = cache_by_mode
 
     def _serialize_game_row(self, row: dict[str, Any]) -> dict[str, Any]:
         kickoff_ts = row.get("kickoff_time")
@@ -846,11 +946,20 @@ class GamesService:
             "saved_market_ids": saved_ids,
         }
 
-    def list_grouped_by_day(self, mode: str = "upcoming", load_more_historical: bool = False) -> dict[str, Any]:
+    def list_grouped_by_day(
+        self,
+        mode: str = "upcoming",
+        load_more_historical: bool = False,
+        xg_metric_mode: str = "xg",
+    ) -> dict[str, Any]:
         mode_norm = str(mode or "").strip().lower()
+        resolved_metric_mode = self.state.normalize_xg_metric_mode(xg_metric_mode)
         has_more_older = False
         added_games = 0
         if mode_norm == "historical":
+            # Historical day payloads currently rely on persisted xG-based metrics.
+            # Keep historical mode pinned to xG until alternate historical metrics are materialized.
+            resolved_metric_mode = "xg"
             if bool(load_more_historical):
                 load_result = self.state.historical_data_service.load_previous_historical_days(days=1)
                 if isinstance(load_result, dict):
@@ -872,9 +981,13 @@ class GamesService:
                 last_refresh = self.state.last_refresh
             loaded_start_day, loaded_end_day = None, None
             fill_missing_days = True
+            games_df, resolved_metric_mode = self._apply_metric_mode_period_metrics(
+                games_df=games_df,
+                xg_metric_mode=resolved_metric_mode,
+            )
 
         saved_market_ids = self.state.list_saved_market_ids()
-        return self.group_games_df_by_day(
+        payload = self.group_games_df_by_day(
             games_df=games_df,
             mode_norm=mode_norm,
             fill_missing_days=fill_missing_days,
@@ -885,5 +998,9 @@ class GamesService:
             loaded_end_day=loaded_end_day,
             saved_market_ids=saved_market_ids,
         )
+        payload["xg_metric_mode"] = resolved_metric_mode
+        payload["requested_xg_metric_mode"] = str(xg_metric_mode or "").strip().lower()
+        payload["npxg_available"] = bool(getattr(self.state, "npxg_available", False))
+        return payload
 
 __all__ = ["GamesService"]

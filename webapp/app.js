@@ -74,6 +74,7 @@ const dayPickerCount = document.getElementById("dayPickerCount");
 const upcomingModeBtn = document.getElementById("upcomingModeBtn");
 const historicalModeBtn = document.getElementById("historicalModeBtn");
 const xgThresholdInput = document.getElementById("xgThresholdInput");
+const xgMetricModeToggleBtn = document.getElementById("xgMetricModeToggleBtn");
 const xgdHcHighlightToggleBtn = document.getElementById("xgdHcHighlightToggleBtn");
 const noHandicapGamesToggleBtn = document.getElementById("noHandicapGamesToggleBtn");
 
@@ -166,9 +167,11 @@ let teamDetailsTrendlineDegree = TRENDLINE_DEGREE_DEFAULT;
 const DEFAULT_XG_PUSH_THRESHOLD = 0.1;
 const MIN_XG_PUSH_THRESHOLD = 0.0;
 const MAX_XG_PUSH_THRESHOLD = 5.0;
+const XG_METRIC_MODE_STORAGE_KEY = "xgd_metric_mode";
 const XG_PUSH_THRESHOLD_STORAGE_KEY = "xgd_hc_xg_threshold";
 const XGD_HC_HIGHLIGHT_ENABLED_STORAGE_KEY = "xgd_hc_highlight_enabled";
 const SHOW_GAMES_WITHOUT_HC_STORAGE_KEY = "show_games_without_hc_pricing";
+let xgMetricMode = "xg";
 let xgPushThreshold = DEFAULT_XG_PUSH_THRESHOLD;
 let xgdHcHighlightEnabled = false;
 let showGamesWithoutHandicap = true;
@@ -177,6 +180,7 @@ const MAPPING_UNMATCHED_TEAM_RENDER_LIMIT = 250;
 const MAPPING_SAVED_TEAM_RENDER_LIMIT = 400;
 const MAPPING_UNMATCHED_COMPETITION_RENDER_LIMIT = 200;
 const MAPPING_SAVED_COMPETITION_RENDER_LIMIT = 400;
+const API_REQUEST_TIMEOUT_MS = 45000;
 
 function escapeHtml(value) {
   return String(value || "")
@@ -355,6 +359,24 @@ async function parseApiResponse(res) {
   return { error: String(text || "Unexpected response") };
 }
 
+async function fetchJsonWithTimeout(url, options = {}, timeoutMs = API_REQUEST_TIMEOUT_MS) {
+  const timeout = Math.max(1000, Number(timeoutMs) || API_REQUEST_TIMEOUT_MS);
+  const controller = new AbortController();
+  const timerId = window.setTimeout(() => controller.abort(), timeout);
+  try {
+    const res = await fetch(url, { ...options, signal: controller.signal });
+    const payload = await parseApiResponse(res);
+    return { res, payload };
+  } catch (err) {
+    if (err && err.name === "AbortError") {
+      throw new Error(`Request timed out after ${Math.round(timeout / 1000)}s`);
+    }
+    throw err;
+  } finally {
+    window.clearTimeout(timerId);
+  }
+}
+
 function normalizeXgPushThreshold(value, fallback = DEFAULT_XG_PUSH_THRESHOLD) {
   const text = String(value ?? "").trim().replace(",", ".");
   const parsed = Number(text);
@@ -375,6 +397,51 @@ function formatXgPushThresholdForInput(value) {
 function formatXgPushThresholdForLabel(value) {
   const normalized = normalizeXgPushThreshold(value, DEFAULT_XG_PUSH_THRESHOLD);
   return normalized.toFixed(2);
+}
+
+function normalizeXgMetricMode(value, fallback = "xg") {
+  const fallbackMode = String(fallback || "").trim().toLowerCase() === "npxg" ? "npxg" : "xg";
+  const text = String(value ?? "").trim().toLowerCase();
+  if (!text) return fallbackMode;
+  return text === "npxg" ? "npxg" : "xg";
+}
+
+function getXgMetricModeLabel(value) {
+  return normalizeXgMetricMode(value, "xg") === "npxg" ? "NPxG" : "xG";
+}
+
+function getStoredXgMetricMode() {
+  try {
+    const raw = window.localStorage.getItem(XG_METRIC_MODE_STORAGE_KEY);
+    if (raw == null) return "xg";
+    return normalizeXgMetricMode(raw, "xg");
+  } catch (_err) {
+    return "xg";
+  }
+}
+
+function persistXgMetricMode(value) {
+  try {
+    window.localStorage.setItem(XG_METRIC_MODE_STORAGE_KEY, normalizeXgMetricMode(value, "xg"));
+  } catch (_err) {
+    // Ignore storage failures.
+  }
+}
+
+function getCurrentXgMetricMode() {
+  return normalizeXgMetricMode(xgMetricMode, "xg");
+}
+
+function updateXgMetricModeToggleButton() {
+  if (!(xgMetricModeToggleBtn instanceof HTMLButtonElement)) return;
+  const mode = getCurrentXgMetricMode();
+  const isNpxg = mode === "npxg";
+  xgMetricModeToggleBtn.textContent = `xG Mode: ${isNpxg ? "NPxG" : "xG"}`;
+  xgMetricModeToggleBtn.classList.toggle("is-off", isNpxg);
+  xgMetricModeToggleBtn.setAttribute("aria-pressed", isNpxg ? "true" : "false");
+  xgMetricModeToggleBtn.title = isNpxg
+    ? "Using Non-penalty xG for xGD calculations"
+    : "Using xG for xGD calculations";
 }
 
 function getStoredXgPushThreshold() {
@@ -542,6 +609,38 @@ function applyGlobalXgPushThreshold(nextValue) {
     loadTeamHcRankings({ silent: true });
   }
   statusText.textContent = `xG threshold set to ${formatXgPushThresholdForLabel(normalized)}`;
+}
+
+async function applyGlobalXgMetricMode(nextValue, options = {}) {
+  const silent = Boolean(options?.silent);
+  const normalized = normalizeXgMetricMode(nextValue, getCurrentXgMetricMode());
+  const changed = normalized !== getCurrentXgMetricMode();
+  xgMetricMode = normalized;
+  persistXgMetricMode(normalized);
+  updateXgMetricModeToggleButton();
+  if (!changed) return;
+
+  xgdPayloadByMarket.clear();
+  hcPerfPayloadByMarket.clear();
+  teamPagePayloadByKey.clear();
+  teamDetailsPayload = null;
+  lastXgdPayload = null;
+
+  const loadOk = await loadGames();
+  if (loadOk && selectedMarketId && !detailsPanel.classList.contains("hidden")) {
+    void loadGameXgd(selectedMarketId);
+  }
+  if (teamDetailsTeam && teamDetailsPanel && !teamDetailsPanel.classList.contains("hidden")) {
+    void openTeamPage(
+      teamDetailsTeam,
+      teamDetailsCompetition || null,
+      teamDetailsSeason || null,
+      { force: true }
+    );
+  }
+  if (!silent) {
+    statusText.textContent = `xGD metric mode set to ${getXgMetricModeLabel(normalized)}`;
+  }
 }
 
 function setActiveTab(tabName) {
@@ -834,9 +933,9 @@ function renderManualMappingSections(payload) {
   const availableSofaCompetitionLookup = new Map(
     availableSofaCompetitions.map((competition) => [competition.toLowerCase(), competition])
   );
-  const sofascoreDbPath = String(payload?.sofascore_db_path || "").trim();
-  const sofascoreDbLabel = sofascoreDbPath
-    ? sofascoreDbPath.split("/").filter(Boolean).slice(-2).join("/")
+  const sourceDbPath = String(payload?.source_db_path || payload?.sofascore_db_path || "").trim();
+  const sourceDbLabel = sourceDbPath
+    ? sourceDbPath.split("/").filter(Boolean).slice(-2).join("/")
     : "";
   const unmatchedTeamsTotalRaw = Number(payload?.unmatched_total);
   const unmatchedTeamsTotal = Number.isFinite(unmatchedTeamsTotalRaw)
@@ -851,7 +950,7 @@ function renderManualMappingSections(payload) {
     `${unmatchedTeamsTotal} unmatched teams | ${manualCount} manual, ${autoCount} auto teams | ` +
     `${unmatchedCompetitionsTotal} unmatched competitions | ` +
     `${manualCompetitionCount} manual, ${autoCompetitionCount} auto competitions` +
-    (sofascoreDbLabel ? ` | DB: ${sofascoreDbLabel}` : "");
+    (sourceDbLabel ? ` | DB: ${sourceDbLabel}` : "");
 
   unmatchedTeamsContainer.innerHTML = "";
   const teamSearchControls = document.createElement("div");
@@ -913,7 +1012,7 @@ function renderManualMappingSections(payload) {
           <th>Kickoff</th>
           <th>Side</th>
           <th>Betfair Team</th>
-          <th>SofaScore Team</th>
+          <th>Database Team</th>
           <th>Action</th>
         </tr>
       </thead>
@@ -1030,7 +1129,7 @@ function renderManualMappingSections(payload) {
           const inputValue = String(input.value || "").trim();
           const sofaName = resolveSofaTeam(inputValue);
           if (!sofaName) {
-            mappingStatus.textContent = "Pick a SofaScore team from the dropdown suggestions before saving.";
+            mappingStatus.textContent = "Pick a Database team from the dropdown suggestions before saving.";
             return;
           }
           clearTeamMappingSelection(rawKey);
@@ -1069,7 +1168,7 @@ function renderManualMappingSections(payload) {
     savedSearchControls.innerHTML = `
       <label class="mapping-search-field">
         <span>Search Saved Mappings</span>
-        <input type="search" class="mapping-search-input" data-search="saved-team-mappings" placeholder="Type Betfair or SofaScore team..." />
+        <input type="search" class="mapping-search-input" data-search="saved-team-mappings" placeholder="Type Betfair or Database team..." />
       </label>
     `;
     const savedSearchInput = savedSearchControls.querySelector(
@@ -1112,7 +1211,7 @@ function renderManualMappingSections(payload) {
         <thead>
           <tr>
             <th>Betfair Team</th>
-            <th>SofaScore Team</th>
+            <th>Database Team</th>
             <th>Type</th>
             <th>Action</th>
           </tr>
@@ -1180,7 +1279,7 @@ function renderManualMappingSections(payload) {
           saveBtn.addEventListener("click", async () => {
             const selectedSofaName = resolveSavedSofaName();
             if (!selectedSofaName) {
-              mappingStatus.textContent = "Select a valid SofaScore team before saving.";
+              mappingStatus.textContent = "Select a valid Database team before saving.";
               return;
             }
             clearTeamMappingSelection(rawKey);
@@ -1232,7 +1331,7 @@ function renderManualMappingSections(payload) {
           <th>Betfair Competition</th>
           <th>Games</th>
           <th>Next Kickoff</th>
-          <th>SofaScore Competition</th>
+          <th>Database Competition</th>
           <th>Action</th>
         </tr>
       </thead>
@@ -1269,7 +1368,7 @@ function renderManualMappingSections(payload) {
           const sofaName = availableSofaCompetitionLookup.get(inputValueLower)
             || (inputValueLower && inputValueLower === existingSofaNameLower ? existingSofaName : "");
           if (!sofaName) {
-            mappingStatus.textContent = "Select a SofaScore competition before saving.";
+            mappingStatus.textContent = "Select a Database competition before saving.";
             return;
           }
           await upsertManualCompetitionMapping(rawName, sofaName);
@@ -1297,7 +1396,7 @@ function renderManualMappingSections(payload) {
       <thead>
         <tr>
           <th>Betfair Competition</th>
-          <th>SofaScore Competition</th>
+          <th>Database Competition</th>
           <th>Type</th>
           <th>Action</th>
         </tr>
@@ -1383,7 +1482,7 @@ async function saveSelectedManualTeamMappings() {
     return;
   }
   if (missingMappings.length) {
-    mappingStatus.textContent = "Some selected rows do not have a valid SofaScore team.";
+    mappingStatus.textContent = "Some selected rows do not have a valid Database team.";
     return;
   }
 
@@ -4153,12 +4252,18 @@ async function loadGames(options = {}) {
   try {
     const query = new URLSearchParams();
     query.set("mode", gamesMode);
+    query.set("xg_mode", getCurrentXgMetricMode());
     if (shouldLoadMoreHistorical) {
       query.set("load_more", "1");
     }
     const res = await fetch(`/api/games?${query.toString()}`);
     const payload = await parseApiResponse(res);
     if (!res.ok) throw new Error(payload.error || "Failed to load games");
+    if (payload && payload.npxg_available === false && getCurrentXgMetricMode() === "npxg") {
+      xgMetricMode = "xg";
+      persistXgMetricMode("xg");
+      updateXgMetricModeToggleButton();
+    }
     xgdPayloadByMarket.clear();
     rawDays = payload.days || [];
     if (Array.isArray(payload?.saved_market_ids)) {
@@ -6273,8 +6378,8 @@ async function openTeamPage(teamName, competitionName = null, seasonKey = null, 
     if (seasonText) {
       query.set("season", seasonText);
     }
-    const res = await fetch(`/api/team-page?${query.toString()}`);
-    const payload = await parseApiResponse(res);
+    query.set("xg_mode", getCurrentXgMetricMode());
+    const { res, payload } = await fetchJsonWithTimeout(`/api/team-page?${query.toString()}`);
     if (!res.ok) throw new Error(payload.error || "Failed to load team page");
     if (teamDetailsLoadingKey !== requestKey) return;
     const nextPayload = payload && typeof payload === "object" ? payload : {};
@@ -6325,8 +6430,10 @@ async function loadGameHcPerf(marketId, force = false) {
     renderXgd(lastXgdPayload);
   }
   try {
-    const res = await fetch(`/api/game-hcperf?market_id=${encodeURIComponent(key)}`);
-    const payload = await parseApiResponse(res);
+    const query = new URLSearchParams();
+    query.set("market_id", key);
+    query.set("xg_mode", getCurrentXgMetricMode());
+    const { res, payload } = await fetchJsonWithTimeout(`/api/game-hcperf?${query.toString()}`);
     if (!res.ok) throw new Error(payload.error || "Failed to load HC performance");
     hcPerfPayloadByMarket.set(key, payload || {});
   } catch (err) {
@@ -6396,8 +6503,10 @@ async function loadGameXgd(marketId) {
   linesContainer.innerHTML = "<p>Calculating xGD...</p>";
 
   try {
-    const res = await fetch(`/api/game-xgd?market_id=${encodeURIComponent(marketId)}`);
-    const payload = await parseApiResponse(res);
+    const query = new URLSearchParams();
+    query.set("market_id", String(marketId || ""));
+    query.set("xg_mode", getCurrentXgMetricMode());
+    const { res, payload } = await fetchJsonWithTimeout(`/api/game-xgd?${query.toString()}`);
     if (!res.ok) throw new Error(payload.error || "Failed to load xGD");
     xgdPayloadByMarket.set(key, payload || {});
     renderXgd(payload);
@@ -6488,7 +6597,7 @@ async function requestHardRefreshXgd() {
   if (disableOddsRefresh) {
     refreshBtn.disabled = true;
   }
-  statusText.textContent = "Hard refreshing xGD data from SofaScore DB...";
+  statusText.textContent = "Hard refreshing xGD data from source database...";
 
   try {
     const res = await fetch("/api/hard-refresh-xgd", {
@@ -6839,9 +6948,17 @@ if (saveGameBtn instanceof HTMLButtonElement) {
   });
 }
 
+xgMetricMode = getStoredXgMetricMode();
 xgPushThreshold = getStoredXgPushThreshold();
 xgdHcHighlightEnabled = false;
 showGamesWithoutHandicap = getStoredShowGamesWithoutHandicap();
+updateXgMetricModeToggleButton();
+if (xgMetricModeToggleBtn instanceof HTMLButtonElement) {
+  xgMetricModeToggleBtn.addEventListener("click", () => {
+    const nextMode = getCurrentXgMetricMode() === "xg" ? "npxg" : "xg";
+    void applyGlobalXgMetricMode(nextMode);
+  });
+}
 if (xgThresholdInput instanceof HTMLInputElement) {
   xgThresholdInput.value = formatXgPushThresholdForInput(xgPushThreshold);
   xgThresholdInput.addEventListener("change", () => {

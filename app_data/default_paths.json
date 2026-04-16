@@ -1,5 +1,3 @@
 {
-  "external_paths": {
-    "sofascore_db": "../Sofascore_scraper/sofascore_local.db"
-  }
+  "external_paths": {}
 }
