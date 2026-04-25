@@ -11,6 +11,7 @@ from .sofascore_loader import (
     load_sofascore_inputs,
     parse_score_after,
     parse_season_date,
+    resolve_match_events_db_path,
     resolve_sofascore_db_path,
 )
 
@@ -25,5 +26,6 @@ __all__ = [
     "load_sofascore_inputs",
     "parse_score_after",
     "parse_season_date",
+    "resolve_match_events_db_path",
     "resolve_sofascore_db_path",
 ]

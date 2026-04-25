@@ -107,6 +107,77 @@ def format_price_value(value: Any) -> str:
     return f"{float(value):.2f}"
 
 
+def match_odds_snapshot(catalogue: dict[str, Any], market_book: dict[str, Any] | None) -> dict[str, str]:
+    default = {"home_price": "-", "draw_price": "-", "away_price": "-"}
+    if not market_book:
+        return default
+
+    event_name = str(catalogue.get("event", {}).get("name", "")).strip()
+    home_team, away_team = split_event_teams(event_name)
+    if not home_team or not away_team:
+        return default
+
+    runner_info: dict[int, str] = {}
+    for runner in catalogue.get("runners", []):
+        selection_id = runner.get("selectionId")
+        if isinstance(selection_id, int):
+            runner_info[selection_id] = str(runner.get("runnerName", "")).strip()
+
+    home_candidates: list[dict[str, Any]] = []
+    draw_candidates: list[dict[str, Any]] = []
+    away_candidates: list[dict[str, Any]] = []
+    for runner in market_book.get("runners", []):
+        selection_id = runner.get("selectionId")
+        if not isinstance(selection_id, int):
+            continue
+        runner_name = runner_info.get(selection_id, "").strip()
+        if not runner_name:
+            continue
+
+        ex = runner.get("ex", {})
+        back = get_best_offer_price(ex, "availableToBack")
+        lay = get_best_offer_price(ex, "availableToLay")
+        if back is None and lay is None:
+            continue
+        mid_price = (
+            (float(back) + float(lay)) / 2.0
+            if (back is not None and lay is not None)
+            else (float(back) if back is not None else float(lay))
+        )
+        spread = (float(lay) - float(back)) if (back is not None and lay is not None) else None
+        candidate = {"mid": mid_price, "spread": spread}
+
+        if runner_name_matches(runner_name, home_team):
+            home_candidates.append(candidate)
+        elif runner_name_matches(runner_name, away_team):
+            away_candidates.append(candidate)
+        else:
+            draw_candidates.append(candidate)
+
+    def _pick_best(candidates: list[dict[str, Any]], target_mid: float) -> float | None:
+        valid = [row for row in candidates if isinstance(row.get("mid"), (int, float))]
+        if not valid:
+            return None
+
+        def sort_key(row: dict[str, Any]) -> tuple[float, float]:
+            spread_value = row.get("spread")
+            spread_rank = float(spread_value) if isinstance(spread_value, (int, float)) else float("inf")
+            mid = float(row.get("mid"))
+            return (spread_rank, abs(mid - target_mid))
+
+        best = min(valid, key=sort_key)
+        return float(best.get("mid"))
+
+    home_mid = _pick_best(home_candidates, target_mid=2.0)
+    draw_mid = _pick_best(draw_candidates, target_mid=3.25)
+    away_mid = _pick_best(away_candidates, target_mid=2.0)
+    return {
+        "home_price": format_price_value(home_mid),
+        "draw_price": format_price_value(draw_mid),
+        "away_price": format_price_value(away_mid),
+    }
+
+
 def market_mainline_snapshot(catalogue: dict[str, Any], market_book: dict[str, Any] | None) -> dict[str, str]:
     default = {"mainline": "-", "home_price": "-", "away_price": "-"}
     if not market_book:
@@ -287,6 +358,7 @@ __all__ = [
     "format_handicap_value",
     "format_price_value",
     "get_best_offer_price",
+    "match_odds_snapshot",
     "market_mainline_snapshot",
     "parse_handicap_value",
     "runner_name_matches",

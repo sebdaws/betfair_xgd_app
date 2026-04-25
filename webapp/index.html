@@ -36,14 +36,19 @@
   <main>
     <section class="page-tabs">
       <button id="gamesTabBtn" class="tab-btn active" type="button">Games</button>
-      <button id="savedGamesTabBtn" class="tab-btn" type="button">Saved Games</button>
+      <button id="modellingPricesTabBtn" class="tab-btn" type="button">Modelling Prices</button>
       <button id="teamHcRankingsTabBtn" class="tab-btn" type="button">HC Rankings</button>
       <button id="teamsTabBtn" class="tab-btn" type="button">Teams</button>
+      <button id="matchupTabBtn" class="tab-btn" type="button">Matchup</button>
       <button id="manualMappingTabBtn" class="tab-btn" type="button">Mapping</button>
     </section>
 
     <section id="gamesTabPane" class="tab-pane">
-      <section class="day-toolbar">
+      <section id="gamesPaneTabs" class="page-tabs page-sub-tabs">
+        <button id="gamesMainSubTabBtn" class="tab-btn active" type="button">Games</button>
+        <button id="savedGamesSubTabBtn" class="tab-btn" type="button">Saved Games</button>
+      </section>
+      <section id="gamesDayToolbar" class="day-toolbar">
         <section class="day-actions">
           <button id="upcomingModeBtn" type="button" class="mode-btn active">Upcoming</button>
           <button id="historicalModeBtn" type="button" class="mode-btn">Historical</button>
@@ -86,20 +91,34 @@
           placeholder="Search team..."
           autocomplete="off"
         />
+        <label
+          for="modelEdgeInput"
+          id="modelEdgeLabel"
+          class="control-label modelling-edge-control hidden"
+        >Edge</label>
+        <input
+          id="modelEdgeInput"
+          class="modelling-edge-input modelling-edge-control hidden"
+          type="text"
+          inputmode="decimal"
+          aria-label="Model edge adjustment for bold highlight logic"
+          value="0"
+          autocomplete="off"
+        />
       </section>
       <section id="calendarView" class="calendar-view"></section>
-    </section>
 
-    <section id="savedGamesTabPane" class="tab-pane hidden">
-      <section class="table-controls">
-        <label for="savedSortModeBtn" class="control-label">Sort</label>
-        <select id="savedSortModeBtn" aria-label="Sort saved games">
-          <option value="kickoff">Kickoff</option>
-          <option value="league">League</option>
-          <option value="tier">Tier</option>
-        </select>
+      <section id="savedGamesPane" class="hidden">
+        <section class="table-controls saved-games-controls">
+          <label for="savedSortModeBtn" class="control-label">Sort</label>
+          <select id="savedSortModeBtn" aria-label="Sort saved games">
+            <option value="kickoff">Kickoff</option>
+            <option value="league">League</option>
+            <option value="tier">Tier</option>
+          </select>
+        </section>
+        <section id="savedGamesView" class="calendar-view"></section>
       </section>
-      <section id="savedGamesView" class="calendar-view"></section>
     </section>
 
     <section id="teamHcRankingsTabPane" class="tab-pane hidden">
@@ -141,11 +160,43 @@
       <section id="teamsView" class="calendar-view"></section>
     </section>
 
+    <section id="matchupTabPane" class="tab-pane hidden">
+      <section class="table-controls matchup-controls">
+        <label for="matchupHomeInput" class="control-label">Home</label>
+        <input
+          id="matchupHomeInput"
+          class="team-search-input"
+          type="search"
+          aria-label="Matchup home team"
+          placeholder="Home team"
+          list="matchupTeamsList"
+          autocomplete="off"
+        />
+        <label for="matchupAwayInput" class="control-label">Away</label>
+        <input
+          id="matchupAwayInput"
+          class="team-search-input"
+          type="search"
+          aria-label="Matchup away team"
+          placeholder="Away team"
+          list="matchupTeamsList"
+          autocomplete="off"
+        />
+        <label for="matchupCompetitionSelect" class="control-label">League</label>
+        <select id="matchupCompetitionSelect" aria-label="Matchup competition">
+          <option value="">Auto</option>
+        </select>
+        <button id="matchupRunBtn" type="button">Build Matchup</button>
+      </section>
+      <datalist id="matchupTeamsList"></datalist>
+      <section id="matchupView" class="calendar-view matchup-view"></section>
+    </section>
+
     <section id="manualMappingTabPane" class="tab-pane hidden">
       <section class="mapping-header">
         <h2>Mapping</h2>
         <div class="mapping-header-actions">
-          <button id="mappingSaveSelectedBtn" type="button">Save Selected Team Mappings</button>
+          <button id="mappingSaveSelectedBtn" type="button">Save Selected Mappings</button>
           <button id="mappingClearSelectedBtn" type="button">Clear Selection</button>
           <button id="mappingRefreshBtn" type="button">Refresh Mapping Data</button>
         </div>
@@ -187,6 +238,7 @@
     <div class="details-header">
       <h2 id="detailsTitle">Game</h2>
       <div class="details-actions">
+        <button id="detailsXgMetricModeToggleBtn" type="button" class="topbar-highlight-toggle-btn details-metric-toggle-btn">xGD Mode: xGD</button>
         <button id="saveGameBtn" type="button">Save</button>
         <button id="closeDetails" type="button">Close</button>
       </div>
@@ -207,6 +259,7 @@
           <span>League</span>
           <select id="teamDetailsCompetitionSelect" aria-label="Team page league"></select>
         </label>
+        <button id="teamDetailsXgMetricModeToggleBtn" type="button" class="topbar-highlight-toggle-btn details-metric-toggle-btn">xGD Mode: xGD</button>
         <button id="teamDetailsCloseBtn" type="button">Close</button>
       </div>
     </div>

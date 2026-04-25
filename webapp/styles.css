@@ -264,8 +264,43 @@ main {
   margin-bottom: 0;
 }
 
+.modelling-edge-input {
+  width: 78px;
+  text-align: right;
+}
+
 .team-search-input {
   min-width: 180px;
+}
+
+.matchup-controls {
+  margin-bottom: 12px;
+}
+
+.matchup-controls select {
+  min-width: 220px;
+}
+
+.matchup-view {
+  display: block;
+}
+
+.matchup-result-header {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 12px;
+  margin: 4px 0 10px;
+}
+
+.matchup-result-header h2 {
+  margin: 0;
+  font-size: 1.1rem;
+}
+
+.matchup-result-header .meta {
+  margin: 0;
+  text-align: right;
 }
 
 .league-filter {
@@ -569,6 +604,10 @@ main {
 .games-table td.away-price-col {
   width: 64px;
 }
+.games-table th.win-draw-col,
+.games-table td.win-draw-col {
+  width: 64px;
+}
 .games-table td.home-price-col,
 .games-table td.away-price-col { font-size: 0.84rem; }
 .games-table th.line-col,
@@ -662,6 +701,91 @@ main {
 .games-table td.xg-home-col,
 .games-table td.score-col,
 .games-table td.xg-away-col {
+  font-variant-numeric: tabular-nums;
+  font-feature-settings: "tnum" 1;
+}
+.modelling-prices-table td.home-price-col,
+.modelling-prices-table td.away-price-col,
+.modelling-prices-table td.win-draw-col,
+.modelling-prices-table td.goal-under-price-col,
+.modelling-prices-table td.goal-over-price-col,
+.modelling-prices-table td.handicap-line-col,
+.modelling-prices-table td.goal-line-col {
+  font-size: 0.78rem;
+}
+.modelling-prices-table th.kickoff-col,
+.modelling-prices-table td.kickoff-col {
+  width: 52px;
+  min-width: 52px;
+  max-width: 52px;
+  padding-left: 3px;
+  padding-right: 3px;
+}
+.modelling-prices-table th.home-price-col,
+.modelling-prices-table td.home-price-col,
+.modelling-prices-table th.away-price-col,
+.modelling-prices-table td.away-price-col,
+.modelling-prices-table th.win-draw-col,
+.modelling-prices-table td.win-draw-col,
+.modelling-prices-table th.goal-under-price-col,
+.modelling-prices-table td.goal-under-price-col,
+.modelling-prices-table th.goal-over-price-col,
+.modelling-prices-table td.goal-over-price-col {
+  width: 82px;
+  min-width: 82px;
+}
+.modelling-prices-table th.handicap-line-col,
+.modelling-prices-table td.handicap-line-col,
+.modelling-prices-table th.goal-line-col,
+.modelling-prices-table td.goal-line-col {
+  width: 72px;
+  min-width: 72px;
+}
+.modelling-prices-table th.model-xgd-col,
+.modelling-prices-table td.model-xgd-col {
+  width: 68px;
+  min-width: 68px;
+  white-space: nowrap;
+  font-variant-numeric: tabular-nums;
+  font-feature-settings: "tnum" 1;
+  font-weight: 600;
+}
+.modelling-prices-table td.line-col,
+.modelling-prices-table td.goal-line-col {
+  font-weight: 600;
+}
+.modelling-price-stack {
+  display: inline-flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 3px;
+  line-height: 1.05;
+}
+.modelling-price-row {
+  display: inline-flex;
+  align-items: baseline;
+  gap: 4px;
+  white-space: nowrap;
+}
+.modelling-price-label {
+  display: inline-block;
+  min-width: 16px;
+  font-size: 0.58rem;
+  letter-spacing: 0.03em;
+  text-transform: uppercase;
+  color: #64748b;
+}
+.modelling-price-row-model .modelling-price-label {
+  color: #0f766e;
+}
+.modelling-price-row-model-highlight {
+  font-weight: 700;
+}
+.modelling-price-row-model-highlight .modelling-price-label,
+.modelling-price-row-model-highlight .modelling-price-value {
+  color: #0f172a;
+}
+.modelling-price-value {
   font-variant-numeric: tabular-nums;
   font-feature-settings: "tnum" 1;
 }
@@ -1058,6 +1182,128 @@ main {
   margin-bottom: 10px;
 }
 
+.pricing-tables-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 12px;
+}
+
+.pricing-table-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+.pricing-table-head h4 {
+  margin: 0 0 6px;
+}
+
+.pricing-expand-btn {
+  font-size: 0.78rem;
+  padding: 5px 9px;
+  white-space: nowrap;
+}
+
+.betbuilder-calculator {
+  margin-bottom: 12px;
+}
+
+.betbuilder-layout {
+  display: grid;
+  grid-template-columns: minmax(360px, 1.15fr) minmax(260px, 0.85fr);
+  gap: 12px;
+  align-items: stretch;
+}
+
+.betbuilder-controls {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.betbuilder-leg-row {
+  display: grid;
+  grid-template-columns: minmax(150px, 1.1fr) minmax(92px, 0.65fr) minmax(110px, 0.75fr);
+  gap: 10px;
+}
+
+.betbuilder-control {
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+}
+
+.betbuilder-control > span {
+  font-size: 0.74rem;
+  font-weight: 700;
+  color: #475569;
+  text-transform: uppercase;
+  letter-spacing: 0.03em;
+}
+
+.betbuilder-control > select,
+.betbuilder-control > input {
+  width: 100%;
+}
+
+.betbuilder-price-panel {
+  display: flex;
+  flex-direction: column;
+  justify-content: space-between;
+  gap: 10px;
+  border: 1px solid var(--line);
+  background: #f8fafc;
+  border-radius: 8px;
+  padding: 10px;
+}
+
+.betbuilder-selection {
+  color: #334155;
+  font-size: 0.86rem;
+  font-weight: 700;
+}
+
+.betbuilder-price-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 8px;
+}
+
+.betbuilder-price-cell {
+  border: 1px solid #dbe4ee;
+  background: #fff;
+  border-radius: 8px;
+  padding: 8px 10px;
+}
+
+.betbuilder-price-cell span,
+.betbuilder-edge-control span {
+  display: block;
+  margin-bottom: 4px;
+  color: #64748b;
+  font-size: 0.72rem;
+  font-weight: 700;
+  letter-spacing: 0.03em;
+  text-transform: uppercase;
+}
+
+.betbuilder-price-cell strong {
+  display: block;
+  color: #0f172a;
+  font-size: 1.22rem;
+  line-height: 1.1;
+}
+
+.betbuilder-edge-control {
+  display: block;
+}
+
+.betbuilder-edge-control input {
+  width: 100%;
+  max-width: 110px;
+}
+
 .xgd-team-summary-panel h4 {
   margin: 0 0 6px;
   font-size: 0.9rem;
@@ -1110,6 +1356,16 @@ main {
   font-size: 0.8rem;
   padding: 8px;
 }
+
+.recent-lines-table tbody tr.pricing-half-line-row td {
+  background: #f1f5f9;
+  color: #475569;
+}
+
+.recent-lines-table tbody tr.pricing-main-line-row td {
+  font-weight: 700;
+}
+
 .recent-lines-table th .metric-suffix {
   font-size: 0.72em;
   vertical-align: sub;
@@ -1467,6 +1723,32 @@ main {
   }
 
   .xgd-team-summary-grid {
+    grid-template-columns: 1fr;
+  }
+
+  .pricing-tables-grid {
+    grid-template-columns: 1fr;
+  }
+
+  .matchup-result-header {
+    align-items: flex-start;
+    flex-direction: column;
+    gap: 4px;
+  }
+
+  .matchup-result-header .meta {
+    text-align: left;
+  }
+
+  .betbuilder-controls {
+    gap: 10px;
+  }
+
+  .betbuilder-leg-row {
+    grid-template-columns: 1fr;
+  }
+
+  .betbuilder-layout {
     grid-template-columns: 1fr;
   }
 }

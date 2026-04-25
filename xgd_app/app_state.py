@@ -42,10 +42,11 @@ from xgd_app.core import (
     parse_periods,
     period_rows_from_reduced_table,
     source_specific_app_data_path,
+    source_db_label,
     source_competitions_differ_from_betfair_competition,
     split_event_teams,
 )
-from xgd_app.data.sofascore_loader import load_sofascore_inputs
+from xgd_app.data.sofascore_loader import load_sofascore_inputs, resolve_match_events_db_path
 from xgd_app.default_paths import get_external_path
 from xgd_app.data.historical_betfair import HistoricalBetfairDataService
 from xgd_app.services.games import GamesService
@@ -55,6 +56,18 @@ from xgd_app.services.mappings import MappingService
 
 
 class AppState:
+    def _set_source_mapping_paths(self, source_db_path: Path) -> None:
+        resolved = Path(source_db_path).expanduser().resolve()
+        self.manual_mappings_path = source_specific_app_data_path(
+            DEFAULT_MANUAL_TEAM_MAPPINGS,
+            resolved,
+        )
+        self.manual_competition_mappings_path = source_specific_app_data_path(
+            DEFAULT_MANUAL_COMPETITION_MAPPINGS,
+            resolved,
+        )
+        self.source_db_label = source_db_label(resolved)
+
     def __init__(self, args: argparse.Namespace) -> None:
         init_started_at = time.perf_counter()
         self.args = args
@@ -121,32 +134,68 @@ class AppState:
 
         load_sofa_started_at = time.perf_counter()
         print("[xgd_web_app] Stage 2/3: Loading match inputs...", flush=True)
-        self.form_df, self.fixtures_df, teams, resolved_db_path = load_sofascore_inputs(args.db_path)
+        requested_source_db_path = str(getattr(args, "db_path", "")).strip()
+        requested_match_events_db_path = str(getattr(args, "match_events_db_path", "")).strip()
+        source_team_mappings_path = source_specific_app_data_path(DEFAULT_MANUAL_TEAM_MAPPINGS, requested_source_db_path)
+        source_comp_mappings_path = source_specific_app_data_path(
+            DEFAULT_MANUAL_COMPETITION_MAPPINGS,
+            requested_source_db_path,
+        )
+        events_mapping_db_reference = requested_match_events_db_path or requested_source_db_path
+        events_team_mappings_path = source_specific_app_data_path(
+            DEFAULT_MANUAL_TEAM_MAPPINGS,
+            events_mapping_db_reference,
+        )
+        events_comp_mappings_path = source_specific_app_data_path(
+            DEFAULT_MANUAL_COMPETITION_MAPPINGS,
+            events_mapping_db_reference,
+        )
+        self.form_df, self.fixtures_df, teams, resolved_db_path = load_sofascore_inputs(
+            requested_source_db_path,
+            match_events_db_path=(requested_match_events_db_path or None),
+            source_team_mappings_path=source_team_mappings_path,
+            source_competition_mappings_path=source_comp_mappings_path,
+            match_events_team_mappings_path=events_team_mappings_path,
+            match_events_competition_mappings_path=events_comp_mappings_path,
+        )
         self._form_df_metric_cache: dict[str, pd.DataFrame] = {}
         self.npxg_available = self._detect_npxg_availability(self.form_df)
         self.source_db_path = Path(resolved_db_path).expanduser().resolve()
         # Backward-compatible alias used across existing modules/UI payloads.
         self.sofascore_db_path = self.source_db_path
+        self.match_events_db_path = resolve_match_events_db_path(
+            requested_match_events_db_path or None,
+            self.source_db_path,
+        )
+        self.match_events_db_label = source_db_label(self.match_events_db_path)
+        self.match_events_team_mappings_path = source_specific_app_data_path(
+            DEFAULT_MANUAL_TEAM_MAPPINGS,
+            self.match_events_db_path,
+        )
+        self.match_events_competition_mappings_path = source_specific_app_data_path(
+            DEFAULT_MANUAL_COMPETITION_MAPPINGS,
+            self.match_events_db_path,
+        )
+        events_db_note = (
+            f" (events from {self.match_events_db_path})"
+            if self.match_events_db_path != self.source_db_path
+            else ""
+        )
         print(
             "[xgd_web_app] Stage 2/3: Match inputs loaded "
             f"({len(self.form_df)} form rows, {len(self.fixtures_df)} fixtures) "
-            f"from {self.source_db_path} "
+            f"from {self.source_db_path}{events_db_note} "
             f"in {(time.perf_counter() - load_sofa_started_at):.1f}s",
             flush=True,
         )
         self.team_matcher = TeamMatcher(teams)
-
-        self.manual_mappings_path = source_specific_app_data_path(
-            DEFAULT_MANUAL_TEAM_MAPPINGS,
-            self.source_db_path,
-        )
-        self.manual_competition_mappings_path = source_specific_app_data_path(
-            DEFAULT_MANUAL_COMPETITION_MAPPINGS,
-            self.source_db_path,
-        )
+        self._set_source_mapping_paths(self.source_db_path)
         self.saved_games_path = DEFAULT_SAVED_GAMES
 
-        sofa_competitions = sorted(self._load_sofa_competitions_from_db())
+        sofa_competitions = self._competition_names_for_mapping(
+            form_df=self.form_df,
+            db_path=self.source_db_path,
+        )
         self.sofa_competitions = sofa_competitions
         self.sofa_competition_set = set(self.sofa_competitions)
         self.sofa_competition_by_norm: dict[str, str] = {}
@@ -226,31 +275,85 @@ class AppState:
             flush=True,
         )
 
-    def _load_sofa_competitions_from_db(self, db_path: Path | None = None) -> set[str]:
+    def _load_sofa_competitions_from_db(self, db_path: Path | None = None) -> list[str]:
         target_path = Path(db_path if db_path is not None else self.sofascore_db_path).expanduser().resolve()
         if not target_path.exists():
-            return set()
+            return []
         conn: sqlite3.Connection | None = None
         try:
             conn = sqlite3.connect(str(target_path))
             rows = conn.execute(
                 """
-                SELECT DISTINCT TRIM(name) AS competition_name
+                SELECT id, TRIM(name) AS competition_name, TRIM(COALESCE(country, '')) AS area_name
                 FROM competitions
                 WHERE name IS NOT NULL
                   AND TRIM(name) <> ''
                 """
             ).fetchall()
         except Exception:
-            return set()
+            return []
         finally:
             if conn is not None:
                 conn.close()
-        return {
-            str(row[0]).strip()
-            for row in rows
-            if row and str(row[0]).strip()
+
+        raw_rows: list[tuple[str, str, str]] = []
+        name_to_ids: dict[str, set[str]] = {}
+        for row in rows:
+            if not row:
+                continue
+            comp_id = str(row[0]).strip()
+            comp_name = str(row[1]).strip() if len(row) > 1 else ""
+            area_name = str(row[2]).strip() if len(row) > 2 else ""
+            if not comp_id or not comp_name:
+                continue
+            raw_rows.append((comp_id, comp_name, area_name))
+            key = comp_name.casefold()
+            ids = name_to_ids.setdefault(key, set())
+            ids.add(comp_id)
+
+        out: list[str] = []
+        for comp_id, comp_name, area_name in raw_rows:
+            name_key = comp_name.casefold()
+            is_duplicate_name = len(name_to_ids.get(name_key, set())) > 1
+            if not is_duplicate_name:
+                out.append(comp_name)
+                continue
+            if area_name:
+                out.append(f"{comp_name} [{area_name} | {comp_id}]")
+            else:
+                out.append(f"{comp_name} [{comp_id}]")
+        unique_sorted = sorted(
+            {str(value).strip() for value in out if str(value).strip()},
+            key=str.lower,
+        )
+        return unique_sorted
+
+    @staticmethod
+    def _competition_names_from_form_df(form_df: pd.DataFrame) -> list[str]:
+        if not isinstance(form_df, pd.DataFrame) or form_df.empty or ("competition_name" not in form_df.columns):
+            return []
+        names = {
+            str(value).strip()
+            for value in form_df["competition_name"].dropna().tolist()
+            if str(value).strip()
         }
+        return sorted(names, key=str.lower)
+
+    def _competition_names_for_mapping(self, form_df: pd.DataFrame, db_path: Path | None = None) -> list[str]:
+        form_names = self._competition_names_from_form_df(form_df)
+        db_names = self._load_sofa_competitions_from_db(db_path=db_path)
+        merged: list[str] = []
+        seen_cf: set[str] = set()
+        for name in [*form_names, *db_names]:
+            text = str(name).strip()
+            if not text:
+                continue
+            key = text.casefold()
+            if key in seen_cf:
+                continue
+            seen_cf.add(key)
+            merged.append(text)
+        return sorted(merged, key=str.lower)
 
     @staticmethod
     def _detect_npxg_availability(form_df: pd.DataFrame) -> bool:
@@ -286,20 +389,55 @@ class AppState:
         self._form_df_metric_cache[resolved_mode] = out
         return out
 
-    def hard_refresh_xgd_data(self) -> dict[str, Any]:
-        current_db_path = Path(self.source_db_path).expanduser().resolve()
-        form_df, fixtures_df, teams, resolved_db_path = load_sofascore_inputs(str(current_db_path))
+    def hard_refresh_xgd_data(self, db_path: str | None = None) -> dict[str, Any]:
+        requested_db_path = str(db_path or "").strip()
+        if not requested_db_path:
+            requested_db_path = str(getattr(self.args, "db_path", "") or self.source_db_path)
+        requested_match_events_db_path = str(getattr(self.args, "match_events_db_path", "") or "").strip()
+        source_team_mappings_path = source_specific_app_data_path(DEFAULT_MANUAL_TEAM_MAPPINGS, requested_db_path)
+        source_comp_mappings_path = source_specific_app_data_path(
+            DEFAULT_MANUAL_COMPETITION_MAPPINGS,
+            requested_db_path,
+        )
+        events_mapping_db_reference = requested_match_events_db_path or requested_db_path
+        events_team_mappings_path = source_specific_app_data_path(
+            DEFAULT_MANUAL_TEAM_MAPPINGS,
+            events_mapping_db_reference,
+        )
+        events_comp_mappings_path = source_specific_app_data_path(
+            DEFAULT_MANUAL_COMPETITION_MAPPINGS,
+            events_mapping_db_reference,
+        )
+        form_df, fixtures_df, teams, resolved_db_path = load_sofascore_inputs(
+            requested_db_path,
+            match_events_db_path=(requested_match_events_db_path or None),
+            source_team_mappings_path=source_team_mappings_path,
+            source_competition_mappings_path=source_comp_mappings_path,
+            match_events_team_mappings_path=events_team_mappings_path,
+            match_events_competition_mappings_path=events_comp_mappings_path,
+        )
         team_matcher = TeamMatcher(teams)
         source_db_path = Path(resolved_db_path).expanduser().resolve()
-        manual_mappings_path = source_specific_app_data_path(
+        resolved_match_events_db_path = resolve_match_events_db_path(
+            requested_match_events_db_path or None,
+            source_db_path,
+        )
+        manual_mappings_path = source_specific_app_data_path(DEFAULT_MANUAL_TEAM_MAPPINGS, source_db_path)
+        manual_competition_mappings_path = source_specific_app_data_path(DEFAULT_MANUAL_COMPETITION_MAPPINGS, source_db_path)
+        source_label = source_db_label(source_db_path)
+        match_events_label = source_db_label(resolved_match_events_db_path)
+        match_events_team_mappings_path = source_specific_app_data_path(
             DEFAULT_MANUAL_TEAM_MAPPINGS,
-            source_db_path,
+            resolved_match_events_db_path,
         )
-        manual_competition_mappings_path = source_specific_app_data_path(
+        match_events_competition_mappings_path = source_specific_app_data_path(
             DEFAULT_MANUAL_COMPETITION_MAPPINGS,
-            source_db_path,
+            resolved_match_events_db_path,
         )
-        sofa_competitions = sorted(self._load_sofa_competitions_from_db(db_path=resolved_db_path))
+        sofa_competitions = self._competition_names_for_mapping(
+            form_df=form_df,
+            db_path=source_db_path,
+        )
         sofa_competition_set = set(sofa_competitions)
         sofa_competition_by_norm: dict[str, str] = {}
         for competition_name in sofa_competitions:
@@ -315,8 +453,15 @@ class AppState:
             self.team_matcher = team_matcher
             self.source_db_path = source_db_path
             self.sofascore_db_path = source_db_path
+            if hasattr(self.args, "db_path"):
+                self.args.db_path = str(source_db_path)
             self.manual_mappings_path = manual_mappings_path
             self.manual_competition_mappings_path = manual_competition_mappings_path
+            self.source_db_label = source_label
+            self.match_events_db_path = resolved_match_events_db_path
+            self.match_events_db_label = match_events_label
+            self.match_events_team_mappings_path = match_events_team_mappings_path
+            self.match_events_competition_mappings_path = match_events_competition_mappings_path
             self.sofa_competitions = sofa_competitions
             self.sofa_competition_set = sofa_competition_set
             self.sofa_competition_by_norm = sofa_competition_by_norm
@@ -329,6 +474,20 @@ class AppState:
             self.games_df = pd.DataFrame()
             self.historical_games_df = pd.DataFrame()
             self.last_refresh = None
+            # Clear historical lookup/price caches so DB switches don't reuse stale rows.
+            self._historical_event_day_index = {}
+            self._historical_day_events_cache = {}
+            self._historical_event_metadata_cache = {}
+            self._historical_event_stream_cache = {}
+            self._historical_event_price_cache = {}
+            self._historical_match_price_cache = {}
+            self._historical_day_event_lookup_cache = {}
+
+        game_xgd_cache_lock = getattr(self.game_xgd_service, "_game_xgd_cache_lock", None)
+        if game_xgd_cache_lock is not None:
+            with game_xgd_cache_lock:
+                self.game_xgd_service._game_xgd_cache = {}
+                self.game_xgd_service._game_xgd_cache_stamp = ""
 
         self.mapping_service.refresh_mapping_paths()
         with self.lock:
@@ -338,6 +497,7 @@ class AppState:
             self.manual_competition_mapping_lookup = self.mapping_service.build_manual_competition_mapping_lookup(
                 self.manual_competition_mappings
             )
+        self.mapping_service.sync_all_manual_team_mappings_to_db()
 
         # Rebuild historical and upcoming game tables using refreshed database inputs.
         self.historical_data_service.initialize_historical_games(initial_days=7)
@@ -349,6 +509,11 @@ class AppState:
 
         return {
             "db_path": str(source_db_path),
+            "source_db_label": source_label,
+            "match_events_db_path": str(resolved_match_events_db_path),
+            "match_events_db_label": match_events_label,
+            "manual_team_mappings_path": str(manual_mappings_path),
+            "manual_competition_mappings_path": str(manual_competition_mappings_path),
             "teams_count": int(len(teams)),
             "form_rows_count": int(len(form_df)),
             "fixtures_count": int(len(fixtures_df)),
@@ -544,6 +709,9 @@ class AppState:
     def get_disabled_auto_team_mapping_norms_snapshot(self) -> set[str]:
         return self.mapping_service.get_disabled_auto_team_mapping_norms_snapshot()
 
+    def get_disabled_auto_competition_mapping_norms_snapshot(self) -> set[str]:
+        return self.mapping_service.get_disabled_auto_competition_mapping_norms_snapshot()
+
     def get_manual_competition_mapping_lookup_snapshot(self) -> dict[str, str]:
         return self.mapping_service.get_manual_competition_mapping_lookup_snapshot()
 
@@ -561,6 +729,9 @@ class AppState:
 
     def upsert_manual_competition_mapping(self, raw_name: str, sofa_name: str) -> None:
         self.mapping_service.upsert_manual_competition_mapping(raw_name=raw_name, sofa_name=sofa_name)
+
+    def upsert_manual_competition_mappings_bulk(self, mappings: list[dict[str, Any]]) -> int:
+        return self.mapping_service.upsert_manual_competition_mappings_bulk(mappings=mappings)
 
     def delete_manual_competition_mapping(self, raw_name: str) -> bool:
         return self.mapping_service.delete_manual_competition_mapping(raw_name=raw_name)
@@ -645,6 +816,22 @@ class AppState:
     ) -> dict[str, Any]:
         return self.game_xgd_service.get_team_page(
             team_name=team_name,
+            competition_name=competition_name,
+            season_id=season_id,
+            xg_metric_mode=xg_metric_mode,
+        )
+
+    def get_matchup_xgd(
+        self,
+        home_team: str,
+        away_team: str,
+        competition_name: str | None = None,
+        season_id: str | None = None,
+        xg_metric_mode: str = "xg",
+    ) -> dict[str, Any]:
+        return self.game_xgd_service.get_matchup_xgd(
+            home_team=home_team,
+            away_team=away_team,
             competition_name=competition_name,
             season_id=season_id,
             xg_metric_mode=xg_metric_mode,

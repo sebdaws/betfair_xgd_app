@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import copy
 import math
 import threading
 import time
@@ -9,11 +10,16 @@ import time
 from xgd_app.core import *  # noqa: F401,F403
 
 class GameXgdService:
+    GAME_XGD_CACHE_VERSION = 3
+
     def __init__(self, state: Any) -> None:
         self.state = state
         self._verbose_timing = False
         self._betfair_commission_rate = 0.02
         self._request_ctx = threading.local()
+        self._game_xgd_cache: dict[tuple[int, str, str, int, int], dict[str, Any]] = {}
+        self._game_xgd_cache_stamp: str = ""
+        self._game_xgd_cache_lock = threading.Lock()
 
     def __getattr__(self, name: str) -> Any:
         return getattr(self.state, name)
@@ -221,6 +227,28 @@ class GameXgdService:
             return rows.copy()
         season_keys = rows["season_id"].map(self._season_id_key)
         return rows[season_keys == season_key].copy()
+
+    def _filter_rows_by_competition_name(self, rows: pd.DataFrame, competition_name: str | None) -> pd.DataFrame:
+        if not isinstance(rows, pd.DataFrame) or rows.empty:
+            return pd.DataFrame()
+        competition_text = str(competition_name or "").strip()
+        if not competition_text:
+            return rows.copy()
+        if "competition_name" not in rows.columns:
+            return rows.copy()
+
+        comp_series = rows["competition_name"].fillna("").astype(str).str.strip()
+        exact_mask = comp_series == competition_text
+        if bool(exact_mask.any()):
+            return rows[exact_mask].copy()
+
+        target_norm = normalize_competition_key(competition_text)
+        if not target_norm:
+            return rows[exact_mask].copy()
+
+        comp_norms = comp_series.map(normalize_competition_key)
+        norm_mask = comp_norms == target_norm
+        return rows[norm_mask].copy()
 
     def _infer_fixture_season_id(self, home_team: str, away_team: str, kickoff_time: Any) -> Any:
         home_text = str(home_team or "").strip()
@@ -912,9 +940,8 @@ class GameXgdService:
             }
 
         work = source_rows.copy()
-        if competition_text and "competition_name" in work.columns:
-            comp_col = work["competition_name"].fillna("").astype(str).str.strip()
-            work = work[comp_col == competition_text].copy()
+        if competition_text:
+            work = self._filter_rows_by_competition_name(work, competition_text)
         if work.empty:
             return {
                 "team": team_text,
@@ -1019,6 +1046,265 @@ class GameXgdService:
             "season": requested_season_key,
             "rows": rows_out,
             "games_count": len(rows_out),
+        }
+
+    def _resolve_matchup_competition(
+        self,
+        rows: pd.DataFrame,
+        home_team: str,
+        away_team: str,
+        requested_competition: str,
+    ) -> tuple[str, str]:
+        if not isinstance(rows, pd.DataFrame) or rows.empty:
+            return "", ""
+        if "team" not in rows.columns or "competition_name" not in rows.columns:
+            return "", ""
+
+        work = rows.copy()
+        work["team"] = work["team"].fillna("").astype(str).str.strip()
+        work["competition_name"] = work["competition_name"].fillna("").astype(str).str.strip()
+        if "area_name" in work.columns:
+            work["area_name"] = work["area_name"].fillna("").astype(str).str.strip()
+        else:
+            work["area_name"] = ""
+        if "date_time" in work.columns:
+            work["date_time"] = pd.to_datetime(work["date_time"], errors="coerce", utc=True)
+
+        team_rows = work[work["team"].isin({home_team, away_team})].copy()
+        if team_rows.empty:
+            return "", ""
+
+        requested_norm = normalize_competition_key(requested_competition)
+        grouped: dict[tuple[str, str, str], dict[str, Any]] = {}
+        for row in team_rows.to_dict(orient="records"):
+            competition_text = str(row.get("competition_name", "")).strip()
+            if not competition_text:
+                continue
+            area_text = str(row.get("area_name", "")).strip()
+            comp_norm = normalize_competition_key(competition_text)
+            if requested_norm and comp_norm != requested_norm:
+                continue
+            key = (comp_norm, competition_text, area_text)
+            entry = grouped.setdefault(
+                key,
+                {
+                    "teams": set(),
+                    "count": 0,
+                    "latest": pd.NaT,
+                },
+            )
+            entry["teams"].add(str(row.get("team", "")).strip())
+            entry["count"] = int(entry["count"]) + 1
+            row_ts = pd.to_datetime(row.get("date_time"), errors="coerce", utc=True)
+            latest_ts = pd.to_datetime(entry.get("latest"), errors="coerce", utc=True)
+            if not pd.isna(row_ts) and (pd.isna(latest_ts) or row_ts > latest_ts):
+                entry["latest"] = row_ts
+
+        candidates: list[tuple[tuple[str, str, str], dict[str, Any]]] = [
+            (key, entry)
+            for key, entry in grouped.items()
+            if {home_team, away_team}.issubset(set(entry.get("teams") or set()))
+        ]
+        if not candidates:
+            return "", ""
+
+        def _candidate_sort(item: tuple[tuple[str, str, str], dict[str, Any]]) -> tuple[float, int, str]:
+            key, entry = item
+            latest_ts = pd.to_datetime(entry.get("latest"), errors="coerce", utc=True)
+            latest_value = latest_ts.timestamp() if not pd.isna(latest_ts) else float("-inf")
+            return (latest_value, int(entry.get("count", 0) or 0), str(key[1]).lower())
+
+        best_key, _ = max(candidates, key=_candidate_sort)
+        return str(best_key[1]).strip(), str(best_key[2]).strip()
+
+    def get_matchup_xgd(
+        self,
+        home_team: str,
+        away_team: str,
+        competition_name: str | None = None,
+        season_id: str | None = None,
+        xg_metric_mode: str = "xg",
+    ) -> dict[str, Any]:
+        resolved_metric_mode = self._set_request_xg_metric_mode(xg_metric_mode)
+        requested_home = str(home_team or "").strip()
+        requested_away = str(away_team or "").strip()
+        requested_competition = str(competition_name or "").strip()
+        requested_season_key = self._season_id_key(season_id)
+        if not requested_home:
+            raise ValueError("home team is required")
+        if not requested_away:
+            raise ValueError("away team is required")
+
+        home_sofa = self._resolve_sofascore_team_name(requested_home, requested_competition or None)
+        away_sofa = self._resolve_sofascore_team_name(requested_away, requested_competition or None)
+        if not home_sofa:
+            raise ValueError(f"Could not resolve home team: {requested_home}")
+        if not away_sofa:
+            raise ValueError(f"Could not resolve away team: {requested_away}")
+        if normalize_team_name(home_sofa) == normalize_team_name(away_sofa):
+            raise ValueError("home and away teams must be different")
+
+        form_df = self.form_df.copy()
+        if form_df.empty or "team" not in form_df.columns:
+            raise ValueError("No form data available for matchup")
+
+        competition_text, area_text = self._resolve_matchup_competition(
+            form_df,
+            home_sofa,
+            away_sofa,
+            requested_competition,
+        )
+        if not competition_text:
+            if requested_competition:
+                raise ValueError("Both teams were not found in that competition")
+            raise ValueError("No shared competition found for these teams")
+        if not area_text:
+            area_text = str(infer_area_for_competition(form_df, competition_text, fallback_area=None) or "").strip()
+
+        team_scope = form_df[form_df["team"].fillna("").astype(str).str.strip().isin({home_sofa, away_sofa})].copy()
+        team_scope = self._filter_rows_by_competition_name(team_scope, competition_text)
+        if area_text and "area_name" in team_scope.columns:
+            team_scope = team_scope[team_scope["area_name"].fillna("").astype(str).str.strip() == area_text].copy()
+        if team_scope.empty:
+            raise ValueError("No shared competition rows found for these teams")
+        if "date_time" in team_scope.columns:
+            team_scope["date_time"] = pd.to_datetime(team_scope["date_time"], errors="coerce", utc=True)
+            team_scope = team_scope[team_scope["date_time"].notna()].copy()
+        if team_scope.empty:
+            raise ValueError("No dated games found for these teams")
+
+        if requested_season_key:
+            team_scope = self._filter_rows_by_season_id(team_scope, requested_season_key)
+            if team_scope.empty:
+                raise ValueError("No games found for that season")
+
+        latest_ts = (
+            pd.to_datetime(team_scope["date_time"], errors="coerce", utc=True).max()
+            if "date_time" in team_scope.columns
+            else pd.NaT
+        )
+        kickoff_time = (latest_ts + pd.Timedelta(seconds=1)) if not pd.isna(latest_ts) else pd.Timestamp.now(tz="UTC")
+
+        selected_season_value: Any = None
+        if requested_season_key and "season_id" in team_scope.columns:
+            season_rows = team_scope[team_scope["season_id"].map(self._season_id_key) == requested_season_key]
+            season_values = season_rows["season_id"].dropna().tolist()
+            selected_season_value = season_values[0] if season_values else requested_season_key
+        elif "season_id" in team_scope.columns:
+            team_scope["_season_key"] = team_scope["season_id"].map(self._season_id_key)
+            home_keys = set(team_scope.loc[team_scope["team"] == home_sofa, "_season_key"].tolist())
+            away_keys = set(team_scope.loc[team_scope["team"] == away_sofa, "_season_key"].tolist())
+            common_keys = {key for key in home_keys.intersection(away_keys) if key}
+            if common_keys:
+                common_rows = team_scope[team_scope["_season_key"].isin(common_keys)].copy()
+                common_rows = common_rows.sort_values("date_time", kind="mergesort")
+                selected_key = str(common_rows.iloc[-1]["_season_key"]).strip()
+                season_values = common_rows.loc[common_rows["_season_key"] == selected_key, "season_id"].dropna().tolist()
+                selected_season_value = season_values[-1] if season_values else selected_key
+                team_scope = team_scope[team_scope["_season_key"] == selected_key].copy()
+            team_scope = team_scope.drop(columns=["_season_key"], errors="ignore")
+
+        home_comp_rows = team_scope[team_scope["team"] == home_sofa].copy()
+        away_comp_rows = team_scope[team_scope["team"] == away_sofa].copy()
+        if home_comp_rows.empty or away_comp_rows.empty:
+            raise ValueError("One team has no matches in this competition season")
+
+        calc_frames = [frame for frame in (home_comp_rows, away_comp_rows) if isinstance(frame, pd.DataFrame) and not frame.empty]
+        calc_form_df = pd.concat(calc_frames, ignore_index=True, sort=False) if calc_frames else pd.DataFrame()
+        fixture_view = build_xgd_view_from_form_df(
+            view_id="fixture",
+            label="Fixture",
+            home_sofa=home_sofa,
+            away_sofa=away_sofa,
+            kickoff_time=kickoff_time,
+            calc_form_df=calc_form_df,
+            full_form_df=form_df,
+            calc_wyscout_form_tables=self.form_model_module.calc_wyscout_form_tables,
+            periods=self.periods,
+            min_games=self.min_games,
+            season_id=selected_season_value,
+            home_venue_filter={
+                "season_id": selected_season_value,
+                "competition_name": competition_text,
+                "area_name": area_text,
+            },
+            away_venue_filter={
+                "season_id": selected_season_value,
+                "competition_name": competition_text,
+                "area_name": area_text,
+            },
+        )
+        if not fixture_view:
+            raise ValueError("No xGD output produced for this matchup")
+
+        period_rows = fixture_view.get("period_rows") or []
+        summary = fixture_view.get("summary") or summary_from_period_rows(period_rows)
+        home_recent_rows = fixture_view.get("home_recent_rows") or []
+        away_recent_rows = fixture_view.get("away_recent_rows") or []
+        home_team_venue_rows = fixture_view.get("home_team_venue_rows") or {"home": [], "away": []}
+        away_team_venue_rows = fixture_view.get("away_team_venue_rows") or {"home": [], "away": []}
+        warning_message = str(fixture_view.get("warning") or "").strip() or None
+        selected_season_key = self._season_id_key(selected_season_value)
+
+        base_view = {
+            "id": "fixture",
+            "label": "Fixture",
+            "summary": summary,
+            "period_rows": period_rows,
+            "warning": warning_message,
+            "home_recent_rows": home_recent_rows,
+            "away_recent_rows": away_recent_rows,
+            "home_team_venue_rows": home_team_venue_rows,
+            "away_team_venue_rows": away_team_venue_rows,
+            "season_handicap_rows": {"home": [], "away": []},
+        }
+
+        return {
+            "market_id": f"matchup::{normalize_team_name(home_sofa)}::{normalize_team_name(away_sofa)}",
+            "event_name": f"{home_sofa} v {away_sofa}",
+            "competition": competition_text,
+            "xg_metric_mode": resolved_metric_mode,
+            "kickoff_raw": "",
+            "mainline": "-",
+            "home_price": "-",
+            "away_price": "-",
+            "goal_mainline": "-",
+            "goal_under_price": "-",
+            "goal_over_price": "-",
+            "summary": summary,
+            "period_rows": period_rows,
+            "mapping_rows": [
+                {
+                    "home_raw": requested_home,
+                    "away_raw": requested_away,
+                    "home_sofa": home_sofa,
+                    "away_sofa": away_sofa,
+                    "home_match_method": "matchup",
+                    "away_match_method": "matchup",
+                    "home_match_score": None,
+                    "away_match_score": None,
+                    "fixture_found": True,
+                    "fixture_competition": competition_text,
+                    "fixture_area": area_text,
+                    "fixture_season_id": selected_season_key,
+                }
+            ],
+            "recent_n": None,
+            "home_recent_rows": home_recent_rows,
+            "away_recent_rows": away_recent_rows,
+            "venue_recent_n": None,
+            "home_team_venue_rows": home_team_venue_rows,
+            "away_team_venue_rows": away_team_venue_rows,
+            "season_handicap_rows": {"home": [], "away": []},
+            "alternate_xgd_sections": [],
+            "xgd_views": [base_view],
+            "warning": warning_message,
+            "is_historical": False,
+            "is_matchup": True,
+            "home_label": home_sofa,
+            "away_label": away_sofa,
+            "season": selected_season_key,
+            "area": area_text,
         }
 
     def get_team_page(
@@ -1196,8 +1482,20 @@ class GameXgdService:
             if str(row.get("competition", "")).strip()
         }
         selected_competition = requested_competition if requested_competition in available_competitions else ""
+        if (not selected_competition) and requested_competition:
+            requested_comp_norm = normalize_competition_key(requested_competition)
+            if requested_comp_norm:
+                for competition_value in sorted(available_competitions, key=lambda value: str(value).lower()):
+                    candidate_norm = normalize_competition_key(competition_value)
+                    if candidate_norm and candidate_norm == requested_comp_norm:
+                        selected_competition = str(competition_value).strip()
+                        break
         if not selected_competition and competition_summaries:
             selected_competition = str(competition_summaries[0].get("competition", "")).strip()
+
+        selected_scope_rows = work_source.copy()
+        if selected_competition:
+            selected_scope_rows = self._filter_rows_by_competition_name(selected_scope_rows, selected_competition)
 
         team_form_rows = self.form_df.copy()
         if team_form_rows.empty or "team" not in team_form_rows.columns:
@@ -1208,13 +1506,24 @@ class GameXgdService:
 
         if isinstance(team_form_rows, pd.DataFrame) and (not team_form_rows.empty):
             if "competition_name" in team_form_rows.columns and available_competitions:
-                comp_values = team_form_rows["competition_name"].fillna("").astype(str).str.strip()
-                team_form_rows = team_form_rows[comp_values.isin(available_competitions)].copy()
+                available_competition_norms = {
+                    normalize_competition_key(value)
+                    for value in available_competitions
+                    if normalize_competition_key(value)
+                }
+                if available_competition_norms:
+                    comp_norms = (
+                        team_form_rows["competition_name"]
+                        .fillna("")
+                        .astype(str)
+                        .str.strip()
+                        .map(normalize_competition_key)
+                    )
+                    team_form_rows = team_form_rows[comp_norms.isin(available_competition_norms)].copy()
             if selected_season:
                 team_form_rows = self._filter_rows_by_season_id(team_form_rows, selected_season_value)
-            if selected_competition and "competition_name" in team_form_rows.columns:
-                comp_values = team_form_rows["competition_name"].fillna("").astype(str).str.strip()
-                team_form_rows = team_form_rows[comp_values == selected_competition].copy()
+            if selected_competition:
+                team_form_rows = self._filter_rows_by_competition_name(team_form_rows, selected_competition)
             if "date_time" in team_form_rows.columns:
                 team_form_rows["date_time"] = pd.to_datetime(team_form_rows["date_time"], errors="coerce", utc=True)
                 team_form_rows = team_form_rows[team_form_rows["date_time"].notna()].copy()
@@ -1231,8 +1540,8 @@ class GameXgdService:
             isinstance(team_form_rows, pd.DataFrame) and (not team_form_rows.empty) and ("date_time" in team_form_rows.columns)
         ) else pd.NaT
         if pd.isna(latest_team_ts):
-            latest_team_ts = pd.to_datetime(work_source.get("date_time"), errors="coerce", utc=True).max() if (
-                isinstance(work_source, pd.DataFrame) and (not work_source.empty) and ("date_time" in work_source.columns)
+            latest_team_ts = pd.to_datetime(selected_scope_rows.get("date_time"), errors="coerce", utc=True).max() if (
+                isinstance(selected_scope_rows, pd.DataFrame) and (not selected_scope_rows.empty) and ("date_time" in selected_scope_rows.columns)
             ) else pd.NaT
         cutoff_time = (
             (latest_team_ts + pd.Timedelta(seconds=1))
@@ -1261,11 +1570,23 @@ class GameXgdService:
             }
         )
 
+        selected_scope_match_ids: set[str] = set()
+        if (
+            isinstance(selected_scope_rows, pd.DataFrame)
+            and (not selected_scope_rows.empty)
+            and ("match_id" in selected_scope_rows.columns)
+        ):
+            for match_id_raw in selected_scope_rows["match_id"].dropna().tolist():
+                match_id_key = historical_service._normalize_game_id_value(match_id_raw)
+                if match_id_key:
+                    selected_scope_match_ids.add(match_id_key)
+
         season_handicap_rows = self._build_team_season_handicap_rows(
             team_name=team_text,
-            season_id=selected_season_value,
+            season_id=None,
             kickoff_time=cutoff_time,
-            competition_name=(selected_competition or None),
+            resolve_from_archive=True,
+            allowed_match_ids=selected_scope_match_ids,
         )
 
         for row in competition_summaries:
@@ -1297,11 +1618,13 @@ class GameXgdService:
         timing_label: str = "",
         competition_name: str | None = None,
         area_name: str | None = None,
+        allowed_match_ids: set[str] | None = None,
     ) -> list[dict[str, Any]]:
         func_started_at = time.perf_counter()
         label = timing_label or str(team_name or "team")
         team = str(team_name or "").strip()
         kickoff_ts = pd.to_datetime(kickoff_time, errors="coerce", utc=True)
+        historical_service = self.state.historical_data_service
         if not team or pd.isna(kickoff_ts):
             self._log_hcperf_timing(label, "early_exit_invalid_team_or_kickoff", func_started_at)
             return []
@@ -1335,7 +1658,8 @@ class GameXgdService:
         self._log_hcperf_timing(label, "build_historical_by_match_id", step_started_at, entries=int(len(historical_by_match_id)))
 
         step_started_at = time.perf_counter()
-        team_df = self.form_df[self.form_df["team"].astype(str) == team].copy()
+        team_series = self.form_df["team"].fillna("").astype(str).str.strip()
+        team_df = self.form_df[team_series == team].copy()
         if team_df.empty:
             self._log_hcperf_timing(label, "early_exit_team_not_found", step_started_at)
             return []
@@ -1347,10 +1671,40 @@ class GameXgdService:
             return []
         self._log_hcperf_timing(label, "filter_team_games", step_started_at, rows=int(len(team_df)))
 
+        normalized_allowed_match_ids: set[str] | None = None
+        if allowed_match_ids is not None:
+            normalized_allowed_match_ids = {
+                match_id_key
+                for match_id_key in (
+                    historical_service._normalize_game_id_value(value)
+                    for value in allowed_match_ids
+                )
+                if match_id_key
+            }
+            if not normalized_allowed_match_ids:
+                self._log_hcperf_timing(label, "early_exit_no_allowed_match_ids", func_started_at)
+                return []
+            if "match_id" not in team_df.columns:
+                self._log_hcperf_timing(label, "early_exit_missing_match_id_for_scope", func_started_at)
+                return []
+            step_started_at = time.perf_counter()
+            team_df["_match_id_key"] = team_df["match_id"].map(historical_service._normalize_game_id_value)
+            team_df = team_df[team_df["_match_id_key"].isin(normalized_allowed_match_ids)].copy()
+            self._log_hcperf_timing(
+                label,
+                "match_scope_filter",
+                step_started_at,
+                rows=int(len(team_df)),
+                match_ids=int(len(normalized_allowed_match_ids)),
+            )
+            if team_df.empty:
+                self._log_hcperf_timing(label, "early_exit_no_games_in_match_scope", step_started_at)
+                return []
+
         competition_text = str(competition_name or "").strip()
         if competition_text and "competition_name" in team_df.columns:
             step_started_at = time.perf_counter()
-            team_df = team_df[team_df["competition_name"].astype(str) == competition_text].copy()
+            team_df = self._filter_rows_by_competition_name(team_df, competition_text)
             self._log_hcperf_timing(
                 label,
                 "competition_filter",
@@ -1419,7 +1773,7 @@ class GameXgdService:
                 )
             self._log_hcperf_timing(label, "prepare_fixture_rows", step_started_at, fixtures=int(len(fixture_rows)))
             step_started_at = time.perf_counter()
-            archive_prices_by_fixture = self.state.historical_data_service._bulk_lookup_historical_betfair_prices_for_team_fixtures(
+            archive_prices_by_fixture = historical_service._bulk_lookup_historical_betfair_prices_for_team_fixtures(
                 team_name=team,
                 fixtures=fixture_rows,
             )
@@ -1448,7 +1802,7 @@ class GameXgdService:
             match_id_raw = row.get("match_id")
             closing = None
             if resolve_from_archive:
-                fixture_key = self.state.historical_data_service._historical_price_lookup_key(
+                fixture_key = historical_service._historical_price_lookup_key(
                     normalize_team_name(home_team),
                     normalize_team_name(away_team),
                     pd.to_datetime(row.get("date_time"), errors="coerce", utc=True),
@@ -1469,7 +1823,7 @@ class GameXgdService:
                 closing_mainline = str((closing or {}).get("mainline", "")).strip() if isinstance(closing, dict) else ""
                 if not closing_mainline or closing_mainline == "-":
                     fallback_started_at = time.perf_counter()
-                    closing = self.state.historical_data_service._lookup_historical_betfair_prices(
+                    closing = historical_service._lookup_historical_betfair_prices(
                         home_team=home_team,
                         away_team=away_team,
                         kickoff_ts=row.get("date_time"),
@@ -1483,7 +1837,7 @@ class GameXgdService:
                     except Exception:
                         closing = None
             if not isinstance(closing, dict):
-                closing = self.state.historical_data_service._historical_default_price_snapshot()
+                closing = historical_service._historical_default_price_snapshot()
             home_handicap = parse_handicap_value((closing or {}).get("mainline"))
             team_handicap = None if home_handicap is None else (float(home_handicap) if is_home else -float(home_handicap))
 
@@ -1713,6 +2067,20 @@ class GameXgdService:
         self.refresh_games(force=False)
         with self.lock:
             games_df = self.games_df.copy()
+            refresh_stamp = self.last_refresh.isoformat() if self.last_refresh is not None else ""
+
+        # Keep fixture period rows aligned with the selected metric mode
+        # (xG vs NPxG) by applying the same mode-specific overlay used by
+        # `/api/games` before we read `season_*` / `last*_*` fields below.
+        if resolved_metric_mode != "xg" and isinstance(games_df, pd.DataFrame) and not games_df.empty:
+            try:
+                games_df, _ = self.state.games_service._apply_metric_mode_period_metrics(
+                    games_df=games_df,
+                    xg_metric_mode=resolved_metric_mode,
+                )
+            except Exception:
+                # Fall back to baseline table metrics if overlay computation fails.
+                pass
 
         if games_df.empty:
             raise KeyError("No games available")
@@ -1720,6 +2088,21 @@ class GameXgdService:
         game_df = games_df[games_df["market_id"].astype(str) == str(market_id)].copy()
         if game_df.empty:
             raise KeyError("Market not found")
+
+        cache_key = (
+            int(self.GAME_XGD_CACHE_VERSION),
+            str(market_id),
+            resolved_metric_mode,
+            int(recent_n),
+            int(venue_recent_n),
+        )
+        with self._game_xgd_cache_lock:
+            if refresh_stamp != self._game_xgd_cache_stamp:
+                self._game_xgd_cache.clear()
+                self._game_xgd_cache_stamp = refresh_stamp
+            cached_payload = self._game_xgd_cache.get(cache_key)
+        if isinstance(cached_payload, dict):
+            return copy.deepcopy(cached_payload)
 
         game_row = game_df.iloc[0].to_dict()
         tier_text = str(game_row.get("tier", "")).strip().casefold()
@@ -1737,6 +2120,7 @@ class GameXgdService:
 
         manual_mapping_lookup = self.get_manual_mapping_lookup_snapshot()
         manual_competition_mapping_lookup = self.get_manual_competition_mapping_lookup_snapshot()
+        blocked_auto_competition_mapping_norms = self.state.get_disabled_auto_competition_mapping_norms_snapshot()
         use_cached_main_table_metrics = True
 
         def _metric_value(period_key: str, metric_suffix: str) -> Any:
@@ -2027,6 +2411,7 @@ class GameXgdService:
                         fallback_competition = resolve_sofa_competition_name(
                             raw_competition=betfair_competition_text,
                             manual_competition_mapping_lookup=manual_competition_mapping_lookup,
+                            blocked_auto_competition_mapping_norms=blocked_auto_competition_mapping_norms,
                             sofa_competitions=sofa_competitions,
                             sofa_competition_by_norm=sofa_competition_by_norm,
                             sofa_competition_set=sofa_competition_set,
@@ -2129,8 +2514,58 @@ class GameXgdService:
                                 "Season warning: one team has no matches in this competition season."
                             )
                         else:
-                            # Keep cached period metrics from the main games table.
-                            warning_message = None
+                            strict_calc_form_df = pd.concat(
+                                [strict_home_rows, strict_away_rows],
+                                ignore_index=True,
+                            )
+                            strict_fixture_view = build_xgd_view_from_form_df(
+                                view_id="fixture",
+                                label="Fixture",
+                                home_sofa=str(home_sofa),
+                                away_sofa=str(away_sofa),
+                                kickoff_time=kickoff_time,
+                                calc_form_df=strict_calc_form_df,
+                                full_form_df=self.form_df,
+                                calc_wyscout_form_tables=self.form_model_module.calc_wyscout_form_tables,
+                                periods=self.periods,
+                                min_games=self.min_games,
+                                season_id=fixture_season_id,
+                                home_venue_filter={
+                                    "season_id": fixture_season_id,
+                                    "competition_name": fixture_competition_text,
+                                    "area_name": fixture_area_text,
+                                },
+                                away_venue_filter={
+                                    "season_id": fixture_season_id,
+                                    "competition_name": fixture_competition_text,
+                                    "area_name": fixture_area_text,
+                                },
+                            )
+                            strict_period_rows = (
+                                strict_fixture_view.get("period_rows")
+                                if isinstance(strict_fixture_view, dict)
+                                else None
+                            )
+                            strict_summary = (
+                                strict_fixture_view.get("summary")
+                                if isinstance(strict_fixture_view, dict)
+                                else None
+                            )
+                            if isinstance(strict_period_rows, list) and strict_period_rows:
+                                period_rows = strict_period_rows
+                                summary = strict_summary if isinstance(strict_summary, dict) else summary_from_period_rows(
+                                    strict_period_rows
+                                )
+                                warning_message = (
+                                    str(strict_fixture_view.get("warning") or "").strip()
+                                    if isinstance(strict_fixture_view, dict)
+                                    else None
+                                ) or None
+                            else:
+                                warning_message = (
+                                    "Model warning: fixture-scoped recomputation unavailable; "
+                                    "showing cached main-table period metrics."
+                                )
 
                 betfair_competition = str(game_row.get("competition", "")).strip()
                 fixture_competition = fixture_competition_value
@@ -2155,6 +2590,7 @@ class GameXgdService:
                     european_competition = resolve_sofa_competition_name(
                         raw_competition=betfair_competition,
                         manual_competition_mapping_lookup=manual_competition_mapping_lookup,
+                        blocked_auto_competition_mapping_norms=blocked_auto_competition_mapping_norms,
                         sofa_competitions=sofa_competitions,
                         sofa_competition_by_norm=sofa_competition_by_norm,
                         sofa_competition_set=sofa_competition_set,
@@ -2317,7 +2753,7 @@ class GameXgdService:
                         domestic_view["season_handicap_rows"] = {"home": [], "away": []}
                         xgd_views.append(domestic_view)
 
-        return {
+        payload = {
             "market_id": market_id,
             "event_name": str(game_row.get("event_name", "")),
             "competition": str(game_row.get("competition", "")),
@@ -2344,6 +2780,9 @@ class GameXgdService:
             "warning": warning_message,
             "is_historical": False,
         }
+        with self._game_xgd_cache_lock:
+            self._game_xgd_cache[cache_key] = copy.deepcopy(payload)
+        return payload
 
     def _get_historical_game_xgd(self, match_id: int, recent_n: int, venue_recent_n: int) -> dict[str, Any]:
         with self.lock:
@@ -2422,6 +2861,7 @@ class GameXgdService:
             calc_wyscout_form_tables=self.form_model_module.calc_wyscout_form_tables,
             periods=self.periods,
             min_games=self.min_games,
+            season_id=fixture_season_id,
             home_venue_filter={
                 "season_id": fixture_season_id,
                 "competition_name": fixture_competition,
@@ -2481,6 +2921,36 @@ class GameXgdService:
         away_recent_rows = fixture_view.get("away_recent_rows") or []
         home_team_venue_rows = fixture_view.get("home_team_venue_rows") or {"home": [], "away": []}
         away_team_venue_rows = fixture_view.get("away_team_venue_rows") or {"home": [], "away": []}
+
+        def _rows_have_shot_metrics(rows: Any) -> bool:
+            if not isinstance(rows, list) or not rows:
+                return False
+            shot_keys = (
+                "shots_for",
+                "shots_against",
+                "shots_on_target_for",
+                "shots_on_target_against",
+            )
+            for row in rows:
+                if not isinstance(row, dict):
+                    continue
+                for key in shot_keys:
+                    value = row.get(key)
+                    if value is None:
+                        continue
+                    text = str(value).strip()
+                    if not text or text == "-":
+                        continue
+                    return True
+            return False
+
+        # Historical source-game rows from the form model can omit shot columns.
+        # Fall back to fixture-venue rows so the Shots tab stays populated.
+        if (not home_recent_rows) or (not _rows_have_shot_metrics(home_recent_rows)):
+            home_recent_rows = list(home_team_venue_rows.get("home") or [])
+        if (not away_recent_rows) or (not _rows_have_shot_metrics(away_recent_rows)):
+            away_recent_rows = list(away_team_venue_rows.get("away") or [])
+
         season_handicap_rows = {
             "home": self._build_team_season_handicap_rows(
                 team_name=home_team,

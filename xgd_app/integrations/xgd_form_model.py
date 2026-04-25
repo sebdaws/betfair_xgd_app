@@ -385,8 +385,8 @@ def calc_wyscout_form_tables(games, data_df, periods=("Season", 5, 3), return_so
         ex_calcs["Min Home Real xG"] = np.maximum(ex_calcs["Min Home xGoT"].values - away_df["xGoTA-GA"], 0)
         ex_calcs["Max Home xGoT"] = ex_calcs["Max Home xG"].values + home_df["xGoT-xG"]
         ex_calcs["Max Home Real xG"] = np.maximum(ex_calcs["Max Home xGoT"].values - away_df["xGoTA-GA"], 0)
-        ex_calcs["Team Home Real xG"] = ex_calcs["Team Home xG"].values + home_df["xGoT-xG"] - away_df["xGoTA-GA"]
-        ex_calcs["Avg Home Real xG"] = ex_calcs["Avg Home xG"].values + home_df["xGoT-xG"] - away_df["xGoTA-GA"]
+        ex_calcs["Team Home Real xG"] = (ex_calcs["Team Home xG"].values + home_df["xGoT-xG"].clip(lower=-0.2, upper=0.2) - away_df["xGoTA-GA"].clip(lower=-0.2, upper=0.2)).clip(lower=0)
+        ex_calcs["Avg Home Real xG"] = (ex_calcs["Avg Home xG"].values + home_df["xGoT-xG"].clip(lower=-0.2, upper=0.2) - away_df["xGoTA-GA"].clip(lower=-0.2, upper=0.2)).clip(lower=0)
 
         ex_calcs["Away xG diff"] = home_df["xGA"] - away_df["xG"]
         ex_calcs["Min Away xG"] = np.minimum(away_df["xG"], home_df["xGA"])
@@ -397,8 +397,8 @@ def calc_wyscout_form_tables(games, data_df, periods=("Season", 5, 3), return_so
         ex_calcs["Min Away Real xG"] = np.maximum(ex_calcs["Min Away xGoT"].values - home_df["xGoTA-GA"], 0)
         ex_calcs["Max Away xGoT"] = ex_calcs["Max Away xG"].values + away_df["xGoT-xG"]
         ex_calcs["Max Away Real xG"] = np.maximum(ex_calcs["Max Away xGoT"].values - home_df["xGoTA-GA"], 0)
-        ex_calcs["Team Away Real xG"] = ex_calcs["Team Away xG"].values + away_df["xGoT-xG"] - home_df["xGoTA-GA"]
-        ex_calcs["Avg Away Real xG"] = ex_calcs["Avg Away xG"].values + away_df["xGoT-xG"] - home_df["xGoTA-GA"]
+        ex_calcs["Team Away Real xG"] = (ex_calcs["Team Away xG"].values + away_df["xGoT-xG"].clip(lower=-0.2, upper=0.2) - home_df["xGoTA-GA"].clip(lower=-0.2, upper=0.2)).clip(lower=0)
+        ex_calcs["Avg Away Real xG"] = (ex_calcs["Avg Away xG"].values + away_df["xGoT-xG"].clip(lower=-0.2, upper=0.2) - home_df["xGoTA-GA"].clip(lower=-0.2, upper=0.2)).clip(lower=0)
 
         ex_calcs["Min Real xGD"] = ex_calcs["Min Home Real xG"] - ex_calcs["Min Away Real xG"]
         ex_calcs["Team Real xGD"] = np.round(ex_calcs["Team Home Real xG"] - ex_calcs["Team Away Real xG"], 2)
@@ -426,7 +426,15 @@ def calc_wyscout_form_tables(games, data_df, periods=("Season", 5, 3), return_so
         ]
         ex_calcs_out = ex_calcs[important_cols].copy()
 
-        reduced_cols = ["Period", "Avg Home Real xG", "Avg Away Real xG", "Avg Real xGD", "Team Real xGD"]
+        reduced_cols = [
+            "Period",
+            "Avg Home xG",
+            "Avg Away xG",
+            "Avg Home Real xG",
+            "Avg Away Real xG",
+            "Avg Real xGD",
+            "Team Real xGD",
+        ]
         ex_calcs_reduced = ex_calcs[reduced_cols].copy()
         ex_calcs_reduced.insert(1, "Strength", final_df["Strength"].values)
         ex_calcs_reduced["Total Avg Real xG"] = ex_calcs_reduced["Avg Home Real xG"] + ex_calcs_reduced["Avg Away Real xG"]

@@ -14,12 +14,17 @@ const savedSortModeBtn = document.getElementById("savedSortModeBtn");
 const teamSearchInput = document.getElementById("teamSearchInput");
 const tableControls = document.querySelector(".table-controls");
 const gamesTabBtn = document.getElementById("gamesTabBtn");
-const savedGamesTabBtn = document.getElementById("savedGamesTabBtn");
+const modellingPricesTabBtn = document.getElementById("modellingPricesTabBtn");
 const teamHcRankingsTabBtn = document.getElementById("teamHcRankingsTabBtn");
 const teamsTabBtn = document.getElementById("teamsTabBtn");
+const matchupTabBtn = document.getElementById("matchupTabBtn");
 const manualMappingTabBtn = document.getElementById("manualMappingTabBtn");
 const gamesTabPane = document.getElementById("gamesTabPane");
-const savedGamesTabPane = document.getElementById("savedGamesTabPane");
+const gamesPaneTabs = document.getElementById("gamesPaneTabs");
+const gamesMainSubTabBtn = document.getElementById("gamesMainSubTabBtn");
+const savedGamesSubTabBtn = document.getElementById("savedGamesSubTabBtn");
+const gamesDayToolbar = document.getElementById("gamesDayToolbar");
+const savedGamesPane = document.getElementById("savedGamesPane");
 const savedGamesView = document.getElementById("savedGamesView");
 const teamHcRankingsTabPane = document.getElementById("teamHcRankingsTabPane");
 const teamHcRankingsView = document.getElementById("teamHcRankingsView");
@@ -27,6 +32,13 @@ const teamsTabPane = document.getElementById("teamsTabPane");
 const teamsView = document.getElementById("teamsView");
 const teamsSearchInput = document.getElementById("teamsSearchInput");
 const teamsRefreshBtn = document.getElementById("teamsRefreshBtn");
+const matchupTabPane = document.getElementById("matchupTabPane");
+const matchupHomeInput = document.getElementById("matchupHomeInput");
+const matchupAwayInput = document.getElementById("matchupAwayInput");
+const matchupCompetitionSelect = document.getElementById("matchupCompetitionSelect");
+const matchupRunBtn = document.getElementById("matchupRunBtn");
+const matchupTeamsList = document.getElementById("matchupTeamsList");
+const matchupView = document.getElementById("matchupView");
 const teamHcRankingsGeneralTabBtn = document.getElementById("teamHcRankingsGeneralTabBtn");
 const teamHcRankingsHomeTabBtn = document.getElementById("teamHcRankingsHomeTabBtn");
 const teamHcRankingsAwayTabBtn = document.getElementById("teamHcRankingsAwayTabBtn");
@@ -58,11 +70,13 @@ const saveGameBtn = document.getElementById("saveGameBtn");
 const detailsTitle = document.getElementById("detailsTitle");
 const detailsMeta = document.getElementById("detailsMeta");
 const linesContainer = document.getElementById("linesContainer");
+const detailsXgMetricModeToggleBtn = document.getElementById("detailsXgMetricModeToggleBtn");
 const teamDetailsPanel = document.getElementById("teamDetailsPanel");
 const teamDetailsTitle = document.getElementById("teamDetailsTitle");
 const teamDetailsMeta = document.getElementById("teamDetailsMeta");
 const teamDetailsContent = document.getElementById("teamDetailsContent");
 const teamDetailsCloseBtn = document.getElementById("teamDetailsCloseBtn");
+const teamDetailsXgMetricModeToggleBtn = document.getElementById("teamDetailsXgMetricModeToggleBtn");
 const teamDetailsSeasonSelect = document.getElementById("teamDetailsSeasonSelect");
 const teamDetailsCompetitionSelect = document.getElementById("teamDetailsCompetitionSelect");
 const prevDayBtn = document.getElementById("prevDayBtn");
@@ -77,6 +91,8 @@ const xgThresholdInput = document.getElementById("xgThresholdInput");
 const xgMetricModeToggleBtn = document.getElementById("xgMetricModeToggleBtn");
 const xgdHcHighlightToggleBtn = document.getElementById("xgdHcHighlightToggleBtn");
 const noHandicapGamesToggleBtn = document.getElementById("noHandicapGamesToggleBtn");
+const modelEdgeLabel = document.getElementById("modelEdgeLabel");
+const modelEdgeInput = document.getElementById("modelEdgeInput");
 
 let gamesById = new Map();
 let rawDays = [];
@@ -110,15 +126,35 @@ let gamestateStatsMode = "per90";
 let statsTeamView = "home";
 let statsGeneralTeamView = "home";
 let hcPerfTeamView = "home";
+let pricingTotalsExpanded = false;
+let pricingHandicapExpanded = false;
+let pricingBetBuilderLeg1Market = "handicap";
+let pricingBetBuilderLeg1HandicapSide = "home";
+let pricingBetBuilderLeg1HandicapLine = "-0.5";
+let pricingBetBuilderLeg1TotalSide = "over";
+let pricingBetBuilderLeg1TotalLine = "2.5";
+let pricingBetBuilderLeg1BttsSide = "yes";
+let pricingBetBuilderLeg2Market = "total";
+let pricingBetBuilderLeg2HandicapSide = "away";
+let pricingBetBuilderLeg2HandicapLine = "0.5";
+let pricingBetBuilderLeg2TotalSide = "over";
+let pricingBetBuilderLeg2TotalLine = "2.5";
+let pricingBetBuilderLeg2BttsSide = "yes";
+let pricingBetBuilderEdge = 0.1;
 const hcPerfPayloadByMarket = new Map();
 const xgdPayloadByMarket = new Map();
 const teamPagePayloadByKey = new Map();
+const gamesPayloadByModeAndView = new Map();
+const gamesPayloadPrefetchInFlight = new Set();
+const gameXgdPrefetchInFlight = new Set();
+const teamPagePrefetchInFlight = new Set();
 let hcPerfLoadingMarketId = null;
 let hcPerfRescanInFlight = false;
 let lastXgdPayload = null;
 let activeXgdViewId = null;
 let detailsMainTab = "xgd";
 let activeTab = "games";
+let activeGamesPaneView = "main";
 let savedDays = [];
 let savedGamesLoaded = false;
 let savedGamesLoading = false;
@@ -141,12 +177,17 @@ let teamsDirectoryLoaded = false;
 let teamsDirectoryLoading = false;
 let teamsDirectoryErrorText = "";
 let teamsDirectorySearchQuery = "";
+let matchupPayload = null;
+let matchupLoading = false;
+let matchupErrorText = "";
 let mappingSubTab = "teams";
 let lastManualMappingPayload = null;
 let teamMappingSearchBetfair = "";
 let teamMappingSearchSavedTeams = "";
 const teamMappingBatchSelections = new Set();
 const teamMappingBatchDrafts = new Map();
+const competitionMappingBatchSelections = new Set();
+const competitionMappingBatchDrafts = new Map();
 const historicalDayCalcInFlight = new Set();
 const historicalDayAutoCalcAttempted = new Set();
 let teamHcPerfDetailLoadingKey = "";
@@ -154,6 +195,7 @@ let teamHcPerfDetailTeam = "";
 let teamHcPerfDetailCompetition = "";
 let teamHcPerfDetailRows = [];
 let teamDetailsLoadingKey = "";
+let gameXgdLoadingKey = "";
 let teamDetailsTeam = "";
 let teamDetailsCompetition = "";
 let teamDetailsSeason = "";
@@ -171,10 +213,15 @@ const XG_METRIC_MODE_STORAGE_KEY = "xgd_metric_mode";
 const XG_PUSH_THRESHOLD_STORAGE_KEY = "xgd_hc_xg_threshold";
 const XGD_HC_HIGHLIGHT_ENABLED_STORAGE_KEY = "xgd_hc_highlight_enabled";
 const SHOW_GAMES_WITHOUT_HC_STORAGE_KEY = "show_games_without_hc_pricing";
+const MODELLING_PRICE_EDGE_STORAGE_KEY = "modelling_price_edge";
+const DEFAULT_MODELLING_PRICE_EDGE = 0.0;
+const MIN_MODELLING_PRICE_EDGE = -0.95;
+const MAX_MODELLING_PRICE_EDGE = 5.0;
 let xgMetricMode = "xg";
 let xgPushThreshold = DEFAULT_XG_PUSH_THRESHOLD;
 let xgdHcHighlightEnabled = false;
 let showGamesWithoutHandicap = true;
+let modellingPriceEdge = DEFAULT_MODELLING_PRICE_EDGE;
 const AUTO_REFRESH_MS = 2 * 60 * 1000;
 const MAPPING_UNMATCHED_TEAM_RENDER_LIMIT = 250;
 const MAPPING_SAVED_TEAM_RENDER_LIMIT = 400;
@@ -399,6 +446,29 @@ function formatXgPushThresholdForLabel(value) {
   return normalized.toFixed(2);
 }
 
+function normalizeModellingPriceEdge(value, fallback = DEFAULT_MODELLING_PRICE_EDGE) {
+  const text = String(value ?? "").trim().replace(",", ".");
+  const parsed = Number(text);
+  const fallbackNum = Number(fallback);
+  const fallbackSafe = Number.isFinite(fallbackNum)
+    ? Math.max(MIN_MODELLING_PRICE_EDGE, Math.min(MAX_MODELLING_PRICE_EDGE, fallbackNum))
+    : DEFAULT_MODELLING_PRICE_EDGE;
+  if (!Number.isFinite(parsed)) return fallbackSafe;
+  return Math.max(MIN_MODELLING_PRICE_EDGE, Math.min(MAX_MODELLING_PRICE_EDGE, parsed));
+}
+
+function formatModellingPriceEdgeForInput(value) {
+  const normalized = normalizeModellingPriceEdge(value, DEFAULT_MODELLING_PRICE_EDGE);
+  const rounded = Math.round(normalized * 10000) / 10000;
+  return String(rounded);
+}
+
+function formatModellingPriceEdgeForLabel(value) {
+  const normalized = normalizeModellingPriceEdge(value, DEFAULT_MODELLING_PRICE_EDGE);
+  const pct = (normalized * 100).toFixed(2);
+  return `${normalized >= 0 ? "+" : ""}${pct}%`;
+}
+
 function normalizeXgMetricMode(value, fallback = "xg") {
   const fallbackMode = String(fallback || "").trim().toLowerCase() === "npxg" ? "npxg" : "xg";
   const text = String(value ?? "").trim().toLowerCase();
@@ -432,16 +502,43 @@ function getCurrentXgMetricMode() {
   return normalizeXgMetricMode(xgMetricMode, "xg");
 }
 
+function getAlternateXgMetricMode(modeValue = getCurrentXgMetricMode()) {
+  return normalizeXgMetricMode(modeValue, "xg") === "npxg" ? "xg" : "npxg";
+}
+
+function buildModeScopedCacheKey(rawKey, modeValue = getCurrentXgMetricMode()) {
+  return `${normalizeXgMetricMode(modeValue, "xg")}::${String(rawKey || "").trim()}`;
+}
+
+function getGamesPayloadCacheKey(targetGamesMode = gamesMode, modeValue = getCurrentXgMetricMode()) {
+  const modeKey = normalizeXgMetricMode(modeValue, "xg");
+  const gamesModeKey = String(targetGamesMode || "").trim().toLowerCase() === "historical"
+    ? "historical"
+    : "upcoming";
+  return `${modeKey}::${gamesModeKey}`;
+}
+
 function updateXgMetricModeToggleButton() {
-  if (!(xgMetricModeToggleBtn instanceof HTMLButtonElement)) return;
   const mode = getCurrentXgMetricMode();
   const isNpxg = mode === "npxg";
-  xgMetricModeToggleBtn.textContent = `xG Mode: ${isNpxg ? "NPxG" : "xG"}`;
-  xgMetricModeToggleBtn.classList.toggle("is-off", isNpxg);
-  xgMetricModeToggleBtn.setAttribute("aria-pressed", isNpxg ? "true" : "false");
-  xgMetricModeToggleBtn.title = isNpxg
-    ? "Using Non-penalty xG for xGD calculations"
-    : "Using xG for xGD calculations";
+  if (xgMetricModeToggleBtn instanceof HTMLButtonElement) {
+    xgMetricModeToggleBtn.textContent = `xG Mode: ${isNpxg ? "NPxG" : "xG"}`;
+    xgMetricModeToggleBtn.classList.toggle("is-off", isNpxg);
+    xgMetricModeToggleBtn.setAttribute("aria-pressed", isNpxg ? "true" : "false");
+    xgMetricModeToggleBtn.title = isNpxg
+      ? "Using Non-penalty xG for xGD calculations"
+      : "Using xG for xGD calculations";
+  }
+  const detailToggleButtons = [detailsXgMetricModeToggleBtn, teamDetailsXgMetricModeToggleBtn];
+  for (const button of detailToggleButtons) {
+    if (!(button instanceof HTMLButtonElement)) continue;
+    button.textContent = `xGD Mode: ${isNpxg ? "NPxGD" : "xGD"}`;
+    button.classList.toggle("is-off", isNpxg);
+    button.setAttribute("aria-pressed", isNpxg ? "true" : "false");
+    button.title = isNpxg
+      ? "Using Non-penalty xG for xGD calculations"
+      : "Using xG for xGD calculations";
+  }
 }
 
 function getStoredXgPushThreshold() {
@@ -467,6 +564,70 @@ function persistXgPushThreshold(value) {
 
 function getCurrentXgPushThreshold() {
   return normalizeXgPushThreshold(xgPushThreshold, DEFAULT_XG_PUSH_THRESHOLD);
+}
+
+function getStoredModellingPriceEdge() {
+  try {
+    const raw = window.localStorage.getItem(MODELLING_PRICE_EDGE_STORAGE_KEY);
+    if (raw == null) return DEFAULT_MODELLING_PRICE_EDGE;
+    return normalizeModellingPriceEdge(raw, DEFAULT_MODELLING_PRICE_EDGE);
+  } catch (_err) {
+    return DEFAULT_MODELLING_PRICE_EDGE;
+  }
+}
+
+function persistModellingPriceEdge(value) {
+  try {
+    window.localStorage.setItem(
+      MODELLING_PRICE_EDGE_STORAGE_KEY,
+      formatModellingPriceEdgeForInput(value)
+    );
+  } catch (_err) {
+    // Ignore storage failures.
+  }
+}
+
+function getCurrentModellingPriceEdge() {
+  return normalizeModellingPriceEdge(modellingPriceEdge, DEFAULT_MODELLING_PRICE_EDGE);
+}
+
+function shouldHighlightModelPriceVsBetfair(betfairValue, modelValue, edgeValue = getCurrentModellingPriceEdge()) {
+  const betfairOdds = toMetricNumberOrNull(betfairValue);
+  const modelOdds = toMetricNumberOrNull(modelValue);
+  if (betfairOdds == null || modelOdds == null) return false;
+  if (betfairOdds <= 0 || modelOdds <= 0) return false;
+  const edge = normalizeModellingPriceEdge(edgeValue, DEFAULT_MODELLING_PRICE_EDGE);
+  const adjustedModelOdds = modelOdds * (1 + edge);
+  if (!Number.isFinite(adjustedModelOdds) || adjustedModelOdds <= 0) return false;
+  return adjustedModelOdds < (betfairOdds - 1e-9);
+}
+
+function applyGlobalModellingPriceEdge(nextValue, options = {}) {
+  const silent = Boolean(options?.silent);
+  const normalized = normalizeModellingPriceEdge(nextValue, getCurrentModellingPriceEdge());
+  const changed = Math.abs(normalized - getCurrentModellingPriceEdge()) > 1e-9;
+  modellingPriceEdge = normalized;
+  persistModellingPriceEdge(normalized);
+  if (modelEdgeInput instanceof HTMLInputElement) {
+    modelEdgeInput.value = formatModellingPriceEdgeForInput(normalized);
+  }
+  if (!changed) return;
+  if (activeTab === "modelling") {
+    renderCurrentDay();
+  }
+  if (!silent) {
+    statusText.textContent = `Model pricing edge set to ${formatModellingPriceEdgeForLabel(normalized)} for highlight logic`;
+  }
+}
+
+function updateModellingEdgeControlsVisibility() {
+  const showEdgeControls = activeTab === "modelling";
+  if (modelEdgeLabel) {
+    modelEdgeLabel.classList.toggle("hidden", !showEdgeControls);
+  }
+  if (modelEdgeInput instanceof HTMLInputElement) {
+    modelEdgeInput.classList.toggle("hidden", !showEdgeControls);
+  }
 }
 
 function persistXgdHcHighlightEnabled(value) {
@@ -531,6 +692,57 @@ function hasVisibleHandicapPricing(game) {
   return hasTextValue(game?.mainline) && hasTextValue(game?.home_price) && hasTextValue(game?.away_price);
 }
 
+function isGamesCalendarTab(tabName = activeTab) {
+  const normalized = String(tabName || "").trim().toLowerCase();
+  return normalized === "games" || normalized === "modelling";
+}
+
+function isSavedGamesViewActive() {
+  return isGamesCalendarTab() && activeGamesPaneView === "saved";
+}
+
+function updateGamesPaneViewVisibility() {
+  const gamesPaneActive = isGamesCalendarTab();
+  const savedActive = gamesPaneActive && activeGamesPaneView === "saved";
+  if (gamesPaneTabs) {
+    gamesPaneTabs.classList.toggle("hidden", !gamesPaneActive);
+  }
+  if (gamesMainSubTabBtn instanceof HTMLButtonElement) {
+    gamesMainSubTabBtn.textContent = activeTab === "modelling" ? "Model Pricing" : "Games";
+    gamesMainSubTabBtn.classList.toggle("active", gamesPaneActive && !savedActive);
+  }
+  if (savedGamesSubTabBtn instanceof HTMLButtonElement) {
+    savedGamesSubTabBtn.classList.toggle("active", savedActive);
+  }
+  if (gamesDayToolbar) {
+    gamesDayToolbar.classList.toggle("hidden", savedActive);
+  }
+  if (tableControls) {
+    tableControls.classList.toggle("hidden", savedActive);
+  }
+  if (calendarView) {
+    calendarView.classList.toggle("hidden", savedActive);
+  }
+  if (savedGamesPane) {
+    savedGamesPane.classList.toggle("hidden", !savedActive);
+  }
+}
+
+function setGamesPaneView(viewName) {
+  const nextView = String(viewName || "").trim().toLowerCase() === "saved" ? "saved" : "main";
+  const changed = nextView !== activeGamesPaneView;
+  activeGamesPaneView = nextView;
+  updateGamesPaneViewVisibility();
+  if (changed) {
+    closeGameDetailsPanel(true);
+  }
+  if (isSavedGamesViewActive()) {
+    loadSavedGames({ silent: savedGamesLoaded });
+  } else if (isGamesCalendarTab()) {
+    renderCurrentDay();
+  }
+}
+
 function setShowGamesWithoutHandicap(value, options = {}) {
   const silent = Boolean(options?.silent);
   const nextValue = Boolean(value);
@@ -541,10 +753,8 @@ function setShowGamesWithoutHandicap(value, options = {}) {
   if (!changed) return;
 
   applyGameFilters();
-  if (activeTab === "games") {
+  if (isGamesCalendarTab()) {
     renderCurrentDay();
-  } else if (activeTab === "saved") {
-    renderSavedGames();
   }
   if (!silent) {
     statusText.textContent = showGamesWithoutHandicap
@@ -562,10 +772,8 @@ function setXgdHcHighlightEnabled(value, options = {}) {
   updateXgdHcHighlightToggleButton();
   if (!changed) return;
 
-  if (activeTab === "games") {
+  if (isGamesCalendarTab()) {
     renderCurrentDay();
-  } else if (activeTab === "saved") {
-    renderSavedGames();
   }
 
   if (!silent) {
@@ -583,10 +791,8 @@ function applyGlobalXgPushThreshold(nextValue) {
   }
   if (!changed) return;
 
-  if (activeTab === "games") {
+  if (isGamesCalendarTab()) {
     renderCurrentDay();
-  } else if (activeTab === "saved") {
-    renderSavedGames();
   }
   if (!detailsPanel.classList.contains("hidden") && lastXgdPayload) {
     renderXgd(lastXgdPayload);
@@ -620,13 +826,7 @@ async function applyGlobalXgMetricMode(nextValue, options = {}) {
   updateXgMetricModeToggleButton();
   if (!changed) return;
 
-  xgdPayloadByMarket.clear();
-  hcPerfPayloadByMarket.clear();
-  teamPagePayloadByKey.clear();
-  teamDetailsPayload = null;
-  lastXgdPayload = null;
-
-  const loadOk = await loadGames();
+  const loadOk = await loadGames({ useCache: true });
   if (loadOk && selectedMarketId && !detailsPanel.classList.contains("hidden")) {
     void loadGameXgd(selectedMarketId);
   }
@@ -634,9 +834,11 @@ async function applyGlobalXgMetricMode(nextValue, options = {}) {
     void openTeamPage(
       teamDetailsTeam,
       teamDetailsCompetition || null,
-      teamDetailsSeason || null,
-      { force: true }
+      teamDetailsSeason || null
     );
+  }
+  if (activeTab === "matchup" && matchupPayload) {
+    void loadMatchup();
   }
   if (!silent) {
     statusText.textContent = `xGD metric mode set to ${getXgMetricModeLabel(normalized)}`;
@@ -645,25 +847,33 @@ async function applyGlobalXgMetricMode(nextValue, options = {}) {
 
 function setActiveTab(tabName) {
   const tabRaw = String(tabName || "").trim().toLowerCase();
-  if (tabRaw === "saved") {
-    activeTab = "saved";
+  const previousActiveTab = activeTab;
+  if (tabRaw === "modelling" || tabRaw === "modelling-prices" || tabRaw === "modelling_prices") {
+    activeTab = "modelling";
   } else if (tabRaw === "rankings") {
     activeTab = "rankings";
   } else if (tabRaw === "teams") {
     activeTab = "teams";
+  } else if (tabRaw === "matchup") {
+    activeTab = "matchup";
   } else if (tabRaw === "mapping") {
     activeTab = "mapping";
   } else {
     activeTab = "games";
   }
   const gamesActive = activeTab === "games";
-  const savedActive = activeTab === "saved";
+  const modellingActive = activeTab === "modelling";
+  const gamesCalendarActive = gamesActive || modellingActive;
   const rankingsActive = activeTab === "rankings";
   const teamsActive = activeTab === "teams";
+  const matchupActive = activeTab === "matchup";
   const mappingActive = activeTab === "mapping";
+  if (gamesCalendarActive && previousActiveTab !== activeTab) {
+    activeGamesPaneView = "main";
+  }
   gamesTabBtn.classList.toggle("active", gamesActive);
-  if (savedGamesTabBtn) {
-    savedGamesTabBtn.classList.toggle("active", savedActive);
+  if (modellingPricesTabBtn instanceof HTMLButtonElement) {
+    modellingPricesTabBtn.classList.toggle("active", modellingActive);
   }
   if (teamHcRankingsTabBtn instanceof HTMLButtonElement) {
     teamHcRankingsTabBtn.classList.toggle("active", rankingsActive);
@@ -671,19 +881,24 @@ function setActiveTab(tabName) {
   if (teamsTabBtn instanceof HTMLButtonElement) {
     teamsTabBtn.classList.toggle("active", teamsActive);
   }
-  manualMappingTabBtn.classList.toggle("active", mappingActive);
-  gamesTabPane.classList.toggle("hidden", !gamesActive);
-  if (savedGamesTabPane) {
-    savedGamesTabPane.classList.toggle("hidden", !savedActive);
+  if (matchupTabBtn instanceof HTMLButtonElement) {
+    matchupTabBtn.classList.toggle("active", matchupActive);
   }
+  manualMappingTabBtn.classList.toggle("active", mappingActive);
+  gamesTabPane.classList.toggle("hidden", !gamesCalendarActive);
+  updateGamesPaneViewVisibility();
   if (teamHcRankingsTabPane) {
     teamHcRankingsTabPane.classList.toggle("hidden", !rankingsActive);
   }
   if (teamsTabPane) {
     teamsTabPane.classList.toggle("hidden", !teamsActive);
   }
+  if (matchupTabPane) {
+    matchupTabPane.classList.toggle("hidden", !matchupActive);
+  }
   manualMappingTabPane.classList.toggle("hidden", !mappingActive);
-  if (activeTab !== "games") {
+  updateModellingEdgeControlsVisibility();
+  if (!gamesCalendarActive) {
     closeGameDetailsPanel(true);
   }
   if (activeTab !== "rankings" && teamHcPerfPanel) {
@@ -692,10 +907,10 @@ function setActiveTab(tabName) {
   if (mappingActive) {
     setMappingSubTab(mappingSubTab);
   }
-  if (gamesActive) {
+  if (gamesCalendarActive) {
     renderCurrentDay();
   }
-  if (savedActive && !savedGamesLoading) {
+  if (isSavedGamesViewActive() && !savedGamesLoading) {
     loadSavedGames({ silent: savedGamesLoaded });
   }
   if (rankingsActive && !teamHcRankingsLoading) {
@@ -703,6 +918,13 @@ function setActiveTab(tabName) {
   }
   if (teamsActive && !teamsDirectoryLoading) {
     loadTeamsDirectory({ silent: teamsDirectoryLoaded });
+  }
+  if (matchupActive) {
+    populateMatchupOptions();
+    renderMatchupPage();
+    if (!teamsDirectoryLoaded && !teamsDirectoryLoading) {
+      loadTeamsDirectory({ silent: true });
+    }
   }
 }
 
@@ -713,6 +935,7 @@ function setMappingSubTab(tabName) {
   competitionMappingsSubTabBtn.classList.toggle("active", !teamsActive);
   teamMappingsPane.classList.toggle("hidden", !teamsActive);
   competitionMappingsPane.classList.toggle("hidden", teamsActive);
+  updateTeamMappingBatchButtons();
 }
 
 function setTeamHcRankingsVenueMode(mode) {
@@ -797,6 +1020,10 @@ function normalizeTeamMappingRawName(rawName) {
   return String(rawName || "").trim();
 }
 
+function normalizeCompetitionMappingRawName(rawName) {
+  return String(rawName || "").trim();
+}
+
 function setTeamMappingDraft(rawName, sofaName) {
   const rawKey = normalizeTeamMappingRawName(rawName);
   if (!rawKey) return;
@@ -820,13 +1047,45 @@ function clearAllTeamMappingSelections() {
   teamMappingBatchDrafts.clear();
 }
 
+function setCompetitionMappingDraft(rawName, sofaName) {
+  const rawKey = normalizeCompetitionMappingRawName(rawName);
+  if (!rawKey) return;
+  const sofaValue = String(sofaName || "").trim();
+  if (!sofaValue) {
+    competitionMappingBatchDrafts.delete(rawKey);
+    return;
+  }
+  competitionMappingBatchDrafts.set(rawKey, sofaValue);
+}
+
+function clearCompetitionMappingSelection(rawName) {
+  const rawKey = normalizeCompetitionMappingRawName(rawName);
+  if (!rawKey) return;
+  competitionMappingBatchSelections.delete(rawKey);
+  competitionMappingBatchDrafts.delete(rawKey);
+}
+
+function clearAllCompetitionMappingSelections() {
+  competitionMappingBatchSelections.clear();
+  competitionMappingBatchDrafts.clear();
+}
+
 function updateTeamMappingBatchButtons() {
-  const selectedCount = teamMappingBatchSelections.size;
+  const competitionMode = mappingSubTab === "competitions";
+  const selectedCount = competitionMode
+    ? competitionMappingBatchSelections.size
+    : teamMappingBatchSelections.size;
   if (mappingSaveSelectedBtn instanceof HTMLButtonElement) {
     mappingSaveSelectedBtn.disabled = selectedCount <= 0;
-    mappingSaveSelectedBtn.textContent = selectedCount > 0
-      ? `Save Selected Team Mappings (${selectedCount})`
-      : "Save Selected Team Mappings";
+    if (competitionMode) {
+      mappingSaveSelectedBtn.textContent = selectedCount > 0
+        ? `Save Selected Competition Mappings (${selectedCount})`
+        : "Save Selected Competition Mappings";
+    } else {
+      mappingSaveSelectedBtn.textContent = selectedCount > 0
+        ? `Save Selected Team Mappings (${selectedCount})`
+        : "Save Selected Team Mappings";
+    }
   }
   if (mappingClearSelectedBtn instanceof HTMLButtonElement) {
     mappingClearSelectedBtn.disabled = selectedCount <= 0;
@@ -838,6 +1097,18 @@ function getTeamMappingLookupByRaw(payload) {
   const mappings = Array.isArray(payload?.mappings) ? payload.mappings : [];
   for (const row of mappings) {
     const rawName = normalizeTeamMappingRawName(row?.raw_name);
+    const sofaName = String(row?.sofa_name || "").trim();
+    if (!rawName || !sofaName || map.has(rawName)) continue;
+    map.set(rawName, sofaName);
+  }
+  return map;
+}
+
+function getCompetitionMappingLookupByRaw(payload) {
+  const map = new Map();
+  const mappings = Array.isArray(payload?.competition_mappings) ? payload.competition_mappings : [];
+  for (const row of mappings) {
+    const rawName = normalizeCompetitionMappingRawName(row?.raw_name);
     const sofaName = String(row?.sofa_name || "").trim();
     if (!rawName || !sofaName || map.has(rawName)) continue;
     map.set(rawName, sofaName);
@@ -898,6 +1169,21 @@ function renderManualMappingSections(payload) {
   const unmatchedCompetitions = Array.isArray(payload?.unmatched_competitions)
     ? payload.unmatched_competitions
     : [];
+  const activeCompetitionRawNames = new Set(
+    [...competitionMappings, ...unmatchedCompetitions]
+      .map((row) => normalizeCompetitionMappingRawName(row?.raw_name))
+      .filter((rawName) => !!rawName)
+  );
+  for (const rawName of Array.from(competitionMappingBatchSelections)) {
+    if (!activeCompetitionRawNames.has(rawName)) {
+      competitionMappingBatchSelections.delete(rawName);
+    }
+  }
+  for (const rawName of Array.from(competitionMappingBatchDrafts.keys())) {
+    if (!activeCompetitionRawNames.has(rawName)) {
+      competitionMappingBatchDrafts.delete(rawName);
+    }
+  }
   const sofaCompetitions = Array.isArray(payload?.sofa_competitions) ? payload.sofa_competitions : [];
   const competitionMappingsByRawName = new Map();
   for (const row of competitionMappings) {
@@ -1315,7 +1601,7 @@ function renderManualMappingSections(payload) {
   } else if (!visibleUnmatchedCompetitions.length) {
     unmatchedCompetitionsContainer.innerHTML = `<p class="mapping-empty">No unmatched competitions available to render.</p>`;
   } else {
-    const competitionDatalistId = "mappingSofaCompetitionOptions";
+    const competitionDatalistId = "mappingSofaCompetitionOptionsUnmatched";
     const competitionDatalist = document.createElement("datalist");
     competitionDatalist.id = competitionDatalistId;
     competitionDatalist.innerHTML = availableSofaCompetitions
@@ -1341,9 +1627,11 @@ function renderManualMappingSections(payload) {
     for (const row of visibleUnmatchedCompetitions) {
       const tr = document.createElement("tr");
       const rawName = String(row.raw_name || "");
+      const rawKey = normalizeCompetitionMappingRawName(rawName);
       const existing = competitionMappingsByRawName.get(rawName);
       const existingSofaName = String(existing?.sofa_name || "").trim();
       const existingSofaNameLower = existingSofaName.toLowerCase();
+      const draftValue = String(competitionMappingBatchDrafts.get(rawKey) || "").trim();
       tr.innerHTML = `
         <td>${escapeHtml(rawName)}</td>
         <td>${escapeHtml(String(row.games_count ?? "-"))}</td>
@@ -1360,20 +1648,49 @@ function renderManualMappingSections(payload) {
         <td><button type="button" class="mapping-save-btn">Save</button></td>
       `;
       const input = tr.querySelector(".mapping-team-input");
+      if (input && draftValue) {
+        input.value = draftValue;
+      }
+      const resolveCompetitionName = (value) => {
+        const inputValue = String(value || "").trim();
+        const inputValueLower = inputValue.toLowerCase();
+        return availableSofaCompetitionLookup.get(inputValueLower)
+          || (inputValueLower && inputValueLower === existingSofaNameLower ? existingSofaName : "");
+      };
+      const syncCompetitionBatchSelectionForRow = (autoSelect = false) => {
+        const sofaName = resolveCompetitionName(input?.value);
+        if (sofaName) {
+          setCompetitionMappingDraft(rawKey, sofaName);
+          if (autoSelect) {
+            competitionMappingBatchSelections.add(rawKey);
+          }
+        } else if (!competitionMappingBatchSelections.has(rawKey)) {
+          competitionMappingBatchDrafts.delete(rawKey);
+        }
+        if (!sofaName && competitionMappingBatchSelections.has(rawKey)) {
+          competitionMappingBatchSelections.delete(rawKey);
+        }
+      };
+      if (input) {
+        input.addEventListener("input", () => {
+          syncCompetitionBatchSelectionForRow(true);
+          updateTeamMappingBatchButtons();
+        });
+      }
       const saveBtn = tr.querySelector(".mapping-save-btn");
       if (saveBtn && input) {
         saveBtn.addEventListener("click", async () => {
-          const inputValue = String(input.value || "").trim();
-          const inputValueLower = inputValue.toLowerCase();
-          const sofaName = availableSofaCompetitionLookup.get(inputValueLower)
-            || (inputValueLower && inputValueLower === existingSofaNameLower ? existingSofaName : "");
+          const sofaName = resolveCompetitionName(input.value);
           if (!sofaName) {
             mappingStatus.textContent = "Select a Database competition before saving.";
             return;
           }
+          clearCompetitionMappingSelection(rawKey);
+          updateTeamMappingBatchButtons();
           await upsertManualCompetitionMapping(rawName, sofaName);
         });
       }
+      syncCompetitionBatchSelectionForRow();
       tbody.appendChild(tr);
     }
     unmatchedCompetitionsContainer.appendChild(table);
@@ -1389,6 +1706,14 @@ function renderManualMappingSections(payload) {
   if (!competitionMappings.length) {
     savedCompetitionMappingsContainer.innerHTML = `<p class="mapping-empty">No competition mappings available yet.</p>`;
   } else {
+    const competitionDatalistId = "mappingSofaCompetitionOptionsSaved";
+    const competitionDatalist = document.createElement("datalist");
+    competitionDatalist.id = competitionDatalistId;
+    competitionDatalist.innerHTML = availableSofaCompetitions
+      .map((competition) => `<option value="${escapeHtml(competition)}"></option>`)
+      .join("");
+    savedCompetitionMappingsContainer.appendChild(competitionDatalist);
+
     const visibleCompetitionMappings = competitionMappings.slice(0, MAPPING_SAVED_COMPETITION_RENDER_LIMIT);
     const table = document.createElement("table");
     table.className = "mapping-table";
@@ -1407,25 +1732,80 @@ function renderManualMappingSections(payload) {
     for (const row of visibleCompetitionMappings) {
       const tr = document.createElement("tr");
       const rawName = String(row.raw_name || "");
+      const rawKey = normalizeCompetitionMappingRawName(rawName);
+      const sofaName = String(row.sofa_name || "").trim();
+      const sofaNameLower = sofaName.toLowerCase();
+      const draftValue = String(competitionMappingBatchDrafts.get(rawKey) || "").trim();
       const isManual = row?.is_manual !== false;
       const method = String(row.match_method || "").trim().toLowerCase();
       const methodLabel = method ? `${method.charAt(0).toUpperCase()}${method.slice(1)}` : "Auto";
       const typeLabel = isManual ? "Manual" : `Auto (${methodLabel})`;
       const actionHtml = isManual
-        ? `<button type="button" class="mapping-delete-btn">Delete</button>`
-        : `<span class="mapping-auto-badge">Auto</span>`;
+        ? `
+            <button type="button" class="mapping-save-btn">Save</button>
+            <button type="button" class="mapping-delete-btn">Delete</button>
+          `
+        : `
+            <button type="button" class="mapping-save-btn">Override</button>
+            <button type="button" class="mapping-delete-btn">Delete Auto</button>
+          `;
       tr.innerHTML = `
         <td>${escapeHtml(rawName)}</td>
-        <td>${escapeHtml(String(row.sofa_name || ""))}</td>
+        <td>
+          <input type="text" class="mapping-team-input" list="${competitionDatalistId}" value="${escapeHtml(sofaName)}" />
+        </td>
         <td>${escapeHtml(typeLabel)}</td>
         <td>${actionHtml}</td>
       `;
+      const input = tr.querySelector(".mapping-team-input");
+      const resolveSavedCompetitionName = () => {
+        const selectedRaw = String(input?.value || "").trim();
+        const selectedLower = selectedRaw.toLowerCase();
+        return availableSofaCompetitionLookup.get(selectedLower)
+          || (selectedLower && selectedLower === sofaNameLower ? sofaName : "");
+      };
+      if (input && draftValue) {
+        input.value = draftValue;
+      }
+      const syncSavedCompetitionSelectionForRow = () => {
+        const resolvedName = resolveSavedCompetitionName();
+        if (resolvedName) {
+          setCompetitionMappingDraft(rawKey, resolvedName);
+        } else if (!competitionMappingBatchSelections.has(rawKey)) {
+          competitionMappingBatchDrafts.delete(rawKey);
+        }
+        if (!resolvedName && competitionMappingBatchSelections.has(rawKey)) {
+          competitionMappingBatchSelections.delete(rawKey);
+        }
+      };
+      if (input) {
+        input.addEventListener("input", () => {
+          syncSavedCompetitionSelectionForRow();
+          updateTeamMappingBatchButtons();
+        });
+      }
+      const saveBtn = tr.querySelector(".mapping-save-btn");
+      if (saveBtn && input) {
+        saveBtn.addEventListener("click", async () => {
+          const selectedCompetitionName = resolveSavedCompetitionName();
+          if (!selectedCompetitionName) {
+            mappingStatus.textContent = "Select a valid Database competition before saving.";
+            return;
+          }
+          clearCompetitionMappingSelection(rawKey);
+          updateTeamMappingBatchButtons();
+          await upsertManualCompetitionMapping(rawName, selectedCompetitionName);
+        });
+      }
       const deleteBtn = tr.querySelector(".mapping-delete-btn");
-      if (deleteBtn && isManual) {
+      if (deleteBtn) {
         deleteBtn.addEventListener("click", async () => {
+          clearCompetitionMappingSelection(rawKey);
+          updateTeamMappingBatchButtons();
           await deleteManualCompetitionMapping(rawName);
         });
       }
+      syncSavedCompetitionSelectionForRow();
       tbody.appendChild(tr);
     }
     savedCompetitionMappingsContainer.appendChild(table);
@@ -1503,6 +1883,57 @@ async function saveSelectedManualTeamMappings() {
   }
 }
 
+async function saveSelectedManualCompetitionMappings() {
+  const selectedRawNames = Array.from(competitionMappingBatchSelections)
+    .map((rawName) => normalizeCompetitionMappingRawName(rawName))
+    .filter((rawName) => !!rawName);
+  if (!selectedRawNames.length) {
+    mappingStatus.textContent = "Select at least one competition mapping row first.";
+    return;
+  }
+
+  const currentSofaByRaw = getCompetitionMappingLookupByRaw(lastManualMappingPayload);
+  const bulkMappings = [];
+  const missingMappings = [];
+
+  for (const rawName of selectedRawNames) {
+    let sofaName = String(competitionMappingBatchDrafts.get(rawName) || "").trim();
+    if (!sofaName) {
+      sofaName = String(currentSofaByRaw.get(rawName) || "").trim();
+    }
+    if (!sofaName) {
+      missingMappings.push(rawName);
+      continue;
+    }
+    bulkMappings.push({ raw_name: rawName, sofa_name: sofaName });
+  }
+
+  if (!bulkMappings.length) {
+    mappingStatus.textContent = "No valid competition mappings were selected to save.";
+    return;
+  }
+  if (missingMappings.length) {
+    mappingStatus.textContent = "Some selected rows do not have a valid Database competition.";
+    return;
+  }
+
+  try {
+    mappingStatus.textContent = `Saving ${bulkMappings.length} competition mappings...`;
+    const res = await fetch("/api/manual-competition-mappings/bulk", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ mappings: bulkMappings }),
+    });
+    const payload = await parseApiResponse(res);
+    if (!res.ok) throw new Error(payload.error || "Failed to save selected competition mappings");
+    clearAllCompetitionMappingSelections();
+    updateTeamMappingBatchButtons();
+    await Promise.all([loadGames(), loadManualMappings()]);
+  } catch (err) {
+    mappingStatus.textContent = String(err.message || err);
+  }
+}
+
 async function upsertManualTeamMapping(rawName, sofaName) {
   clearTeamMappingSelection(rawName);
   updateTeamMappingBatchButtons();
@@ -1538,6 +1969,8 @@ async function deleteManualTeamMapping(rawName) {
 }
 
 async function upsertManualCompetitionMapping(rawName, sofaName) {
+  clearCompetitionMappingSelection(rawName);
+  updateTeamMappingBatchButtons();
   try {
     const res = await fetch("/api/manual-competition-mappings", {
       method: "POST",
@@ -1553,6 +1986,8 @@ async function upsertManualCompetitionMapping(rawName, sofaName) {
 }
 
 async function deleteManualCompetitionMapping(rawName) {
+  clearCompetitionMappingSelection(rawName);
+  updateTeamMappingBatchButtons();
   try {
     const res = await fetch("/api/manual-competition-mappings/delete", {
       method: "POST",
@@ -1784,6 +2219,12 @@ function extractMainTableMetricsFromXgdPayload(payload) {
   };
 
   return {
+    season_home_xg: pickMetric("season", "home_xg"),
+    last5_home_xg: pickMetric("last5", "home_xg"),
+    last3_home_xg: pickMetric("last3", "home_xg"),
+    season_away_xg: pickMetric("season", "away_xg"),
+    last5_away_xg: pickMetric("last5", "away_xg"),
+    last3_away_xg: pickMetric("last3", "away_xg"),
     season_strength: pickMetric("season", "strength"),
     last5_strength: pickMetric("last5", "strength"),
     last3_strength: pickMetric("last3", "strength"),
@@ -1808,6 +2249,12 @@ function applyMainTableMetricsForMarket(marketId, metrics) {
   const key = String(marketId || "").trim();
   if (!key || !metrics || typeof metrics !== "object") return false;
   const metricKeys = [
+    "season_home_xg",
+    "last5_home_xg",
+    "last3_home_xg",
+    "season_away_xg",
+    "last5_away_xg",
+    "last3_away_xg",
     "season_strength",
     "last5_strength",
     "last3_strength",
@@ -1999,11 +2446,11 @@ function buildTeamXgdSummaryTableHtml(teamLabel, rows) {
         if (xgot == null || xg == null) return null;
         return xgot - xg;
       }) : null,
-      ga_minus_xgota: hasXgotData ? averageOf((row) => {
+      xgota_minus_ga: hasXgotData ? averageOf((row) => {
         const ga = toMetricNumber(row?.GA);
         const xgotAgainst = toMetricNumber(row?.xGoTA);
         if (ga == null || xgotAgainst == null) return null;
-        return ga - xgotAgainst;
+        return xgotAgainst - ga;
       }) : null,
     };
   };
@@ -2017,7 +2464,7 @@ function buildTeamXgdSummaryTableHtml(teamLabel, rows) {
     { label: "xG Against", key: "xg_against" },
     { label: "xGD Perf", key: "xgd_perf" },
     { label: "xGoT-xG (Shooting)", key: "xgot_minus_xg" },
-    { label: "GA-xGoTA (Keeping)", key: "ga_minus_xgota" },
+    { label: "xGoTA-GA (Keeping)", key: "xgota_minus_ga" },
   ];
 
   return `
@@ -2996,6 +3443,79 @@ function buildCardsCornersAveragesTableHtml(homeRows, awayRows, homeLabel, awayL
   `;
 }
 
+function buildShotsAveragesTableHtml(homeRows, awayRows, homeLabel, awayLabel, sampleSize = null) {
+  const sampleLabel = sampleSize == null ? "All Previous Games" : `Last ${clampRecentMatchesCount(sampleSize)} Games`;
+  const entries = [
+    { label: homeLabel || "Home team", rows: limitStatsRows(homeRows || [], sampleSize) },
+    { label: awayLabel || "Away team", rows: limitStatsRows(awayRows || [], sampleSize) },
+  ];
+  return `
+    <section class="recent-team-block">
+      <h4>Average Shot Output (${escapeHtml(sampleLabel)})</h4>
+      <div class="recent-table-wrap">
+        <table class="lines-table recent-lines-table">
+          <thead>
+            <tr>
+              <th>Team</th>
+              <th>Shots For</th>
+              <th>Shots Against</th>
+              <th>On Target For</th>
+              <th>On Target Against</th>
+              <th>xG For</th>
+              <th>xG Against</th>
+              <th>xG/Shot</th>
+              <th>xGA/ShotA</th>
+              <th>xGoT For</th>
+              <th>xGoT Against</th>
+            </tr>
+          </thead>
+          <tbody>
+            ${entries
+              .map(
+                (entry) => {
+                  const shotsForTotal = sumMetric(entry.rows, "shots_for");
+                  const shotsAgainstTotal = sumMetric(entry.rows, "shots_against");
+                  const xgForTotal = sumMetric(entry.rows, "xG");
+                  const xgAgainstTotal = sumMetric(entry.rows, "xGA");
+                  const xgPerShot = (
+                    Number.isFinite(xgForTotal)
+                    && Number.isFinite(shotsForTotal)
+                    && shotsForTotal > 0
+                  )
+                    ? (xgForTotal / shotsForTotal)
+                    : null;
+                  const xgaPerShotAgainst = (
+                    Number.isFinite(xgAgainstTotal)
+                    && Number.isFinite(shotsAgainstTotal)
+                    && shotsAgainstTotal > 0
+                  )
+                    ? (xgAgainstTotal / shotsAgainstTotal)
+                    : null;
+                  return `
+              <tr>
+                <td><strong>${escapeHtml(entry.label)}</strong></td>
+                <td>${formatMetricValue(averageMetric(entry.rows, "shots_for"), 2)}</td>
+                <td>${formatMetricValue(averageMetric(entry.rows, "shots_against"), 2)}</td>
+                <td>${formatMetricValue(averageMetric(entry.rows, "shots_on_target_for"), 2)}</td>
+                <td>${formatMetricValue(averageMetric(entry.rows, "shots_on_target_against"), 2)}</td>
+                <td>${formatMetricValue(averageMetric(entry.rows, "xG"), 2)}</td>
+                <td>${formatMetricValue(averageMetric(entry.rows, "xGA"), 2)}</td>
+                <td>${formatMetricValue(xgPerShot, 3)}</td>
+                <td>${formatMetricValue(xgaPerShotAgainst, 3)}</td>
+                <td>${formatMetricValue(averageMetric(entry.rows, "xGoT"), 2)}</td>
+                <td>${formatMetricValue(averageMetric(entry.rows, "xGoTA"), 2)}</td>
+              </tr>
+            `;
+                }
+              )
+              .join("")}
+          </tbody>
+        </table>
+      </div>
+    </section>
+  `;
+}
+
 function buildCardsCornersVenueTableHtml(homeVenueRows, awayVenueRows, homeLabel, awayLabel, sampleSize = null) {
   const sampleLabel = sampleSize == null ? "All Previous Games" : `Last ${clampRecentMatchesCount(sampleSize)} Games`;
   const entries = [
@@ -3086,6 +3606,7 @@ function buildGamestateTableHtml(homeRows, awayRows, homeLabel, awayLabel, sampl
             <tr>
               <th>Gamestate</th>
               <th>Time %</th>
+              <th>Minutes</th>
               <th>Corners For</th>
               <th>Corners Against</th>
               <th>Cards For</th>
@@ -3113,10 +3634,124 @@ function buildGamestateTableHtml(homeRows, awayRows, homeLabel, awayLabel, sampl
                     <tr>
                       <td>${escapeHtml(state.label)}</td>
                       <td>${pct == null ? "-" : `${formatMetricValue(pct, 1)}%`}</td>
+                      <td>${formatMetricValue(minutes, 1)}</td>
                       <td>${metricValues[0]}</td>
                       <td>${metricValues[1]}</td>
                       <td>${metricValues[2]}</td>
                       <td>${metricValues[3]}</td>
+                    </tr>
+                  `;
+                })
+                .join("");
+            })()}
+          </tbody>
+        </table>
+      </div>
+    </section>
+  `;
+
+  return `
+    ${buildGamestateModeSwitchHtml()}
+    ${entries.map((entry) => renderTeamTable(entry)).join("")}
+  `;
+}
+
+function buildShotGamestateTableHtml(homeRows, awayRows, homeLabel, awayLabel, sampleSize = null) {
+  const sampleLabel = sampleSize == null ? "All Previous Games" : `Last ${clampRecentMatchesCount(sampleSize)} Games`;
+  const activeMode = normalizeGamestateStatsMode(gamestateStatsMode);
+  const modeLabel = activeMode === "total"
+    ? "Total Stats"
+    : (activeMode === "per90" ? "Stats / 90" : "Min / Stat");
+  const entries = [
+    { label: homeLabel || "Home team", rows: limitStatsRows(homeRows || [], sampleSize) },
+    { label: awayLabel || "Away team", rows: limitStatsRows(awayRows || [], sampleSize) },
+  ];
+  const states = [
+    { key: "drawing", label: "Draw" },
+    { key: "winning", label: "Win" },
+    { key: "losing", label: "Lose" },
+  ];
+  const metricCols = [
+    { key: "shots_for", label: "Shots For", totalDecimals: 0 },
+    { key: "shots_against", label: "Shots Against", totalDecimals: 0 },
+    { key: "shots_on_target_for", label: "On Target For", totalDecimals: 0 },
+    { key: "shots_on_target_against", label: "On Target Against", totalDecimals: 0 },
+    { key: "xg_for", label: "xG For", totalDecimals: 2 },
+    { key: "xg_against", label: "xG Against", totalDecimals: 2 },
+  ];
+
+  const toSafeNumber = (value) => {
+    const num = Number(value);
+    return Number.isFinite(num) ? num : 0;
+  };
+  const formatMetricByMode = (total, minutes, totalDecimals = 0) => {
+    if (activeMode === "per90") {
+      if (!Number.isFinite(total) || !Number.isFinite(minutes) || minutes <= 0) return "-";
+      return formatMetricValue((total / minutes) * 90, 2);
+    }
+    if (activeMode === "minperstat") {
+      if (!Number.isFinite(total) || !Number.isFinite(minutes) || total <= 0 || minutes <= 0) return "-";
+      return formatMetricValue(minutes / total, 2);
+    }
+    return formatMetricValue(total, totalDecimals);
+  };
+
+  const renderTeamTable = (entry) => `
+    <section class="recent-team-block">
+      <h4>${escapeHtml(entry.label)} - Shot Gamestate Stats (${escapeHtml(sampleLabel)} | ${escapeHtml(modeLabel)})</h4>
+      <div class="recent-table-wrap">
+        <table class="lines-table recent-lines-table">
+          <thead>
+            <tr>
+              <th>Gamestate</th>
+              <th>Time %</th>
+              <th>Minutes</th>
+              <th>Shots For</th>
+              <th>Shots Against</th>
+              <th>On Target For</th>
+              <th>On Target Against</th>
+              <th>xG For</th>
+              <th>xG Against</th>
+              <th>xG/Shot</th>
+              <th>xGA/ShotA</th>
+            </tr>
+          </thead>
+          <tbody>
+            ${(() => {
+              const minutesByState = {};
+              for (const state of states) {
+                const key = `minutes_${state.key}`;
+                minutesByState[state.key] = toSafeNumber(sumMetric(entry.rows, key));
+              }
+              const totalMinutes = states.reduce((sum, state) => sum + minutesByState[state.key], 0);
+              return states
+                .map((state) => {
+                  const minutes = minutesByState[state.key];
+                  const pct = totalMinutes > 0 ? (minutes / totalMinutes) * 100 : null;
+                  const metricValues = metricCols.map((metricCol) => {
+                    const metricKey = `${metricCol.key}_${state.key}`;
+                    const metricTotal = toSafeNumber(sumMetric(entry.rows, metricKey));
+                    return formatMetricByMode(metricTotal, minutes, metricCol.totalDecimals);
+                  });
+                  const shotsForTotal = toSafeNumber(sumMetric(entry.rows, `shots_for_${state.key}`));
+                  const shotsAgainstTotal = toSafeNumber(sumMetric(entry.rows, `shots_against_${state.key}`));
+                  const xgForTotal = toSafeNumber(sumMetric(entry.rows, `xg_for_${state.key}`));
+                  const xgAgainstTotal = toSafeNumber(sumMetric(entry.rows, `xg_against_${state.key}`));
+                  const xgPerShot = shotsForTotal > 0 ? formatMetricValue(xgForTotal / shotsForTotal, 3) : "-";
+                  const xgaPerShotAgainst = shotsAgainstTotal > 0 ? formatMetricValue(xgAgainstTotal / shotsAgainstTotal, 3) : "-";
+                  return `
+                    <tr>
+                      <td>${escapeHtml(state.label)}</td>
+                      <td>${pct == null ? "-" : `${formatMetricValue(pct, 1)}%`}</td>
+                      <td>${formatMetricValue(minutes, 1)}</td>
+                      <td>${metricValues[0]}</td>
+                      <td>${metricValues[1]}</td>
+                      <td>${metricValues[2]}</td>
+                      <td>${metricValues[3]}</td>
+                      <td>${metricValues[4]}</td>
+                      <td>${metricValues[5]}</td>
+                      <td>${xgPerShot}</td>
+                      <td>${xgaPerShotAgainst}</td>
                     </tr>
                   `;
                 })
@@ -3185,6 +3820,7 @@ function buildSingleTeamGamestateTableHtml(rows, teamLabel, sampleSize = null) {
             <tr>
               <th>Gamestate</th>
               <th>Time %</th>
+              <th>Minutes</th>
               <th>Corners For</th>
               <th>Corners Against</th>
               <th>Cards For</th>
@@ -3205,10 +3841,115 @@ function buildSingleTeamGamestateTableHtml(rows, teamLabel, sampleSize = null) {
                   <tr>
                     <td>${escapeHtml(state.label)}</td>
                     <td>${pct == null ? "-" : `${formatMetricValue(pct, 1)}%`}</td>
+                    <td>${formatMetricValue(minutes, 1)}</td>
                     <td>${metricValues[0]}</td>
                     <td>${metricValues[1]}</td>
                     <td>${metricValues[2]}</td>
                     <td>${metricValues[3]}</td>
+                  </tr>
+                `;
+              })
+              .join("")}
+          </tbody>
+        </table>
+      </div>
+    </section>
+  `;
+}
+
+function buildSingleTeamShotGamestateTableHtml(rows, teamLabel, sampleSize = null) {
+  const sampleLabel = sampleSize == null ? "All Previous Games" : `Last ${clampRecentMatchesCount(sampleSize)} Games`;
+  const activeMode = normalizeGamestateStatsMode(gamestateStatsMode);
+  const modeLabel = activeMode === "total"
+    ? "Total Stats"
+    : (activeMode === "per90" ? "Stats / 90" : "Min / Stat");
+  const safeRows = limitStatsRows(rows || [], sampleSize);
+  const states = [
+    { key: "drawing", label: "Draw" },
+    { key: "winning", label: "Win" },
+    { key: "losing", label: "Lose" },
+  ];
+  const metricCols = [
+    { key: "shots_for", label: "Shots For", totalDecimals: 0 },
+    { key: "shots_against", label: "Shots Against", totalDecimals: 0 },
+    { key: "shots_on_target_for", label: "On Target For", totalDecimals: 0 },
+    { key: "shots_on_target_against", label: "On Target Against", totalDecimals: 0 },
+    { key: "xg_for", label: "xG For", totalDecimals: 2 },
+    { key: "xg_against", label: "xG Against", totalDecimals: 2 },
+  ];
+
+  const toSafeNumber = (value) => {
+    const num = Number(value);
+    return Number.isFinite(num) ? num : 0;
+  };
+  const formatMetricByMode = (total, minutes, totalDecimals = 0) => {
+    if (activeMode === "per90") {
+      if (!Number.isFinite(total) || !Number.isFinite(minutes) || minutes <= 0) return "-";
+      return formatMetricValue((total / minutes) * 90, 2);
+    }
+    if (activeMode === "minperstat") {
+      if (!Number.isFinite(total) || !Number.isFinite(minutes) || total <= 0 || minutes <= 0) return "-";
+      return formatMetricValue(minutes / total, 2);
+    }
+    return formatMetricValue(total, totalDecimals);
+  };
+
+  const minutesByState = {};
+  for (const state of states) {
+    const key = `minutes_${state.key}`;
+    minutesByState[state.key] = toSafeNumber(sumMetric(safeRows, key));
+  }
+  const totalMinutes = states.reduce((sum, state) => sum + minutesByState[state.key], 0);
+
+  return `
+    <section class="recent-team-block">
+      <h4>${escapeHtml(teamLabel || "Team")} - Shot Gamestate Stats (${escapeHtml(sampleLabel)} | ${escapeHtml(modeLabel)})</h4>
+      <div class="recent-table-wrap">
+        <table class="lines-table recent-lines-table">
+          <thead>
+            <tr>
+              <th>Gamestate</th>
+              <th>Time %</th>
+              <th>Minutes</th>
+              <th>Shots For</th>
+              <th>Shots Against</th>
+              <th>On Target For</th>
+              <th>On Target Against</th>
+              <th>xG For</th>
+              <th>xG Against</th>
+              <th>xG/Shot</th>
+              <th>xGA/ShotA</th>
+            </tr>
+          </thead>
+          <tbody>
+            ${states
+              .map((state) => {
+                const minutes = minutesByState[state.key];
+                const pct = totalMinutes > 0 ? (minutes / totalMinutes) * 100 : null;
+                const metricValues = metricCols.map((metricCol) => {
+                  const metricKey = `${metricCol.key}_${state.key}`;
+                  const metricTotal = toSafeNumber(sumMetric(safeRows, metricKey));
+                  return formatMetricByMode(metricTotal, minutes, metricCol.totalDecimals);
+                });
+                const shotsForTotal = toSafeNumber(sumMetric(safeRows, `shots_for_${state.key}`));
+                const shotsAgainstTotal = toSafeNumber(sumMetric(safeRows, `shots_against_${state.key}`));
+                const xgForTotal = toSafeNumber(sumMetric(safeRows, `xg_for_${state.key}`));
+                const xgAgainstTotal = toSafeNumber(sumMetric(safeRows, `xg_against_${state.key}`));
+                const xgPerShot = shotsForTotal > 0 ? formatMetricValue(xgForTotal / shotsForTotal, 3) : "-";
+                const xgaPerShotAgainst = shotsAgainstTotal > 0 ? formatMetricValue(xgAgainstTotal / shotsAgainstTotal, 3) : "-";
+                return `
+                  <tr>
+                    <td>${escapeHtml(state.label)}</td>
+                    <td>${pct == null ? "-" : `${formatMetricValue(pct, 1)}%`}</td>
+                    <td>${formatMetricValue(minutes, 1)}</td>
+                    <td>${metricValues[0]}</td>
+                    <td>${metricValues[1]}</td>
+                    <td>${metricValues[2]}</td>
+                    <td>${metricValues[3]}</td>
+                    <td>${metricValues[4]}</td>
+                    <td>${metricValues[5]}</td>
+                    <td>${xgPerShot}</td>
+                    <td>${xgaPerShotAgainst}</td>
                   </tr>
                 `;
               })
@@ -3293,6 +4034,1307 @@ function buildCardsCornersMatchesTableHtml(teamLabel, rows, sampleSize = null, t
                 }
               )
               .join("")}
+          </tbody>
+        </table>
+      </div>
+    </section>
+  `;
+}
+
+function buildShotsMatchesTableHtml(teamLabel, rows, sampleSize = null, titleOverride = "") {
+  const safeRows = Array.isArray(rows) ? [...rows] : [];
+  safeRows.sort((a, b) => String(b?.date_time || "").localeCompare(String(a?.date_time || "")));
+  const shownRows = limitStatsRows(safeRows, sampleSize);
+  const titleSuffix = sampleSize == null ? "" : ` (Last ${clampRecentMatchesCount(sampleSize)})`;
+  const defaultTitle = `${escapeHtml(teamLabel || "Team")} - Previous Games${escapeHtml(titleSuffix)}`;
+  const title = titleOverride ? `${escapeHtml(titleOverride)}${escapeHtml(titleSuffix)}` : defaultTitle;
+  if (!shownRows.length) {
+    return `
+      <section class="recent-team-block">
+        <h4>${title}</h4>
+        <p class="recent-empty">No previous games available.</p>
+      </section>
+    `;
+  }
+  return `
+    <section class="recent-team-block">
+      <h4>${title}</h4>
+      <div class="recent-table-wrap">
+        <table class="lines-table recent-lines-table">
+          <thead>
+            <tr>
+              <th>Date</th>
+              <th>Competition</th>
+              <th>Home</th>
+              <th>Away</th>
+              <th>Shots<span class="metric-suffix">H</span></th>
+              <th>Shots<span class="metric-suffix">A</span></th>
+              <th>OnT<span class="metric-suffix">H</span></th>
+              <th>OnT<span class="metric-suffix">A</span></th>
+              <th>xG<span class="metric-suffix">H</span></th>
+              <th>xG<span class="metric-suffix">A</span></th>
+              <th>xGoT<span class="metric-suffix">H</span></th>
+              <th>xGoT<span class="metric-suffix">A</span></th>
+            </tr>
+          </thead>
+          <tbody>
+            ${shownRows
+              .map(
+                (row) => {
+                  const isHome = String(row?.venue || "").toLowerCase() === "home";
+                  const relevantTeam = String(teamLabel || row?.team || "").trim();
+                  const opponentTeam = String(row?.opponent || "").trim();
+                  const homeTeam = isHome ? relevantTeam : opponentTeam;
+                  const awayTeam = isHome ? opponentTeam : relevantTeam;
+                  const competitionName = String(row?.competition_name || "").trim();
+                  const homeTeamCell = homeTeam
+                    ? buildTeamLinkHtml(homeTeam, competitionName, { strong: isHome })
+                    : "-";
+                  const awayTeamCell = awayTeam
+                    ? buildTeamLinkHtml(awayTeam, competitionName, { strong: !isHome })
+                    : "-";
+                  const shotsHome = isHome ? row?.shots_for : row?.shots_against;
+                  const shotsAway = isHome ? row?.shots_against : row?.shots_for;
+                  const shotsOnTargetHome = isHome ? row?.shots_on_target_for : row?.shots_on_target_against;
+                  const shotsOnTargetAway = isHome ? row?.shots_on_target_against : row?.shots_on_target_for;
+                  const xgHome = isHome ? row?.xG : row?.xGA;
+                  const xgAway = isHome ? row?.xGA : row?.xG;
+                  const xgotHome = isHome ? row?.xGoT : row?.xGoTA;
+                  const xgotAway = isHome ? row?.xGoTA : row?.xGoT;
+                  return `
+              <tr>
+                <td>${escapeHtml(row?.date_time || "-")}</td>
+                <td>${escapeHtml(row?.competition_name || "-")}</td>
+                <td>${homeTeamCell}</td>
+                <td>${awayTeamCell}</td>
+                <td>${formatMetricValue(shotsHome, 2)}</td>
+                <td>${formatMetricValue(shotsAway, 2)}</td>
+                <td>${formatMetricValue(shotsOnTargetHome, 2)}</td>
+                <td>${formatMetricValue(shotsOnTargetAway, 2)}</td>
+                <td>${formatMetricValue(xgHome, 2)}</td>
+                <td>${formatMetricValue(xgAway, 2)}</td>
+                <td>${formatMetricValue(xgotHome, 2)}</td>
+                <td>${formatMetricValue(xgotAway, 2)}</td>
+              </tr>
+            `;
+                }
+              )
+              .join("")}
+          </tbody>
+        </table>
+      </div>
+    </section>
+  `;
+}
+
+function averagePair(valueA, valueB) {
+  const a = Number(valueA);
+  const b = Number(valueB);
+  if (Number.isFinite(a) && Number.isFinite(b)) return (a + b) / 2;
+  if (Number.isFinite(a)) return a;
+  if (Number.isFinite(b)) return b;
+  return null;
+}
+
+function clampProbability01(value) {
+  const num = Number(value);
+  if (!Number.isFinite(num)) return null;
+  if (num <= 0) return 0;
+  if (num >= 1) return 1;
+  return num;
+}
+
+function roundShotsForDistribution(value) {
+  const num = Number(value);
+  if (!Number.isFinite(num) || num <= 0) return 0;
+  return Math.max(0, Math.round(num));
+}
+
+function buildBinomialGoalPmf(trials, probability) {
+  const n = Math.max(0, Math.floor(Number(trials) || 0));
+  const pRaw = clampProbability01(probability);
+  const p = pRaw == null ? 0 : pRaw;
+  const pmf = new Array(n + 1).fill(0);
+  if (n === 0) {
+    pmf[0] = 1;
+    return pmf;
+  }
+  if (p <= 0) {
+    pmf[0] = 1;
+    return pmf;
+  }
+  if (p >= 1) {
+    pmf[n] = 1;
+    return pmf;
+  }
+  const q = 1 - p;
+  pmf[0] = Math.pow(q, n);
+  for (let goals = 0; goals < n; goals += 1) {
+    const ratio = ((n - goals) / (goals + 1)) * (p / q);
+    pmf[goals + 1] = pmf[goals] * ratio;
+  }
+  const totalProb = pmf.reduce((sum, value) => sum + value, 0);
+  if (totalProb > 0) {
+    for (let idx = 0; idx < pmf.length; idx += 1) {
+      pmf[idx] = pmf[idx] / totalProb;
+    }
+  }
+  return pmf;
+}
+
+function convolveDiscretePmf(leftPmf, rightPmf) {
+  const left = Array.isArray(leftPmf) ? leftPmf : [];
+  const right = Array.isArray(rightPmf) ? rightPmf : [];
+  if (!left.length) return right.length ? [...right] : [1];
+  if (!right.length) return [...left];
+  const out = new Array(left.length + right.length - 1).fill(0);
+  for (let i = 0; i < left.length; i += 1) {
+    const lp = Number(left[i]);
+    if (!Number.isFinite(lp) || lp <= 0) continue;
+    for (let j = 0; j < right.length; j += 1) {
+      const rp = Number(right[j]);
+      if (!Number.isFinite(rp) || rp <= 0) continue;
+      out[i + j] += lp * rp;
+    }
+  }
+  return out;
+}
+
+function buildGoalDiffPmf(homeGoalPmf, awayGoalPmf) {
+  const home = Array.isArray(homeGoalPmf) ? homeGoalPmf : [1];
+  const away = Array.isArray(awayGoalPmf) ? awayGoalPmf : [1];
+  const out = new Map();
+  for (let homeGoals = 0; homeGoals < home.length; homeGoals += 1) {
+    const pHome = Number(home[homeGoals]);
+    if (!Number.isFinite(pHome) || pHome <= 0) continue;
+    for (let awayGoals = 0; awayGoals < away.length; awayGoals += 1) {
+      const pAway = Number(away[awayGoals]);
+      if (!Number.isFinite(pAway) || pAway <= 0) continue;
+      const diff = homeGoals - awayGoals;
+      out.set(diff, (out.get(diff) || 0) + (pHome * pAway));
+    }
+  }
+  return out;
+}
+
+function expectedValueFromPmf(pmf) {
+  const safePmf = Array.isArray(pmf) ? pmf : [];
+  let expected = 0;
+  for (let idx = 0; idx < safePmf.length; idx += 1) {
+    const prob = Number(safePmf[idx]);
+    if (!Number.isFinite(prob) || prob <= 0) continue;
+    expected += idx * prob;
+  }
+  return expected;
+}
+
+function expectedDiffFromPmf(diffPmf) {
+  if (!(diffPmf instanceof Map)) return 0;
+  let expected = 0;
+  for (const [diff, probRaw] of diffPmf.entries()) {
+    const prob = Number(probRaw);
+    if (!Number.isFinite(prob) || prob <= 0) continue;
+    expected += Number(diff) * prob;
+  }
+  return expected;
+}
+
+function computeMatchOddsFromGoalDiffPmf(goalDiffPmf) {
+  if (!(goalDiffPmf instanceof Map)) {
+    return {
+      homeWinProb: null,
+      drawProb: null,
+      awayWinProb: null,
+      homeWinOdds: null,
+      drawOdds: null,
+      awayWinOdds: null,
+    };
+  }
+  let homeWinProb = 0;
+  let drawProb = 0;
+  let awayWinProb = 0;
+  for (const [rawDiff, rawProb] of goalDiffPmf.entries()) {
+    const diff = Number(rawDiff);
+    const prob = Number(rawProb);
+    if (!Number.isFinite(diff) || !Number.isFinite(prob) || prob <= 0) continue;
+    if (diff > 0) homeWinProb += prob;
+    else if (diff < 0) awayWinProb += prob;
+    else drawProb += prob;
+  }
+  return {
+    homeWinProb,
+    drawProb,
+    awayWinProb,
+    homeWinOdds: homeWinProb > 0 ? (1 / homeWinProb) : null,
+    drawOdds: drawProb > 0 ? (1 / drawProb) : null,
+    awayWinOdds: awayWinProb > 0 ? (1 / awayWinProb) : null,
+  };
+}
+
+function splitAsianLineComponents(lineValue) {
+  const line = Number(lineValue);
+  if (!Number.isFinite(line)) return [];
+  const quarterUnits = Math.round(line * 4);
+  const remainder = ((quarterUnits % 4) + 4) % 4;
+  if (remainder === 1 || remainder === 3) {
+    return [
+      { line: line - 0.25, weight: 0.5 },
+      { line: line + 0.25, weight: 0.5 },
+    ];
+  }
+  return [{ line, weight: 1 }];
+}
+
+function computeAsianSideFairPrice(components, outcomeFn) {
+  let weightedWin = 0;
+  let weightedLoss = 0;
+  let weightedPush = 0;
+  for (const component of components) {
+    const line = Number(component?.line);
+    const weight = Number(component?.weight);
+    if (!Number.isFinite(line) || !Number.isFinite(weight) || weight <= 0) continue;
+    const outcomes = outcomeFn(line);
+    const win = Number(outcomes?.win);
+    const loss = Number(outcomes?.loss);
+    const push = Number(outcomes?.push);
+    weightedWin += weight * (Number.isFinite(win) ? win : 0);
+    weightedLoss += weight * (Number.isFinite(loss) ? loss : 0);
+    weightedPush += weight * (Number.isFinite(push) ? push : 0);
+  }
+  const fairOdds = weightedWin > 0 ? (1 + (weightedLoss / weightedWin)) : null;
+  return {
+    weightedWin,
+    weightedLoss,
+    weightedPush,
+    fairOdds,
+  };
+}
+
+function computeTotalSideOutcomes(totalGoalPmf, line, side) {
+  const safePmf = Array.isArray(totalGoalPmf) ? totalGoalPmf : [];
+  const targetLine = Number(line);
+  const targetSide = side === "under" ? "under" : "over";
+  let win = 0;
+  let loss = 0;
+  let push = 0;
+  for (let totalGoals = 0; totalGoals < safePmf.length; totalGoals += 1) {
+    const prob = Number(safePmf[totalGoals]);
+    if (!Number.isFinite(prob) || prob <= 0) continue;
+    if (targetSide === "over") {
+      if (totalGoals > targetLine) win += prob;
+      else if (totalGoals < targetLine) loss += prob;
+      else push += prob;
+    } else {
+      if (totalGoals < targetLine) win += prob;
+      else if (totalGoals > targetLine) loss += prob;
+      else push += prob;
+    }
+  }
+  return { win, loss, push };
+}
+
+function computeHandicapSideOutcomes(goalDiffPmf, line, side) {
+  const targetLine = Number(line);
+  const targetSide = side === "away" ? "away" : "home";
+  let win = 0;
+  let loss = 0;
+  let push = 0;
+  if (!(goalDiffPmf instanceof Map)) return { win, loss, push };
+  for (const [rawDiff, rawProb] of goalDiffPmf.entries()) {
+    const diff = Number(rawDiff);
+    const prob = Number(rawProb);
+    if (!Number.isFinite(diff) || !Number.isFinite(prob) || prob <= 0) continue;
+    const adjusted = targetSide === "home"
+      ? (diff + targetLine)
+      : ((-diff) + targetLine);
+    if (adjusted > 0) win += prob;
+    else if (adjusted < 0) loss += prob;
+    else push += prob;
+  }
+  return { win, loss, push };
+}
+
+function buildQuarterLineRange(startLine, endLine) {
+  const startUnits = Math.round(Number(startLine) * 4);
+  const endUnits = Math.round(Number(endLine) * 4);
+  if (!Number.isFinite(startUnits) || !Number.isFinite(endUnits)) return [];
+  const lo = Math.min(startUnits, endUnits);
+  const hi = Math.max(startUnits, endUnits);
+  const out = [];
+  for (let units = lo; units <= hi; units += 1) {
+    out.push(units / 4);
+  }
+  return out;
+}
+
+function formatQuarterLine(value, signed = false) {
+  const num = Number(value);
+  if (!Number.isFinite(num)) return "-";
+  const rounded = Math.round(num * 100) / 100;
+  let text = "";
+  if (Math.abs(rounded - Math.round(rounded)) < 1e-9) {
+    text = `${Math.round(rounded)}.0`;
+  } else if (Math.abs((rounded * 2) - Math.round(rounded * 2)) < 1e-9) {
+    text = rounded.toFixed(1);
+  } else {
+    text = rounded.toFixed(2);
+  }
+  if (signed && rounded > 0) return `+${text}`;
+  return text;
+}
+
+function isHalfLineValue(value) {
+  const num = Number(value);
+  if (!Number.isFinite(num)) return false;
+  const quarterUnitsAbs = Math.abs(Math.round(num * 4));
+  return (quarterUnitsAbs % 4) === 2;
+}
+
+function isStrictHalfLineValue(value) {
+  const num = Number(value);
+  if (!Number.isFinite(num)) return false;
+  const doubled = num * 2;
+  return (
+    Math.abs(doubled - Math.round(doubled)) <= 1e-9
+    && Math.abs(num - Math.round(num)) > 1e-9
+  );
+}
+
+function parsePricingHalfLine(value) {
+  const text = String(value ?? "").trim().replace(",", ".");
+  if (!text) return null;
+  const num = Number(text);
+  return Number.isFinite(num) ? num : null;
+}
+
+function formatHalfLineInputValue(value) {
+  const num = Number(value);
+  if (!Number.isFinite(num)) return String(value ?? "");
+  return num.toFixed(1);
+}
+
+function formatOddsValue(value) {
+  const num = Number(value);
+  if (!Number.isFinite(num) || num <= 0) return "-";
+  if (num > 999) return "999+";
+  return formatMetricValue(num, 2);
+}
+
+function findMainLineIndex(rows, getLeftOdds, getRightOdds) {
+  const safeRows = Array.isArray(rows) ? rows : [];
+  if (!safeRows.length) return -1;
+  let bestIndex = -1;
+  let bestScore = Infinity;
+  for (let idx = 0; idx < safeRows.length; idx += 1) {
+    const row = safeRows[idx];
+    const leftOdds = Number(getLeftOdds(row));
+    const rightOdds = Number(getRightOdds(row));
+    if (!Number.isFinite(leftOdds) || !Number.isFinite(rightOdds)) continue;
+    const score = Math.abs(leftOdds - 2.0) + Math.abs(rightOdds - 2.0);
+    if (score < bestScore) {
+      bestScore = score;
+      bestIndex = idx;
+    }
+  }
+  if (bestIndex >= 0) return bestIndex;
+  return Math.floor(safeRows.length / 2);
+}
+
+function selectDefaultMainWindow(rows, mainIndex, eachSide = 2) {
+  const safeRows = Array.isArray(rows) ? rows : [];
+  if (!safeRows.length) return [];
+  if (!Number.isFinite(mainIndex) || mainIndex < 0) {
+    return safeRows.slice(0, Math.min(5, safeRows.length));
+  }
+  const targetCount = Math.min(safeRows.length, (eachSide * 2) + 1);
+  let start = Math.max(0, mainIndex - eachSide);
+  let end = Math.min(safeRows.length - 1, mainIndex + eachSide);
+  let currentCount = (end - start) + 1;
+  if (currentCount < targetCount) {
+    const missing = targetCount - currentCount;
+    const roomLeft = start;
+    const roomRight = (safeRows.length - 1) - end;
+    const shiftLeft = Math.min(roomLeft, missing);
+    start -= shiftLeft;
+    currentCount += shiftLeft;
+    const stillMissing = targetCount - currentCount;
+    const shiftRight = Math.min(roomRight, stillMissing);
+    end += shiftRight;
+  }
+  return safeRows.slice(start, end + 1);
+}
+
+function calculateTeamSeasonShotProfile(rows) {
+  const safeRows = Array.isArray(rows) ? rows : [];
+  const xgForAvg = averageMetric(safeRows, "xG");
+  const xgAgainstAvg = averageMetric(safeRows, "xGA");
+  const shotsForAvg = averageMetric(safeRows, "shots_for");
+  const shotsAgainstAvg = averageMetric(safeRows, "shots_against");
+  const xgForTotal = sumMetric(safeRows, "xG");
+  const shotsForTotal = sumMetric(safeRows, "shots_for");
+  const xgPerShotFor = (
+    Number.isFinite(xgForTotal)
+    && Number.isFinite(shotsForTotal)
+    && shotsForTotal > 0
+  )
+    ? (xgForTotal / shotsForTotal)
+    : null;
+  return {
+    games: safeRows.length,
+    xgForAvg,
+    xgAgainstAvg,
+    shotsForAvg,
+    shotsAgainstAvg,
+    xgPerShotFor,
+  };
+}
+
+function buildGamePricingModel(homeRows, awayRows, options = {}) {
+  const homeProfile = calculateTeamSeasonShotProfile(homeRows);
+  const awayProfile = calculateTeamSeasonShotProfile(awayRows);
+  const overrideHomeXg = toMetricNumber(options?.projectedHomeXg);
+  const overrideAwayXg = toMetricNumber(options?.projectedAwayXg);
+  const avgHomeXg = averagePair(homeProfile.xgForAvg, awayProfile.xgAgainstAvg);
+  const avgAwayXg = averagePair(awayProfile.xgForAvg, homeProfile.xgAgainstAvg);
+  const predictedHomeXg = Number.isFinite(overrideHomeXg) ? overrideHomeXg : avgHomeXg;
+  const predictedAwayXg = Number.isFinite(overrideAwayXg) ? overrideAwayXg : avgAwayXg;
+  const averageProjectedHomeShots = averagePair(homeProfile.shotsForAvg, awayProfile.shotsAgainstAvg);
+  const averageProjectedAwayShots = averagePair(awayProfile.shotsForAvg, homeProfile.shotsAgainstAvg);
+  const predictedHomeShots = averageProjectedHomeShots;
+  const predictedAwayShots = averageProjectedAwayShots;
+  const homeGoalProbPerShot = (
+    Number.isFinite(predictedHomeXg)
+    && Number.isFinite(predictedHomeShots)
+    && predictedHomeShots > 0
+  )
+    ? clampProbability01(predictedHomeXg / predictedHomeShots)
+    : null;
+  const awayGoalProbPerShot = (
+    Number.isFinite(predictedAwayXg)
+    && Number.isFinite(predictedAwayShots)
+    && predictedAwayShots > 0
+  )
+    ? clampProbability01(predictedAwayXg / predictedAwayShots)
+    : null;
+  const homeShotTrials = roundShotsForDistribution(predictedHomeShots);
+  const awayShotTrials = roundShotsForDistribution(predictedAwayShots);
+  const canBuildDistributions = (
+    Number.isFinite(predictedHomeShots)
+    && Number.isFinite(predictedAwayShots)
+    && homeGoalProbPerShot != null
+    && awayGoalProbPerShot != null
+  );
+
+  if (!canBuildDistributions) {
+    return {
+      homeProfile,
+      awayProfile,
+      predictedHomeXg,
+      predictedAwayXg,
+      predictedHomeShots,
+      predictedAwayShots,
+      homeGoalProbPerShot,
+      awayGoalProbPerShot,
+      homeShotTrials,
+      awayShotTrials,
+      homeGoalPmf: [],
+      awayGoalPmf: [],
+      totalGoalPmf: [],
+      goalDiffPmf: new Map(),
+      matchOdds: {
+        homeWinProb: null,
+        drawProb: null,
+        awayWinProb: null,
+        homeWinOdds: null,
+        drawOdds: null,
+        awayWinOdds: null,
+      },
+      totalLines: [],
+      handicapLines: [],
+      warnings: [
+        "Missing projected xG or shot averages for one side, so pricing cannot be calculated yet.",
+      ],
+    };
+  }
+
+  const homeGoalPmf = buildBinomialGoalPmf(homeShotTrials, homeGoalProbPerShot);
+  const awayGoalPmf = buildBinomialGoalPmf(awayShotTrials, awayGoalProbPerShot);
+  const totalGoalPmf = convolveDiscretePmf(homeGoalPmf, awayGoalPmf);
+  const goalDiffPmf = buildGoalDiffPmf(homeGoalPmf, awayGoalPmf);
+  const matchOdds = computeMatchOddsFromGoalDiffPmf(goalDiffPmf);
+  const expectedTotalGoals = expectedValueFromPmf(totalGoalPmf);
+  const expectedGoalDiff = expectedDiffFromPmf(goalDiffPmf);
+
+  const totalUpperLine = Math.min(
+    10.5,
+    Math.max(6.5, (Math.ceil(expectedTotalGoals + 4) + 0.5))
+  );
+  const totalLineValues = buildQuarterLineRange(0.5, totalUpperLine);
+  const totalLines = totalLineValues.map((line) => {
+    const components = splitAsianLineComponents(line);
+    const over = computeAsianSideFairPrice(
+      components,
+      (componentLine) => computeTotalSideOutcomes(totalGoalPmf, componentLine, "over")
+    );
+    const under = computeAsianSideFairPrice(
+      components,
+      (componentLine) => computeTotalSideOutcomes(totalGoalPmf, componentLine, "under")
+    );
+    return {
+      line,
+      over,
+      under,
+    };
+  });
+
+  const handicapAbs = Math.min(
+    4.0,
+    Math.max(2.0, Math.ceil(Math.abs(expectedGoalDiff) + 2))
+  );
+  const handicapLineValues = buildQuarterLineRange(-handicapAbs, handicapAbs);
+  const handicapLines = handicapLineValues.map((homeLine) => {
+    const homeComponents = splitAsianLineComponents(homeLine);
+    const awayLine = -homeLine;
+    const awayComponents = splitAsianLineComponents(awayLine);
+    const home = computeAsianSideFairPrice(
+      homeComponents,
+      (componentLine) => computeHandicapSideOutcomes(goalDiffPmf, componentLine, "home")
+    );
+    const away = computeAsianSideFairPrice(
+      awayComponents,
+      (componentLine) => computeHandicapSideOutcomes(goalDiffPmf, componentLine, "away")
+    );
+    return {
+      homeLine,
+      awayLine,
+      home,
+      away,
+    };
+  });
+
+  return {
+    homeProfile,
+    awayProfile,
+    predictedHomeXg,
+    predictedAwayXg,
+    predictedHomeShots,
+    predictedAwayShots,
+    homeGoalProbPerShot,
+    awayGoalProbPerShot,
+    homeShotTrials,
+    awayShotTrials,
+    homeGoalPmf,
+    awayGoalPmf,
+    totalGoalPmf,
+    goalDiffPmf,
+    matchOdds,
+    totalLines,
+    handicapLines,
+    warnings: [],
+  };
+}
+
+function buildPoissonGoalPmf(expectedGoals, options = {}) {
+  const lambda = Number(expectedGoals);
+  if (!Number.isFinite(lambda) || lambda < 0) return [];
+  const maxGoalsInput = Number(options?.maxGoals);
+  const dynamicMaxGoals = Number.isFinite(maxGoalsInput) && maxGoalsInput >= 1
+    ? Math.floor(maxGoalsInput)
+    : Math.max(12, Math.min(40, Math.ceil(lambda + (8 * Math.sqrt(lambda + 1)) + 4)));
+  const pmf = new Array(dynamicMaxGoals + 1).fill(0);
+  const p0 = Math.exp(-lambda);
+  pmf[0] = p0;
+  let running = p0;
+  for (let goals = 1; goals <= dynamicMaxGoals; goals += 1) {
+    const prev = Number(pmf[goals - 1]) || 0;
+    const value = prev * (lambda / goals);
+    pmf[goals] = value;
+    running += value;
+  }
+  const tail = Math.max(0, 1 - running);
+  pmf[dynamicMaxGoals] = (Number(pmf[dynamicMaxGoals]) || 0) + tail;
+  return pmf;
+}
+
+function buildMainlinePricingFromProjectedXg(homeXgValue, awayXgValue) {
+  const projectedHomeXg = Number(homeXgValue);
+  const projectedAwayXg = Number(awayXgValue);
+  if (!Number.isFinite(projectedHomeXg) || !Number.isFinite(projectedAwayXg)) {
+    return null;
+  }
+
+  const homeGoalPmf = buildPoissonGoalPmf(projectedHomeXg);
+  const awayGoalPmf = buildPoissonGoalPmf(projectedAwayXg);
+  if (!homeGoalPmf.length || !awayGoalPmf.length) {
+    return null;
+  }
+
+  const totalGoalPmf = convolveDiscretePmf(homeGoalPmf, awayGoalPmf);
+  const goalDiffPmf = buildGoalDiffPmf(homeGoalPmf, awayGoalPmf);
+  const matchOdds = computeMatchOddsFromGoalDiffPmf(goalDiffPmf);
+
+  const expectedTotalGoals = Math.max(0, projectedHomeXg + projectedAwayXg);
+  const expectedGoalDiff = projectedHomeXg - projectedAwayXg;
+
+  const totalUpperLine = Math.min(
+    10.5,
+    Math.max(6.5, (Math.ceil(expectedTotalGoals + 4) + 0.5))
+  );
+  const totalLines = buildQuarterLineRange(0.5, totalUpperLine).map((line) => {
+    const components = splitAsianLineComponents(line);
+    const over = computeAsianSideFairPrice(
+      components,
+      (componentLine) => computeTotalSideOutcomes(totalGoalPmf, componentLine, "over")
+    );
+    const under = computeAsianSideFairPrice(
+      components,
+      (componentLine) => computeTotalSideOutcomes(totalGoalPmf, componentLine, "under")
+    );
+    return { line, over, under };
+  });
+
+  const handicapAbs = Math.min(
+    4.0,
+    Math.max(2.0, Math.ceil(Math.abs(expectedGoalDiff) + 2))
+  );
+  const handicapLines = buildQuarterLineRange(-handicapAbs, handicapAbs).map((homeLine) => {
+    const homeComponents = splitAsianLineComponents(homeLine);
+    const awayLine = -homeLine;
+    const awayComponents = splitAsianLineComponents(awayLine);
+    const home = computeAsianSideFairPrice(
+      homeComponents,
+      (componentLine) => computeHandicapSideOutcomes(goalDiffPmf, componentLine, "home")
+    );
+    const away = computeAsianSideFairPrice(
+      awayComponents,
+      (componentLine) => computeHandicapSideOutcomes(goalDiffPmf, componentLine, "away")
+    );
+    return { homeLine, awayLine, home, away };
+  });
+
+  const totalMainIndex = findMainLineIndex(totalLines, (row) => row?.under?.fairOdds, (row) => row?.over?.fairOdds);
+  const handicapMainIndex = findMainLineIndex(
+    handicapLines,
+    (row) => row?.home?.fairOdds,
+    (row) => row?.away?.fairOdds,
+  );
+
+  return {
+    projectedHomeXg,
+    projectedAwayXg,
+    matchOdds,
+    totalMainline: totalMainIndex >= 0 ? totalLines[totalMainIndex] : null,
+    handicapMainline: handicapMainIndex >= 0 ? handicapLines[handicapMainIndex] : null,
+  };
+}
+
+function buildGameMainlinePricingFromSeasonXg(game) {
+  const projectedHomeXg = toMetricNumberOrNull(game?.season_home_xg);
+  const projectedAwayXg = toMetricNumberOrNull(game?.season_away_xg);
+  if (projectedHomeXg == null || projectedAwayXg == null) return null;
+  return buildMainlinePricingFromProjectedXg(projectedHomeXg, projectedAwayXg);
+}
+
+function buildTeamGoalDistributionTableHtml(teamLabel, trials, probability, pmf) {
+  const safePmf = Array.isArray(pmf) ? pmf : [];
+  if (!safePmf.length) {
+    return `
+      <section class="recent-team-block">
+        <h4>${escapeHtml(teamLabel || "Team")} Goal Distribution</h4>
+        <p class="recent-empty">No distribution available.</p>
+      </section>
+    `;
+  }
+  const maxGoalsShown = 20;
+  const rowsShown = safePmf.slice(0, maxGoalsShown + 1);
+  const tailProbability = safePmf.slice(maxGoalsShown + 1).reduce((sum, value) => sum + Number(value || 0), 0);
+  const expectedGoals = expectedValueFromPmf(safePmf);
+  return `
+    <section class="recent-team-block">
+      <h4>${escapeHtml(teamLabel || "Team")} Goal Distribution</h4>
+      <div class="recent-table-wrap">
+        <table class="lines-table recent-lines-table">
+          <thead>
+            <tr>
+              <th>Shots (n)</th>
+              <th>Goal/Shot (p)</th>
+              <th>Exp Goals</th>
+              <th>Goals</th>
+              <th>Prob</th>
+              <th>Fair Odds</th>
+            </tr>
+          </thead>
+          <tbody>
+            ${rowsShown
+              .map((probabilityAtGoals, goals) => {
+                const prob = Number(probabilityAtGoals);
+                const fairOdds = prob > 0 ? (1 / prob) : null;
+                return `
+              <tr>
+                <td>${goals === 0 ? trials : ""}</td>
+                <td>${goals === 0 ? formatMetricValue(probability, 3) : ""}</td>
+                <td>${goals === 0 ? formatMetricValue(expectedGoals, 2) : ""}</td>
+                <td>${goals}</td>
+                <td>${formatMetricValue(prob * 100, 2)}%</td>
+                <td>${formatOddsValue(fairOdds)}</td>
+              </tr>
+            `;
+              })
+              .join("")}
+            ${tailProbability > 1e-8
+    ? `
+            <tr>
+              <td></td>
+              <td></td>
+              <td></td>
+              <td>${maxGoalsShown + 1}+</td>
+              <td>${formatMetricValue(tailProbability * 100, 2)}%</td>
+              <td>-</td>
+            </tr>
+            `
+    : ""}
+          </tbody>
+        </table>
+      </div>
+    </section>
+  `;
+}
+
+function buildTotalPricingTableHtml(totalLines, options = {}) {
+  const rows = Array.isArray(totalLines) ? totalLines : [];
+  const expanded = Boolean(options?.expanded);
+  const mainIndex = findMainLineIndex(rows, (row) => row?.under?.fairOdds, (row) => row?.over?.fairOdds);
+  const defaultRows = selectDefaultMainWindow(rows, mainIndex, 2);
+  const rowsToRender = expanded ? rows : defaultRows;
+  const hasHiddenRows = rows.length > rowsToRender.length;
+  if (!rows.length) {
+    return `
+      <section class="recent-team-block">
+        <h4>Total Goals Prices</h4>
+        <p class="recent-empty">No total-goals prices available.</p>
+      </section>
+    `;
+  }
+  return `
+    <section class="recent-team-block">
+      <div class="pricing-table-head">
+        <h4>Total Goals Prices (Fair, No Margin)</h4>
+        ${hasHiddenRows || expanded
+    ? `
+        <button type="button" class="pricing-expand-btn" data-pricing-table="totals">
+          ${expanded ? "Show Main Window" : `Show All (${rows.length})`}
+        </button>
+        `
+    : ""}
+      </div>
+      <div class="recent-table-wrap">
+        <table class="lines-table recent-lines-table">
+          <thead>
+            <tr>
+              <th>Under</th>
+              <th>Line</th>
+              <th>Over</th>
+            </tr>
+          </thead>
+          <tbody>
+            ${rowsToRender
+              .map((row) => {
+                const rowIndex = rows.indexOf(row);
+                const isMainLine = rowIndex >= 0 && rowIndex === mainIndex;
+                return `
+              <tr class="${isHalfLineValue(row?.line) ? "pricing-half-line-row" : ""} ${isMainLine ? "pricing-main-line-row" : ""}">
+                <td>${formatOddsValue(row?.under?.fairOdds)}</td>
+                <td>${formatQuarterLine(row?.line, false)}</td>
+                <td>${formatOddsValue(row?.over?.fairOdds)}</td>
+              </tr>
+            `;
+              })
+              .join("")}
+          </tbody>
+        </table>
+      </div>
+    </section>
+  `;
+}
+
+function buildHandicapPricingTableHtml(handicapLines, options = {}) {
+  const rows = Array.isArray(handicapLines) ? handicapLines : [];
+  const expanded = Boolean(options?.expanded);
+  const mainIndex = findMainLineIndex(rows, (row) => row?.home?.fairOdds, (row) => row?.away?.fairOdds);
+  const defaultRows = selectDefaultMainWindow(rows, mainIndex, 2);
+  const rowsToRender = expanded ? rows : defaultRows;
+  const hasHiddenRows = rows.length > rowsToRender.length;
+  if (!rows.length) {
+    return `
+      <section class="recent-team-block">
+        <h4>Asian Handicap Prices</h4>
+        <p class="recent-empty">No handicap prices available.</p>
+      </section>
+    `;
+  }
+  return `
+    <section class="recent-team-block">
+      <div class="pricing-table-head">
+        <h4>Asian Handicap Prices (Fair, No Margin)</h4>
+        ${hasHiddenRows || expanded
+    ? `
+        <button type="button" class="pricing-expand-btn" data-pricing-table="handicap">
+          ${expanded ? "Show Main Window" : `Show All (${rows.length})`}
+        </button>
+        `
+    : ""}
+      </div>
+      <div class="recent-table-wrap">
+        <table class="lines-table recent-lines-table">
+          <thead>
+            <tr>
+              <th>Home</th>
+              <th>Handicap</th>
+              <th>Away</th>
+            </tr>
+          </thead>
+          <tbody>
+            ${rowsToRender
+              .map((row) => {
+                const rowIndex = rows.indexOf(row);
+                const isMainLine = rowIndex >= 0 && rowIndex === mainIndex;
+                return `
+              <tr class="${isHalfLineValue(row?.homeLine) ? "pricing-half-line-row" : ""} ${isMainLine ? "pricing-main-line-row" : ""}">
+                <td>${formatOddsValue(row?.home?.fairOdds)}</td>
+                <td>${formatQuarterLine(row?.homeLine, true)}</td>
+                <td>${formatOddsValue(row?.away?.fairOdds)}</td>
+              </tr>
+            `;
+              })
+              .join("")}
+          </tbody>
+        </table>
+      </div>
+    </section>
+  `;
+}
+
+function buildMatchOddsPricingTableHtml(matchOdds) {
+  const safe = matchOdds && typeof matchOdds === "object"
+    ? matchOdds
+    : {
+      homeWinProb: null,
+      drawProb: null,
+      awayWinProb: null,
+      homeWinOdds: null,
+      drawOdds: null,
+      awayWinOdds: null,
+    };
+  const hasPrices = (
+    Number.isFinite(Number(safe.homeWinOdds))
+    || Number.isFinite(Number(safe.drawOdds))
+    || Number.isFinite(Number(safe.awayWinOdds))
+  );
+  if (!hasPrices) {
+    return `
+      <section class="recent-team-block">
+        <h4>Match Odds (1X2)</h4>
+        <p class="recent-empty">No match-odds prices available.</p>
+      </section>
+    `;
+  }
+  return `
+    <section class="recent-team-block">
+      <h4>Match Odds (1X2) - Fair, No Margin</h4>
+      <div class="recent-table-wrap">
+        <table class="lines-table recent-lines-table">
+          <thead>
+            <tr>
+              <th>Home Win</th>
+              <th>Draw</th>
+              <th>Away Win</th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr>
+              <td>${formatOddsValue(safe.homeWinOdds)}</td>
+              <td>${formatOddsValue(safe.drawOdds)}</td>
+              <td>${formatOddsValue(safe.awayWinOdds)}</td>
+            </tr>
+          </tbody>
+        </table>
+      </div>
+    </section>
+  `;
+}
+
+function normalizeBetBuilderMarket(value) {
+  const market = String(value || "").trim().toLowerCase();
+  if (market === "handicap" || market === "btts") return market;
+  return "total";
+}
+
+function getBetBuilderLegState(legNumber) {
+  if (legNumber === 2) {
+    return {
+      market: normalizeBetBuilderMarket(pricingBetBuilderLeg2Market),
+      handicapSide: pricingBetBuilderLeg2HandicapSide === "away" ? "away" : "home",
+      handicapLine: pricingBetBuilderLeg2HandicapLine,
+      totalSide: pricingBetBuilderLeg2TotalSide === "under" ? "under" : "over",
+      totalLine: pricingBetBuilderLeg2TotalLine,
+      bttsSide: pricingBetBuilderLeg2BttsSide === "no" ? "no" : "yes",
+    };
+  }
+  return {
+    market: normalizeBetBuilderMarket(pricingBetBuilderLeg1Market),
+    handicapSide: pricingBetBuilderLeg1HandicapSide === "away" ? "away" : "home",
+    handicapLine: pricingBetBuilderLeg1HandicapLine,
+    totalSide: pricingBetBuilderLeg1TotalSide === "under" ? "under" : "over",
+    totalLine: pricingBetBuilderLeg1TotalLine,
+    bttsSide: pricingBetBuilderLeg1BttsSide === "no" ? "no" : "yes",
+  };
+}
+
+function normalizeBetBuilderLeg(rawLeg, label) {
+  const market = normalizeBetBuilderMarket(rawLeg?.market);
+  const bet = market === "handicap"
+    ? (rawLeg?.handicapSide === "away" ? "away" : "home")
+    : (market === "btts"
+      ? (rawLeg?.bttsSide === "no" ? "no" : "yes")
+      : (rawLeg?.totalSide === "under" ? "under" : "over"));
+  const line = market === "handicap"
+    ? parsePricingHalfLine(rawLeg?.handicapLine)
+    : (market === "total" ? parsePricingHalfLine(rawLeg?.totalLine) : null);
+  const warnings = [];
+  if (market === "handicap" && !isStrictHalfLineValue(line)) {
+    warnings.push(`${label} handicap line must be a half line.`);
+  }
+  if (market === "total" && (!isStrictHalfLineValue(line) || Number(line) < 0.5)) {
+    warnings.push(`${label} goal line must be a positive half line.`);
+  }
+  return { market, bet, line, warnings };
+}
+
+function betBuilderLegWins(leg, homeGoals, awayGoals) {
+  if (!leg || typeof leg !== "object") return false;
+  if (leg.market === "handicap") {
+    const homeAdjusted = (homeGoals - awayGoals) + Number(leg.line);
+    return leg.bet === "home" ? homeAdjusted > 0 : homeAdjusted < 0;
+  }
+  if (leg.market === "btts") {
+    const bttsHappened = homeGoals > 0 && awayGoals > 0;
+    return leg.bet === "yes" ? bttsHappened : !bttsHappened;
+  }
+  const totalGoals = homeGoals + awayGoals;
+  return leg.bet === "over" ? totalGoals > Number(leg.line) : totalGoals < Number(leg.line);
+}
+
+function computeBetBuilderFairPrice(homeGoalPmf, awayGoalPmf, options = {}) {
+  const home = Array.isArray(homeGoalPmf) ? homeGoalPmf : [];
+  const away = Array.isArray(awayGoalPmf) ? awayGoalPmf : [];
+  const leg1 = normalizeBetBuilderLeg(options?.leg1, "Leg 1");
+  const leg2 = normalizeBetBuilderLeg(options?.leg2, "Leg 2");
+  const warnings = [...leg1.warnings, ...leg2.warnings];
+
+  if (!home.length || !away.length) {
+    warnings.push("No goal distribution is available for this game.");
+  }
+  if (warnings.length) {
+    return {
+      leg1,
+      leg2,
+      combinedWinProb: null,
+      fairOdds: null,
+      warnings,
+    };
+  }
+
+  let combinedWinProb = 0;
+  for (let homeGoals = 0; homeGoals < home.length; homeGoals += 1) {
+    const homeProb = Number(home[homeGoals]);
+    if (!Number.isFinite(homeProb) || homeProb <= 0) continue;
+    for (let awayGoals = 0; awayGoals < away.length; awayGoals += 1) {
+      const awayProb = Number(away[awayGoals]);
+      if (!Number.isFinite(awayProb) || awayProb <= 0) continue;
+      if (betBuilderLegWins(leg1, homeGoals, awayGoals) && betBuilderLegWins(leg2, homeGoals, awayGoals)) {
+        combinedWinProb += homeProb * awayProb;
+      }
+    }
+  }
+
+  return {
+    leg1,
+    leg2,
+    combinedWinProb,
+    fairOdds: combinedWinProb > 0 ? (1 / combinedWinProb) : null,
+    warnings: [],
+  };
+}
+
+function normalizePricingBetBuilderEdge(value) {
+  const num = Number(String(value ?? "").trim().replace(",", "."));
+  if (!Number.isFinite(num)) return 0;
+  return Math.max(0, Math.min(10, Math.round(num * 10000) / 10000));
+}
+
+function formatPricingBetBuilderEdge(value) {
+  const normalized = normalizePricingBetBuilderEdge(value);
+  return String(Math.round(normalized * 10000) / 10000);
+}
+
+function formatBetBuilderLegSelection(leg) {
+  if (!leg || typeof leg !== "object") return "-";
+  if (leg.market === "handicap") {
+    return `Handicap ${leg.bet === "away" ? "Away" : "Home"} ${formatQuarterLine(leg.line, true)}`;
+  }
+  if (leg.market === "btts") {
+    return `BTTS ${leg.bet === "no" ? "No" : "Yes"}`;
+  }
+  return `Total Goals ${leg.bet === "under" ? "Under" : "Over"} ${formatQuarterLine(leg.line, false)}`;
+}
+
+function buildBetBuilderBetOptionsHtml(market, selectedBet) {
+  if (market === "handicap") {
+    const bet = selectedBet === "away" ? "away" : "home";
+    return `
+      <option value="home" ${bet === "home" ? "selected" : ""}>Home</option>
+      <option value="away" ${bet === "away" ? "selected" : ""}>Away</option>
+    `;
+  }
+  if (market === "btts") {
+    const bet = selectedBet === "no" ? "no" : "yes";
+    return `
+      <option value="yes" ${bet === "yes" ? "selected" : ""}>Yes</option>
+      <option value="no" ${bet === "no" ? "selected" : ""}>No</option>
+    `;
+  }
+  const bet = selectedBet === "under" ? "under" : "over";
+  return `
+    <option value="over" ${bet === "over" ? "selected" : ""}>Over</option>
+    <option value="under" ${bet === "under" ? "selected" : ""}>Under</option>
+  `;
+}
+
+function getBetBuilderLegSelectedBet(legState) {
+  const market = normalizeBetBuilderMarket(legState?.market);
+  if (market === "handicap") return legState?.handicapSide === "away" ? "away" : "home";
+  if (market === "btts") return legState?.bttsSide === "no" ? "no" : "yes";
+  return legState?.totalSide === "under" ? "under" : "over";
+}
+
+function getBetBuilderLegLineDisplayValue(legState) {
+  const market = normalizeBetBuilderMarket(legState?.market);
+  if (market === "btts") return "N/A";
+  const rawLine = market === "handicap" ? legState?.handicapLine : legState?.totalLine;
+  return formatHalfLineInputValue(rawLine);
+}
+
+function buildBetBuilderLegControlsHtml(legNumber, legState) {
+  const market = normalizeBetBuilderMarket(legState?.market);
+  const selectedBet = getBetBuilderLegSelectedBet(legState);
+  const lineInputType = market === "btts" ? "text" : "number";
+  const disabledAttr = market === "btts" ? "disabled" : "";
+  const minAttr = market === "handicap" ? "-10.5" : "0.5";
+  const maxAttr = market === "handicap" ? "10.5" : "15.5";
+  return `
+    <div class="betbuilder-leg-row">
+      <label class="betbuilder-control" for="pricingBetBuilderLeg${legNumber}Market">
+        <span>Market ${legNumber}</span>
+        <select id="pricingBetBuilderLeg${legNumber}Market" data-betbuilder-leg="${legNumber}">
+          <option value="handicap" ${market === "handicap" ? "selected" : ""}>Handicap</option>
+          <option value="total" ${market === "total" ? "selected" : ""}>Total Goals</option>
+          <option value="btts" ${market === "btts" ? "selected" : ""}>BTTS</option>
+        </select>
+      </label>
+      <label class="betbuilder-control" for="pricingBetBuilderLeg${legNumber}Line">
+        <span>Line ${legNumber}</span>
+        <input
+          id="pricingBetBuilderLeg${legNumber}Line"
+          data-betbuilder-leg="${legNumber}"
+          type="${lineInputType}"
+          step="1"
+          min="${minAttr}"
+          max="${maxAttr}"
+          value="${escapeHtml(getBetBuilderLegLineDisplayValue(legState))}"
+          ${disabledAttr}
+        />
+      </label>
+      <label class="betbuilder-control" for="pricingBetBuilderLeg${legNumber}Bet">
+        <span>Bet ${legNumber}</span>
+        <select id="pricingBetBuilderLeg${legNumber}Bet" data-betbuilder-leg="${legNumber}">
+          ${buildBetBuilderBetOptionsHtml(market, selectedBet)}
+        </select>
+      </label>
+    </div>
+  `;
+}
+
+function setBetBuilderLegMarket(legNumber, marketValue) {
+  const market = normalizeBetBuilderMarket(marketValue);
+  if (legNumber === 2) {
+    pricingBetBuilderLeg2Market = market;
+  } else {
+    pricingBetBuilderLeg1Market = market;
+  }
+}
+
+function setBetBuilderLegLine(legNumber, lineValue) {
+  const legState = getBetBuilderLegState(legNumber);
+  const market = normalizeBetBuilderMarket(legState.market);
+  if (market === "btts") return;
+  const parsed = parsePricingHalfLine(lineValue);
+  const validLine = market === "handicap"
+    ? isStrictHalfLineValue(parsed)
+    : (isStrictHalfLineValue(parsed) && parsed >= 0.5);
+  const nextValue = validLine ? formatHalfLineInputValue(parsed) : String(lineValue || "");
+  if (legNumber === 2) {
+    if (market === "handicap") pricingBetBuilderLeg2HandicapLine = nextValue;
+    else pricingBetBuilderLeg2TotalLine = nextValue;
+  } else if (market === "handicap") {
+    pricingBetBuilderLeg1HandicapLine = nextValue;
+  } else {
+    pricingBetBuilderLeg1TotalLine = nextValue;
+  }
+}
+
+function setBetBuilderLegBet(legNumber, betValue) {
+  const legState = getBetBuilderLegState(legNumber);
+  const market = normalizeBetBuilderMarket(legState.market);
+  if (legNumber === 2) {
+    if (market === "handicap") pricingBetBuilderLeg2HandicapSide = betValue === "away" ? "away" : "home";
+    else if (market === "btts") pricingBetBuilderLeg2BttsSide = betValue === "no" ? "no" : "yes";
+    else pricingBetBuilderLeg2TotalSide = betValue === "under" ? "under" : "over";
+    return;
+  }
+  if (market === "handicap") pricingBetBuilderLeg1HandicapSide = betValue === "away" ? "away" : "home";
+  else if (market === "btts") pricingBetBuilderLeg1BttsSide = betValue === "no" ? "no" : "yes";
+  else pricingBetBuilderLeg1TotalSide = betValue === "under" ? "under" : "over";
+}
+
+function buildBetBuilderPricingHtml(model, homeLabel, awayLabel) {
+  const safeModel = model && typeof model === "object" ? model : {};
+  const result = computeBetBuilderFairPrice(
+    safeModel.homeGoalPmf,
+    safeModel.awayGoalPmf,
+    {
+      leg1: getBetBuilderLegState(1),
+      leg2: getBetBuilderLegState(2),
+    }
+  );
+  const leg1State = getBetBuilderLegState(1);
+  const leg2State = getBetBuilderLegState(2);
+  const selectionText = `${formatBetBuilderLegSelection(result.leg1)} + ${formatBetBuilderLegSelection(result.leg2)}`;
+  const warningHtml = result.warnings.length
+    ? `<div class="warning">${escapeHtml(result.warnings.join(" "))}</div>`
+    : "";
+  const edge = normalizePricingBetBuilderEdge(pricingBetBuilderEdge);
+  const minPrice = Number.isFinite(Number(result.fairOdds))
+    ? Number(result.fairOdds) * (1 + edge)
+    : null;
+  return `
+    <section class="recent-team-block betbuilder-calculator">
+      <h4>Betbuilder Price Calculator</h4>
+      <div class="betbuilder-layout">
+        <div class="betbuilder-controls">
+          ${buildBetBuilderLegControlsHtml(1, leg1State)}
+          ${buildBetBuilderLegControlsHtml(2, leg2State)}
+        </div>
+        <div class="betbuilder-price-panel">
+          <div class="betbuilder-selection">${escapeHtml(selectionText)}</div>
+          <div class="betbuilder-price-grid">
+            <div class="betbuilder-price-cell">
+              <span>Fair Price</span>
+              <strong>${formatOddsValue(result.fairOdds)}</strong>
+            </div>
+            <div class="betbuilder-price-cell">
+              <span>Min Price</span>
+              <strong>${formatOddsValue(minPrice)}</strong>
+            </div>
+          </div>
+          <label class="betbuilder-edge-control" for="pricingBetBuilderEdge">
+            <span>Edge</span>
+            <input
+              id="pricingBetBuilderEdge"
+              type="text"
+              inputmode="decimal"
+              autocomplete="off"
+              value="${escapeHtml(formatPricingBetBuilderEdge(edge))}"
+            />
+          </label>
+        </div>
+      </div>
+      ${warningHtml}
+    </section>
+  `;
+}
+
+function buildGamePricingTabHtml(homeLabel, awayLabel, homeRows, awayRows, options = {}) {
+  const model = buildGamePricingModel(homeRows, awayRows, options);
+  const warningHtml = model.warnings.length
+    ? `<div class="warning">${escapeHtml(model.warnings.join(" "))}</div>`
+    : "";
+  return `
+    ${warningHtml}
+    ${buildMatchOddsPricingTableHtml(model.matchOdds)}
+    <div class="pricing-tables-grid">
+      ${buildTotalPricingTableHtml(model.totalLines, { expanded: pricingTotalsExpanded })}
+      ${buildHandicapPricingTableHtml(model.handicapLines, { expanded: pricingHandicapExpanded })}
+    </div>
+    ${buildBetBuilderPricingHtml(model, homeLabel, awayLabel)}
+    <h3 class="section-title">Pricing Inputs</h3>
+    <section class="recent-team-block">
+      <h4>Projected Match Inputs (Season Averages)</h4>
+      <div class="recent-table-wrap">
+        <table class="lines-table recent-lines-table">
+          <thead>
+            <tr>
+              <th>Home Team</th>
+              <th>Away Team</th>
+              <th>Proj Home xG</th>
+              <th>Proj Away xG</th>
+              <th>Proj Home Shots</th>
+              <th>Proj Away Shots</th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr>
+              <td>${escapeHtml(homeLabel || "Home team")}</td>
+              <td>${escapeHtml(awayLabel || "Away team")}</td>
+              <td>${formatMetricValue(model.predictedHomeXg, 2)}</td>
+              <td>${formatMetricValue(model.predictedAwayXg, 2)}</td>
+              <td>${formatMetricValue(model.predictedHomeShots, 2)}</td>
+              <td>${formatMetricValue(model.predictedAwayShots, 2)}</td>
+            </tr>
+          </tbody>
+        </table>
+      </div>
+    </section>
+    <section class="recent-team-block">
+      <h4>Season Shot Quality Inputs</h4>
+      <div class="recent-table-wrap">
+        <table class="lines-table recent-lines-table">
+          <thead>
+            <tr>
+              <th>Team</th>
+              <th>Games</th>
+              <th>xG For Avg</th>
+              <th>xG Against Avg</th>
+              <th>Shots For Avg</th>
+              <th>Shots Against Avg</th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr>
+              <td>${escapeHtml(homeLabel || "Home team")}</td>
+              <td>${model.homeProfile.games}</td>
+              <td>${formatMetricValue(model.homeProfile.xgForAvg, 2)}</td>
+              <td>${formatMetricValue(model.homeProfile.xgAgainstAvg, 2)}</td>
+              <td>${formatMetricValue(model.homeProfile.shotsForAvg, 2)}</td>
+              <td>${formatMetricValue(model.homeProfile.shotsAgainstAvg, 2)}</td>
+            </tr>
+            <tr>
+              <td>${escapeHtml(awayLabel || "Away team")}</td>
+              <td>${model.awayProfile.games}</td>
+              <td>${formatMetricValue(model.awayProfile.xgForAvg, 2)}</td>
+              <td>${formatMetricValue(model.awayProfile.xgAgainstAvg, 2)}</td>
+              <td>${formatMetricValue(model.awayProfile.shotsForAvg, 2)}</td>
+              <td>${formatMetricValue(model.awayProfile.shotsAgainstAvg, 2)}</td>
+            </tr>
           </tbody>
         </table>
       </div>
@@ -4239,10 +6281,100 @@ async function calculateHistoricalDayXgd(dayIso) {
   }
 }
 
+function applyLoadedGamesPayload(payload, options = {}) {
+  const shouldLoadMoreHistorical = Boolean(options?.shouldLoadMoreHistorical);
+  const fromCache = Boolean(options?.fromCache);
+  rawDays = Array.isArray(payload?.days) ? payload.days : [];
+  if (Array.isArray(payload?.saved_market_ids)) {
+    setSavedMarketIds(payload.saved_market_ids);
+  }
+  fillMissingDays = payload?.fill_missing_days !== false;
+  historicalHasMoreOlder = gamesMode === "historical" ? Boolean(payload?.has_more_older) : false;
+  updateLeagueFilterOptions();
+  updateTierFilterOptions(payload?.tiers || []);
+  applyGameFilters();
+  renderCurrentDay();
+  if (gamesMode === "historical") {
+    const loadedTotal = Number(payload?.total_games) || 0;
+    if (shouldLoadMoreHistorical) {
+      const addedGames = Number(payload?.added_games) || 0;
+      statusText.textContent = `Loaded ${addedGames} older matches (${loadedTotal} total)`;
+    } else if (loadedTotal === 0 && historicalHasMoreOlder) {
+      statusText.textContent = "No matches in the latest window. Click Previous Day to load older matches.";
+    } else {
+      statusText.textContent = fromCache
+        ? `Loaded ${loadedTotal} historical matches (cached)`
+        : `Loaded ${loadedTotal} historical matches`;
+    }
+  } else {
+    const loadedTotal = Number(payload?.total_games) || 0;
+    statusText.textContent = fromCache
+      ? `Loaded ${loadedTotal} games (cached)`
+      : `Loaded ${loadedTotal} games`;
+  }
+  // Keep mapping tab edits stable during game refreshes (manual + auto-refresh).
+  // Mapping data now refreshes only when the user opens Mapping, clicks
+  // "Refresh Mapping Data", or after an explicit mapping save/delete action.
+  if (activeTab === "rankings" && teamHcRankingsLoaded) {
+    loadTeamHcRankings({ silent: true });
+  } else if (activeTab === "teams" && teamsDirectoryLoaded) {
+    loadTeamsDirectory({ silent: true });
+  } else if (isSavedGamesViewActive() && savedGamesLoaded) {
+    loadSavedGames({ silent: true });
+  }
+
+  if (selectedMarketId && !gamesById.has(selectedMarketId)) {
+    selectedMarketId = null;
+    detailsPanel.classList.add("hidden");
+  }
+}
+
+async function prefetchGamesPayloadForMode(targetGamesMode = gamesMode) {
+  const gamesModeKey = String(targetGamesMode || "").trim().toLowerCase() === "historical"
+    ? "historical"
+    : "upcoming";
+  const activeMode = getCurrentXgMetricMode();
+  const alternateMode = getAlternateXgMetricMode(activeMode);
+  const alternateCacheKey = getGamesPayloadCacheKey(gamesModeKey, alternateMode);
+  if (gamesPayloadByModeAndView.has(alternateCacheKey)) return;
+  if (gamesPayloadPrefetchInFlight.has(alternateCacheKey)) return;
+  gamesPayloadPrefetchInFlight.add(alternateCacheKey);
+  try {
+    const query = new URLSearchParams();
+    query.set("mode", gamesModeKey);
+    query.set("xg_mode", alternateMode);
+    const { res, payload } = await fetchJsonWithTimeout(`/api/games?${query.toString()}`);
+    if (!res.ok) return;
+    if (alternateMode === "npxg" && payload?.npxg_available === false) {
+      gamesPayloadByModeAndView.delete(alternateCacheKey);
+      return;
+    }
+    gamesPayloadByModeAndView.set(alternateCacheKey, payload || {});
+  } catch (_err) {
+    // Ignore prefetch failures to keep the primary load path resilient.
+  } finally {
+    gamesPayloadPrefetchInFlight.delete(alternateCacheKey);
+  }
+}
+
 async function loadGames(options = {}) {
   const loadMoreHistorical = Boolean(options && options.loadMoreHistorical);
+  const useCache = Boolean(options?.useCache);
+  const force = Boolean(options?.force);
   const shouldLoadMoreHistorical = gamesMode === "historical" && loadMoreHistorical;
   if (shouldLoadMoreHistorical && !historicalHasMoreOlder) {
+    return true;
+  }
+
+  const requestedMetricMode = getCurrentXgMetricMode();
+  const cacheKey = getGamesPayloadCacheKey(gamesMode, requestedMetricMode);
+  if (!force && useCache && !shouldLoadMoreHistorical && gamesPayloadByModeAndView.has(cacheKey)) {
+    const cachedPayload = gamesPayloadByModeAndView.get(cacheKey);
+    applyLoadedGamesPayload(cachedPayload && typeof cachedPayload === "object" ? cachedPayload : {}, {
+      shouldLoadMoreHistorical,
+      fromCache: true,
+    });
+    void prefetchGamesPayloadForMode(gamesMode);
     return true;
   }
 
@@ -4252,56 +6384,27 @@ async function loadGames(options = {}) {
   try {
     const query = new URLSearchParams();
     query.set("mode", gamesMode);
-    query.set("xg_mode", getCurrentXgMetricMode());
+    query.set("xg_mode", requestedMetricMode);
     if (shouldLoadMoreHistorical) {
       query.set("load_more", "1");
     }
-    const res = await fetch(`/api/games?${query.toString()}`);
-    const payload = await parseApiResponse(res);
+    const { res, payload } = await fetchJsonWithTimeout(`/api/games?${query.toString()}`);
     if (!res.ok) throw new Error(payload.error || "Failed to load games");
-    if (payload && payload.npxg_available === false && getCurrentXgMetricMode() === "npxg") {
+    if (payload && payload.npxg_available === false && requestedMetricMode === "npxg") {
       xgMetricMode = "xg";
       persistXgMetricMode("xg");
       updateXgMetricModeToggleButton();
+      gamesPayloadByModeAndView.delete(getGamesPayloadCacheKey(gamesMode, "npxg"));
     }
-    xgdPayloadByMarket.clear();
-    rawDays = payload.days || [];
-    if (Array.isArray(payload?.saved_market_ids)) {
-      setSavedMarketIds(payload.saved_market_ids);
+    const effectiveMetricMode = getCurrentXgMetricMode();
+    gamesPayloadByModeAndView.set(getGamesPayloadCacheKey(gamesMode, effectiveMetricMode), payload || {});
+    if (shouldLoadMoreHistorical) {
+      const alternateMode = effectiveMetricMode === "xg" ? "npxg" : "xg";
+      gamesPayloadByModeAndView.delete(getGamesPayloadCacheKey(gamesMode, alternateMode));
     }
-    fillMissingDays = payload.fill_missing_days !== false;
-    historicalHasMoreOlder = gamesMode === "historical" ? Boolean(payload.has_more_older) : false;
-    updateLeagueFilterOptions();
-    updateTierFilterOptions(payload.tiers || []);
-    applyGameFilters();
-    renderCurrentDay();
-    if (gamesMode === "historical") {
-      const loadedTotal = Number(payload.total_games) || 0;
-      if (shouldLoadMoreHistorical) {
-        const addedGames = Number(payload.added_games) || 0;
-        statusText.textContent = `Loaded ${addedGames} older matches (${loadedTotal} total)`;
-      } else if (loadedTotal === 0 && historicalHasMoreOlder) {
-        statusText.textContent = "No matches in the latest window. Click Previous Day to load older matches.";
-      } else {
-        statusText.textContent = `Loaded ${loadedTotal} historical matches`;
-      }
-    } else {
-      statusText.textContent = `Loaded ${payload.total_games || 0} games`;
-    }
-    // Keep mapping tab edits stable during game refreshes (manual + auto-refresh).
-    // Mapping data now refreshes only when the user opens Mapping, clicks
-    // "Refresh Mapping Data", or after an explicit mapping save/delete action.
-    if (activeTab === "rankings" && teamHcRankingsLoaded) {
-      loadTeamHcRankings({ silent: true });
-    } else if (activeTab === "teams" && teamsDirectoryLoaded) {
-      loadTeamsDirectory({ silent: true });
-    } else if (activeTab === "saved" && savedGamesLoaded) {
-      loadSavedGames({ silent: true });
-    }
-
-    if (selectedMarketId && !gamesById.has(selectedMarketId)) {
-      selectedMarketId = null;
-      detailsPanel.classList.add("hidden");
+    applyLoadedGamesPayload(payload, { shouldLoadMoreHistorical, fromCache: false });
+    if (!shouldLoadMoreHistorical) {
+      void prefetchGamesPayloadForMode(gamesMode);
     }
     return true;
   } catch (err) {
@@ -4348,8 +6451,8 @@ async function rescanClosingPrices(triggerButton = null) {
 }
 
 function updateSavedTabLabel() {
-  if (!(savedGamesTabBtn instanceof HTMLButtonElement)) return;
-  savedGamesTabBtn.textContent = savedGamesCount > 0 ? `Saved Games (${savedGamesCount})` : "Saved Games";
+  if (!(savedGamesSubTabBtn instanceof HTMLButtonElement)) return;
+  savedGamesSubTabBtn.textContent = savedGamesCount > 0 ? `Saved Games (${savedGamesCount})` : "Saved Games";
 }
 
 function setSavedMarketIds(rawIds) {
@@ -4419,10 +6522,10 @@ async function toggleSelectedGameSaved() {
   try {
     await setGameSavedState(marketId, targetSavedState);
     statusText.textContent = targetSavedState ? "Game saved" : "Game removed from saved";
-    if (activeTab === "saved") {
+    if (isSavedGamesViewActive()) {
       await loadSavedGames({ silent: true });
       renderSavedGames();
-    } else if (activeTab === "games") {
+    } else if (isGamesCalendarTab()) {
       renderCurrentDay();
     }
   } catch (err) {
@@ -4655,8 +6758,133 @@ function createGamesTable(sortedGames, isHistorical, options = {}) {
   return table;
 }
 
+function buildModellingPriceStackCellHtml(betfairValue, modelValue, options = {}) {
+  const betfairText = String(betfairValue ?? "").trim() || "-";
+  const modelText = String(modelValue ?? "").trim() || "-";
+  const highlightModel = Boolean(options?.highlightModel);
+  const modelRowClass = highlightModel
+    ? "modelling-price-row modelling-price-row-model modelling-price-row-model-highlight"
+    : "modelling-price-row modelling-price-row-model";
+  return `
+    <div class="modelling-price-stack">
+      <div class="modelling-price-row modelling-price-row-betfair">
+        <span class="modelling-price-label">BF</span>
+        <span class="modelling-price-value">${escapeHtml(betfairText)}</span>
+      </div>
+      <div class="${modelRowClass}">
+        <span class="modelling-price-label">PR</span>
+        <span class="modelling-price-value">${escapeHtml(modelText)}</span>
+      </div>
+    </div>
+  `;
+}
+
+function createModellingPricesTable(sortedGames, isHistorical, options = {}) {
+  const emptyMessage = String(options?.emptyMessage || "No games");
+  const showSavedContour = options?.showSavedContour !== false;
+  const kickoffHeaderLabel = escapeHtml(getKickoffColumnLabel());
+  const table = document.createElement("table");
+  table.className = isHistorical
+    ? "games-table main-games-table historical-games-table modelling-prices-table"
+    : "games-table main-games-table modelling-prices-table";
+  table.innerHTML = `
+    <thead>
+      <tr>
+        <th class="kickoff-col">${kickoffHeaderLabel}</th>
+        <th class="league-col">League</th>
+        <th class="home-team-col">Home</th>
+        <th class="vs-team-col">v</th>
+        <th class="away-team-col">Away</th>
+        <th class="home-price-col">H (1X2)</th>
+        <th class="win-draw-col">D (1X2)</th>
+        <th class="away-price-col">A (1X2)</th>
+        <th class="home-price-col">Home</th>
+        <th class="line-col handicap-line-col">HC</th>
+        <th class="away-price-col">Away</th>
+        <th class="model-xgd-col">xGD (S)</th>
+        <th class="goal-under-price-col">Under</th>
+        <th class="goal-line-col">Goals</th>
+        <th class="goal-over-price-col">Over</th>
+      </tr>
+    </thead>
+    <tbody></tbody>
+  `;
+
+  const tbody = table.querySelector("tbody");
+  if (!sortedGames.length) {
+    const row = document.createElement("tr");
+    row.innerHTML = `<td class="no-games-row" colspan="15">${escapeHtml(emptyMessage)}</td>`;
+    tbody.appendChild(row);
+    return table;
+  }
+
+  for (const game of sortedGames) {
+    gamesById.set(game.market_id, game);
+    const row = document.createElement("tr");
+    row.dataset.marketId = game.market_id;
+    if (selectedMarketId === game.market_id) row.classList.add("selected");
+    if (showSavedContour && savedMarketIds.has(String(game.market_id || "").trim())) {
+      row.classList.add("saved-game-row");
+    }
+    const tierClass = tierRowClass(game.tier);
+    if (tierClass) row.classList.add(tierClass);
+
+    const teams = resolveGameTeams(game);
+    const competitionName = String(game?.competition || "").trim();
+    const homeTeamCell = teams.home ? buildTeamLinkHtml(teams.home, competitionName) : "-";
+    const awayTeamCell = teams.away ? buildTeamLinkHtml(teams.away, competitionName) : "-";
+    const kickoffLocalText = formatGameKickoffLocalTime(game);
+
+    const model = buildGameMainlinePricingFromSeasonXg(game);
+    const modelMatchOdds = model?.matchOdds || null;
+    const modelHandicapMainline = model?.handicapMainline || null;
+    const modelTotalMainline = model?.totalMainline || null;
+    const modelHomeWinOdds = toMetricNumberOrNull(modelMatchOdds?.homeWinOdds);
+    const modelDrawOdds = toMetricNumberOrNull(modelMatchOdds?.drawOdds);
+    const modelAwayWinOdds = toMetricNumberOrNull(modelMatchOdds?.awayWinOdds);
+    const modelHomeWinText = formatOddsValue(modelHomeWinOdds);
+    const modelDrawText = formatOddsValue(modelDrawOdds);
+    const modelAwayWinText = formatOddsValue(modelAwayWinOdds);
+    const highlightModelHomeWin = shouldHighlightModelPriceVsBetfair(game.win_home_price, modelHomeWinOdds);
+    const highlightModelDraw = shouldHighlightModelPriceVsBetfair(game.win_draw_price, modelDrawOdds);
+    const highlightModelAwayWin = shouldHighlightModelPriceVsBetfair(game.win_away_price, modelAwayWinOdds);
+    const modelHomeHcText = formatOddsValue(modelHandicapMainline?.home?.fairOdds);
+    const modelHcLineText = formatQuarterLine(modelHandicapMainline?.homeLine, true);
+    const modelAwayHcText = formatOddsValue(modelHandicapMainline?.away?.fairOdds);
+    const modelUnderText = formatOddsValue(modelTotalMainline?.under?.fairOdds);
+    const modelGoalLineText = formatQuarterLine(modelTotalMainline?.line, false);
+    const modelOverText = formatOddsValue(modelTotalMainline?.over?.fairOdds);
+    const modelSeasonXgdValue = toMetricNumberOrNull(game?.season_strength);
+    const modelSeasonXgdText = formatSignedMetricValue(modelSeasonXgdValue, 2);
+
+    row.innerHTML = `
+      <td class="kickoff-col">${escapeHtml(kickoffLocalText)}</td>
+      <td class="league-col">${escapeHtml(game.competition)}</td>
+      <td class="home-team-col">${homeTeamCell}</td>
+      <td class="vs-team-col">v</td>
+      <td class="away-team-col">${awayTeamCell}</td>
+      <td class="home-price-col">${buildModellingPriceStackCellHtml(game.win_home_price || "-", modelHomeWinText, { highlightModel: highlightModelHomeWin })}</td>
+      <td class="win-draw-col">${buildModellingPriceStackCellHtml(game.win_draw_price || "-", modelDrawText, { highlightModel: highlightModelDraw })}</td>
+      <td class="away-price-col">${buildModellingPriceStackCellHtml(game.win_away_price || "-", modelAwayWinText, { highlightModel: highlightModelAwayWin })}</td>
+      <td class="home-price-col">${buildModellingPriceStackCellHtml(game.home_price || "-", modelHomeHcText)}</td>
+      <td class="line-col handicap-line-col">${buildModellingPriceStackCellHtml(game.mainline || "-", modelHcLineText)}</td>
+      <td class="away-price-col">${buildModellingPriceStackCellHtml(game.away_price || "-", modelAwayHcText)}</td>
+      <td class="model-xgd-col">${escapeHtml(modelSeasonXgdText)}</td>
+      <td class="goal-under-price-col">${buildModellingPriceStackCellHtml(game.goal_under_price || "-", modelUnderText)}</td>
+      <td class="goal-line-col">${buildModellingPriceStackCellHtml(game.goal_mainline || "-", modelGoalLineText)}</td>
+      <td class="goal-over-price-col">${buildModellingPriceStackCellHtml(game.goal_over_price || "-", modelOverText)}</td>
+    `;
+    row.addEventListener("click", () => loadGameXgd(game.market_id));
+    tbody.appendChild(row);
+  }
+
+  bindTeamLinkButtons(table);
+  return table;
+}
+
 function renderSavedGames() {
   if (!savedGamesView) return;
+  updateGamesPaneViewVisibility();
   savedGamesView.innerHTML = "";
 
   if (savedGamesLoading) {
@@ -4707,10 +6935,12 @@ function renderSavedGames() {
     heading.textContent = `${String(day?.date_label || day?.date || "Saved")} (${sortedDayGames.length})`;
     header.appendChild(heading);
 
-    const table = createGamesTable(sortedDayGames, useHistoricalLayout, {
-      emptyMessage: "No saved games",
-      showSavedContour: false,
-    });
+    const table = activeTab === "modelling"
+      ? createModellingPricesTable(sortedDayGames, useHistoricalLayout, { emptyMessage: "No saved games" })
+      : createGamesTable(sortedDayGames, useHistoricalLayout, {
+        emptyMessage: "No saved games",
+        showSavedContour: false,
+      });
     block.appendChild(header);
     block.appendChild(table);
     savedGamesView.appendChild(block);
@@ -5340,6 +7570,173 @@ function renderTeamsDirectory() {
   bindTeamLinkButtons(teamsView);
 }
 
+function populateMatchupOptions() {
+  if (matchupTeamsList instanceof HTMLElement) {
+    const teamNames = teamsDirectoryRows
+      .map((row) => String(row?.team || "").trim())
+      .filter(Boolean)
+      .sort((a, b) => a.localeCompare(b));
+    matchupTeamsList.innerHTML = teamNames
+      .map((teamName) => `<option value="${escapeHtml(teamName)}"></option>`)
+      .join("");
+  }
+  if (matchupCompetitionSelect instanceof HTMLSelectElement) {
+    const currentValue = String(matchupCompetitionSelect.value || "").trim();
+    const competitionCounts = new Map();
+    for (const row of teamsDirectoryRows) {
+      const competitions = Array.isArray(row?.competitions) ? row.competitions : [];
+      for (const entry of competitions) {
+        const competitionName = String(entry?.competition || "").trim();
+        if (!competitionName) continue;
+        competitionCounts.set(
+          competitionName,
+          (competitionCounts.get(competitionName) || 0) + (Number(entry?.games_count) || 0)
+        );
+      }
+    }
+    const competitions = Array.from(competitionCounts.entries())
+      .sort((left, right) => (right[1] - left[1]) || left[0].localeCompare(right[0]))
+      .map(([competitionName]) => competitionName);
+    matchupCompetitionSelect.innerHTML = `
+      <option value="">Auto</option>
+      ${competitions
+        .map((competitionName) => `
+          <option value="${escapeHtml(competitionName)}">${escapeHtml(competitionName)}</option>
+        `)
+        .join("")}
+    `;
+    if (currentValue && competitions.includes(currentValue)) {
+      matchupCompetitionSelect.value = currentValue;
+    }
+  }
+}
+
+function renderMatchupPage() {
+  if (!matchupView) return;
+
+  if (matchupLoading) {
+    matchupView.innerHTML = "<p>Building matchup...</p>";
+    return;
+  }
+  if (matchupErrorText) {
+    matchupView.innerHTML = `<p>${escapeHtml(matchupErrorText)}</p>`;
+    return;
+  }
+  if (!matchupPayload) {
+    matchupView.innerHTML = "<p>Enter two teams and build a matchup.</p>";
+    return;
+  }
+
+  const payload = matchupPayload;
+  const mappingHead = Array.isArray(payload?.mapping_rows) && payload.mapping_rows.length
+    ? payload.mapping_rows[0]
+    : {};
+  const homeLabel = String(payload?.home_label || mappingHead.home_sofa || mappingHead.home_raw || "Home team");
+  const awayLabel = String(payload?.away_label || mappingHead.away_sofa || mappingHead.away_raw || "Away team");
+  const xgdViews = Array.isArray(payload?.xgd_views) && payload.xgd_views.length
+    ? payload.xgd_views
+    : [{
+      id: "fixture",
+      label: "Fixture",
+      summary: payload?.summary || null,
+      period_rows: Array.isArray(payload?.period_rows) ? payload.period_rows : [],
+      warning: String(payload?.warning || ""),
+      home_recent_rows: Array.isArray(payload?.home_recent_rows) ? payload.home_recent_rows : [],
+      away_recent_rows: Array.isArray(payload?.away_recent_rows) ? payload.away_recent_rows : [],
+      home_team_venue_rows: payload?.home_team_venue_rows || { home: [], away: [] },
+      away_team_venue_rows: payload?.away_team_venue_rows || { home: [], away: [] },
+    }];
+  const activeView = xgdViews[0] || {};
+  const homeRecentRows = Array.isArray(activeView.home_recent_rows) ? activeView.home_recent_rows : [];
+  const awayRecentRows = Array.isArray(activeView.away_recent_rows) ? activeView.away_recent_rows : [];
+  const homeTeamVenueRows = activeView.home_team_venue_rows && typeof activeView.home_team_venue_rows === "object"
+    ? activeView.home_team_venue_rows
+    : { home: [], away: [] };
+  const awayTeamVenueRows = activeView.away_team_venue_rows && typeof activeView.away_team_venue_rows === "object"
+    ? activeView.away_team_venue_rows
+    : { home: [], away: [] };
+  const homeGeneralRows = [
+    ...(Array.isArray(homeTeamVenueRows.home) ? homeTeamVenueRows.home : []),
+    ...(Array.isArray(homeTeamVenueRows.away) ? homeTeamVenueRows.away : []),
+  ];
+  const awayGeneralRows = [
+    ...(Array.isArray(awayTeamVenueRows.home) ? awayTeamVenueRows.home : []),
+    ...(Array.isArray(awayTeamVenueRows.away) ? awayTeamVenueRows.away : []),
+  ];
+  const pricingSummary = activeView?.summary && typeof activeView.summary === "object"
+    ? activeView.summary
+    : (payload?.summary && typeof payload.summary === "object" ? payload.summary : null);
+  const competitionText = String(payload?.competition || "").trim();
+  const seasonText = String(payload?.season || "").trim();
+  const warningText = String(activeView?.warning || payload?.warning || "").trim();
+  const warning = warningText ? `<div class="warning">${escapeHtml(warningText)}</div>` : "";
+
+  matchupView.innerHTML = `
+    <section class="matchup-result-header">
+      <h2>${escapeHtml(homeLabel)} v ${escapeHtml(awayLabel)}</h2>
+      <p class="meta">${escapeHtml([competitionText, seasonText ? `Season ${seasonText}` : ""].filter(Boolean).join(" | "))}</p>
+    </section>
+    ${warning}
+    ${buildXgdPeriodTableHtml(Array.isArray(activeView.period_rows) ? activeView.period_rows : [], "xGD Output")}
+    ${buildTeamXgdSummaryTablesHtml(homeLabel, awayLabel, homeRecentRows, awayRecentRows)}
+    <h3 class="section-title">Model Source Matches</h3>
+    ${buildRecentAveragesTableHtml(homeRecentRows, Math.max(1, homeRecentRows.length), homeLabel)}
+    ${buildRecentMatchesTableHtml("Home fixture-side matches", homeRecentRows, homeLabel)}
+    ${buildRecentAveragesTableHtml(awayRecentRows, Math.max(1, awayRecentRows.length), awayLabel)}
+    ${buildRecentMatchesTableHtml("Away fixture-side matches", awayRecentRows, awayLabel)}
+    <h3 class="section-title">Cards & Corners</h3>
+    ${buildCardsCornersAveragesTableHtml(homeRecentRows, awayRecentRows, homeLabel, awayLabel, Math.max(1, homeRecentRows.length, awayRecentRows.length))}
+    ${buildGamestateTableHtml(homeRecentRows, awayRecentRows, homeLabel, awayLabel, Math.max(1, homeRecentRows.length, awayRecentRows.length))}
+    <h3 class="section-title">Shots</h3>
+    ${buildShotsAveragesTableHtml(homeRecentRows, awayRecentRows, homeLabel, awayLabel, Math.max(1, homeRecentRows.length, awayRecentRows.length))}
+    ${buildShotGamestateTableHtml(homeRecentRows, awayRecentRows, homeLabel, awayLabel, Math.max(1, homeRecentRows.length, awayRecentRows.length))}
+    ${buildGamePricingTabHtml(homeLabel, awayLabel, homeGeneralRows, awayGeneralRows, {
+      projectedHomeXg: pricingSummary?.home_xg,
+      projectedAwayXg: pricingSummary?.away_xg,
+    })}
+  `;
+  bindTeamLinkButtons(matchupView);
+  bindPricingControls(matchupView, renderMatchupPage);
+}
+
+async function loadMatchup() {
+  if (matchupLoading) return;
+  const homeText = matchupHomeInput instanceof HTMLInputElement ? String(matchupHomeInput.value || "").trim() : "";
+  const awayText = matchupAwayInput instanceof HTMLInputElement ? String(matchupAwayInput.value || "").trim() : "";
+  const competitionText = matchupCompetitionSelect instanceof HTMLSelectElement
+    ? String(matchupCompetitionSelect.value || "").trim()
+    : "";
+  if (!homeText || !awayText) {
+    matchupErrorText = "Enter both teams.";
+    renderMatchupPage();
+    return;
+  }
+
+  matchupLoading = true;
+  matchupErrorText = "";
+  renderMatchupPage();
+  statusText.textContent = "Building matchup...";
+  try {
+    const query = new URLSearchParams();
+    query.set("home", homeText);
+    query.set("away", awayText);
+    if (competitionText) query.set("competition", competitionText);
+    query.set("xg_mode", getCurrentXgMetricMode());
+    const { res, payload } = await fetchJsonWithTimeout(`/api/matchup?${query.toString()}`);
+    if (!res.ok) throw new Error(payload.error || "Failed to build matchup");
+    matchupPayload = payload || null;
+    matchupErrorText = "";
+    statusText.textContent = `Built matchup: ${String(payload?.event_name || "").trim() || `${homeText} v ${awayText}`}`;
+  } catch (err) {
+    matchupPayload = null;
+    matchupErrorText = String(err.message || err);
+    statusText.textContent = matchupErrorText;
+  } finally {
+    matchupLoading = false;
+    renderMatchupPage();
+  }
+}
+
 async function loadTeamsDirectory(options = {}) {
   if (teamsDirectoryLoading) return false;
   const silent = Boolean(options?.silent);
@@ -5357,6 +7754,7 @@ async function loadTeamsDirectory(options = {}) {
     teamsDirectoryRows = Array.isArray(payload?.teams) ? payload.teams : [];
     teamsDirectoryLoaded = true;
     teamsDirectoryErrorText = "";
+    populateMatchupOptions();
     if (activeTab === "teams" && !silent) {
       statusText.textContent = `Loaded ${Number(payload?.total_teams) || teamsDirectoryRows.length} teams`;
     }
@@ -5397,7 +7795,7 @@ async function loadSavedGames(options = {}) {
     savedGamesLoaded = true;
     savedGamesErrorText = "";
     setSavedMarketIds(payload?.saved_market_ids || []);
-    if (activeTab === "saved" && !silent) {
+    if (isSavedGamesViewActive() && !silent) {
       statusText.textContent = `Loaded ${Number(payload?.total_games) || 0} saved games`;
     }
     renderSavedGames();
@@ -5415,6 +7813,11 @@ async function loadSavedGames(options = {}) {
 }
 
 function renderCurrentDay() {
+  updateGamesPaneViewVisibility();
+  if (isSavedGamesViewActive()) {
+    renderSavedGames();
+    return;
+  }
   gamesById = new Map();
   calendarView.innerHTML = "";
 
@@ -5510,10 +7913,75 @@ function renderCurrentDay() {
     header.appendChild(headerActions);
   }
 
-  const table = createGamesTable(sortedDayGames, isHistorical, { emptyMessage: "No games" });
+  const table = (activeTab === "modelling")
+    ? createModellingPricesTable(sortedDayGames, isHistorical, { emptyMessage: "No games" })
+    : createGamesTable(sortedDayGames, isHistorical, { emptyMessage: "No games" });
   block.appendChild(header);
   block.appendChild(table);
   calendarView.appendChild(block);
+}
+
+function bindPricingControls(container, rerender) {
+  if (!(container instanceof Element) || typeof rerender !== "function") return;
+
+  const pricingExpandButtons = container.querySelectorAll(".pricing-expand-btn");
+  for (const button of pricingExpandButtons) {
+    if (!(button instanceof HTMLButtonElement)) continue;
+    button.addEventListener("click", () => {
+      const targetTable = String(button.dataset.pricingTable || "").trim().toLowerCase();
+      if (targetTable === "totals") {
+        pricingTotalsExpanded = !pricingTotalsExpanded;
+      } else if (targetTable === "handicap") {
+        pricingHandicapExpanded = !pricingHandicapExpanded;
+      } else {
+        return;
+      }
+      rerender();
+    });
+  }
+
+  const betBuilderMarketSelects = container.querySelectorAll("[id^='pricingBetBuilderLeg'][id$='Market']");
+  for (const select of betBuilderMarketSelects) {
+    if (!(select instanceof HTMLSelectElement)) continue;
+    select.addEventListener("change", () => {
+      const legNumber = Number(select.dataset.betbuilderLeg) === 2 ? 2 : 1;
+      setBetBuilderLegMarket(legNumber, select.value);
+      rerender();
+    });
+  }
+  const betBuilderLineInputs = container.querySelectorAll("[id^='pricingBetBuilderLeg'][id$='Line']");
+  for (const input of betBuilderLineInputs) {
+    if (!(input instanceof HTMLInputElement)) continue;
+    input.addEventListener("change", () => {
+      const legNumber = Number(input.dataset.betbuilderLeg) === 2 ? 2 : 1;
+      setBetBuilderLegLine(legNumber, input.value);
+      rerender();
+    });
+  }
+  const betBuilderBetSelects = container.querySelectorAll("[id^='pricingBetBuilderLeg'][id$='Bet']");
+  for (const select of betBuilderBetSelects) {
+    if (!(select instanceof HTMLSelectElement)) continue;
+    select.addEventListener("change", () => {
+      const legNumber = Number(select.dataset.betbuilderLeg) === 2 ? 2 : 1;
+      setBetBuilderLegBet(legNumber, select.value);
+      rerender();
+    });
+  }
+  const betBuilderEdgeInput = container.querySelector("#pricingBetBuilderEdge");
+  if (betBuilderEdgeInput instanceof HTMLInputElement) {
+    const applyEdge = () => {
+      pricingBetBuilderEdge = normalizePricingBetBuilderEdge(betBuilderEdgeInput.value);
+      rerender();
+    };
+    betBuilderEdgeInput.addEventListener("change", applyEdge);
+    betBuilderEdgeInput.addEventListener("keydown", (event) => {
+      if (event.key !== "Enter") return;
+      event.preventDefault();
+      pricingBetBuilderEdge = normalizePricingBetBuilderEdge(betBuilderEdgeInput.value);
+      betBuilderEdgeInput.blur();
+      rerender();
+    });
+  }
 }
 
 function renderXgd(payload) {
@@ -5670,7 +8138,8 @@ function renderXgd(payload) {
   const fallbackAwayTeamVenueRows = normalizeVenueRows(payloadAwayVenueRows);
   const homeTeamVenueRows = hasAnyVenueRows(homeTeamVenueRowsRaw) ? homeTeamVenueRowsRaw : fallbackHomeTeamVenueRows;
   const awayTeamVenueRows = hasAnyVenueRows(awayTeamVenueRowsRaw) ? awayTeamVenueRowsRaw : fallbackAwayTeamVenueRows;
-  const cachedHcPerfPayload = selectedMarketId ? hcPerfPayloadByMarket.get(selectedMarketId) : null;
+  const selectedMarketCacheKey = selectedMarketId ? buildModeScopedCacheKey(selectedMarketId) : "";
+  const cachedHcPerfPayload = selectedMarketCacheKey ? hcPerfPayloadByMarket.get(selectedMarketCacheKey) : null;
   const cachedHcPerfRows = normalizeSeasonHandicapRows(cachedHcPerfPayload?.season_handicap_rows);
   const activeSeasonRowsRaw = normalizeSeasonHandicapRows(activeView.season_handicap_rows);
   const fallbackSeasonRows = normalizeSeasonHandicapRows(payloadSeasonHandicapRows);
@@ -5695,7 +8164,7 @@ function renderXgd(payload) {
   const hcPerfRows = hcPerfIsAway ? awaySeasonHandicapRows : homeSeasonHandicapRows;
   const hcPerfVenueKey = hcPerfIsAway ? "away" : "home";
   const hcPerfVenueRows = hcPerfRows.filter((row) => String(row?.venue || "").trim().toLowerCase() === hcPerfVenueKey);
-  const hcPerfLoading = Boolean(selectedMarketId) && hcPerfLoadingMarketId === selectedMarketId;
+  const hcPerfLoading = Boolean(selectedMarketCacheKey) && hcPerfLoadingMarketId === selectedMarketCacheKey;
   const hcPerfRescanLoading = hcPerfRescanInFlight;
   const hcPerfBusy = hcPerfLoading || hcPerfRescanLoading;
   const hcPerfErrorText = String(cachedHcPerfPayload?.error || "").trim();
@@ -5823,6 +8292,50 @@ function renderXgd(payload) {
       "All matches"
     )}
   `;
+  const shotsTabContent = `
+    <h3 class="section-title">Shots</h3>
+    ${buildStatsGamesShownControlHtml(statsVenueGamesShownCount, statsVenueMaxGamesShown, {
+      inputId: "statsVenueGamesShownInput",
+      label: "Venue games shown",
+    })}
+    ${buildShotsAveragesTableHtml(homeRecentRows, awayRecentRows, homeLabel, awayLabel, statsVenueGamesShownCount)}
+    ${buildShotGamestateTableHtml(homeRecentRows, awayRecentRows, homeLabel, awayLabel, statsVenueGamesShownCount)}
+    ${buildStatsSwitchHtml(homeLabel, awayLabel)}
+    ${buildShotsMatchesTableHtml(
+      statsFixtureActiveLabel,
+      statsFixtureActiveRows,
+      statsVenueGamesShownCount,
+      "Fixture-side matches"
+    )}
+    <h3 class="section-title">General</h3>
+    ${buildStatsGamesShownControlHtml(statsAllGamesShownCount, statsAllMaxGamesShown, {
+      inputId: "statsAllGamesShownInput",
+      label: "All games shown",
+    })}
+    ${buildShotsAveragesTableHtml(homeGeneralRows, awayGeneralRows, homeLabel, awayLabel, statsAllGamesShownCount)}
+    ${buildShotGamestateTableHtml(homeGeneralRows, awayGeneralRows, homeLabel, awayLabel, statsAllGamesShownCount)}
+    ${buildStatsGeneralSwitchHtml(homeLabel, awayLabel)}
+    <h3 class="section-title">${escapeHtml(statsGeneralActiveLabel)}: Home & Away Matches</h3>
+    ${buildShotsMatchesTableHtml(
+      statsGeneralActiveLabel,
+      statsGeneralActiveRows,
+      statsAllGamesShownCount,
+      "All matches"
+    )}
+  `;
+  const pricingSummary = activeView?.summary && typeof activeView.summary === "object"
+    ? activeView.summary
+    : (payload?.summary && typeof payload.summary === "object" ? payload.summary : null);
+  const pricingTabContent = buildGamePricingTabHtml(
+    homeLabel,
+    awayLabel,
+    homeGeneralRows,
+    awayGeneralRows,
+    {
+      projectedHomeXg: pricingSummary?.home_xg,
+      projectedAwayXg: pricingSummary?.away_xg,
+    }
+  );
   const hcPerfTabContent = `
     <h3 class="section-title">Season Handicap Performance</h3>
     ${hcPerfBusy ? `
@@ -5848,19 +8361,30 @@ function renderXgd(payload) {
       relevantTeam: hcPerfLabel,
     })}
   `;
-  if (detailsMainTab !== "cards" && detailsMainTab !== "hcperf") {
+  if (
+    detailsMainTab !== "cards"
+    && detailsMainTab !== "shots"
+    && detailsMainTab !== "pricing"
+    && detailsMainTab !== "hcperf"
+  ) {
     detailsMainTab = "xgd";
   }
   const detailsTabNav = `
     <section class="page-tabs details-main-tabs">
       <button type="button" class="tab-btn details-main-tab ${detailsMainTab === "xgd" ? "active" : ""}" data-details-tab="xgd">xGD</button>
       <button type="button" class="tab-btn details-main-tab ${detailsMainTab === "cards" ? "active" : ""}" data-details-tab="cards">Stats</button>
+      <button type="button" class="tab-btn details-main-tab ${detailsMainTab === "shots" ? "active" : ""}" data-details-tab="shots">Shots</button>
+      <button type="button" class="tab-btn details-main-tab ${detailsMainTab === "pricing" ? "active" : ""}" data-details-tab="pricing">Pricing</button>
       <button type="button" class="tab-btn details-main-tab ${detailsMainTab === "hcperf" ? "active" : ""}" data-details-tab="hcperf">HC Perf</button>
     </section>
   `;
   const activeTabContent = detailsMainTab === "cards"
     ? cardsTabContent
-    : (detailsMainTab === "hcperf" ? hcPerfTabContent : xgdTabContent);
+    : (detailsMainTab === "shots"
+      ? shotsTabContent
+      : (detailsMainTab === "pricing"
+        ? pricingTabContent
+        : (detailsMainTab === "hcperf" ? hcPerfTabContent : xgdTabContent)));
   linesContainer.innerHTML = `${detailsTabNav}${viewTabsHtml}${activeTabContent}`;
   bindTeamLinkButtons(linesContainer);
 
@@ -5872,7 +8396,12 @@ function renderXgd(payload) {
   for (const button of detailsTabButtons) {
     button.addEventListener("click", () => {
       const rawTargetTab = String(button.dataset.detailsTab || "").trim().toLowerCase();
-      const targetTab = rawTargetTab === "cards" || rawTargetTab === "hcperf" ? rawTargetTab : "xgd";
+      const targetTab = rawTargetTab === "cards"
+        || rawTargetTab === "shots"
+        || rawTargetTab === "pricing"
+        || rawTargetTab === "hcperf"
+        ? rawTargetTab
+        : "xgd";
       if (targetTab === detailsMainTab) return;
       detailsMainTab = targetTab;
       if (targetTab === "hcperf" && selectedMarketId) {
@@ -5999,6 +8528,10 @@ function renderXgd(payload) {
       if (lastXgdPayload) renderXgd(lastXgdPayload);
     });
   }
+
+  bindPricingControls(linesContainer, () => {
+    if (lastXgdPayload) renderXgd(lastXgdPayload);
+  });
 }
 
 function closeTeamDetailsPanel() {
@@ -6008,12 +8541,108 @@ function closeTeamDetailsPanel() {
   teamDetailsLoadingKey = "";
 }
 
-function getTeamPageCacheKey(teamName, competitionName = "", seasonKey = "") {
+function getTeamPageCacheKey(teamName, competitionName = "", seasonKey = "", xgMode = getCurrentXgMetricMode()) {
   return [
+    normalizeXgMetricMode(xgMode, "xg"),
     String(teamName || "").trim().toLowerCase(),
     String(competitionName || "").trim().toLowerCase(),
     String(seasonKey || "").trim().toLowerCase(),
   ].join("::");
+}
+
+function cacheTeamPagePayloadForMode(teamName, competitionName, seasonKey, metricMode, payload) {
+  const teamText = String(teamName || "").trim();
+  const competitionText = String(competitionName || "").trim();
+  const seasonText = String(seasonKey || "").trim();
+  const modeKey = normalizeXgMetricMode(metricMode, "xg");
+  const nextPayload = payload && typeof payload === "object" ? payload : {};
+  const resolvedTeam = String(nextPayload?.team || "").trim();
+  const resolvedCompetition = String(nextPayload?.competition || "").trim();
+  const resolvedSeason = String(nextPayload?.season || "").trim();
+  teamPagePayloadByKey.set(
+    getTeamPageCacheKey(teamText, competitionText, seasonText, modeKey),
+    nextPayload
+  );
+  if (resolvedCompetition || resolvedSeason) {
+    teamPagePayloadByKey.set(
+      getTeamPageCacheKey(
+        teamText,
+        resolvedCompetition || competitionText,
+        resolvedSeason || seasonText,
+        modeKey
+      ),
+      nextPayload
+    );
+  }
+  if (resolvedTeam) {
+    teamPagePayloadByKey.set(
+      getTeamPageCacheKey(
+        resolvedTeam,
+        resolvedCompetition || competitionText,
+        resolvedSeason || seasonText,
+        modeKey
+      ),
+      nextPayload
+    );
+  }
+  return {
+    payload: nextPayload,
+    resolvedTeam,
+    resolvedCompetition,
+    resolvedSeason,
+  };
+}
+
+async function prefetchAlternateTeamPage(teamName, competitionName = "", seasonKey = "", currentMode = getCurrentXgMetricMode()) {
+  const teamText = String(teamName || "").trim();
+  if (!teamText) return;
+  const competitionText = String(competitionName || "").trim();
+  const seasonText = String(seasonKey || "").trim();
+  const alternateMode = getAlternateXgMetricMode(currentMode);
+  const cacheKey = getTeamPageCacheKey(teamText, competitionText, seasonText, alternateMode);
+  if (teamPagePayloadByKey.has(cacheKey)) return;
+  if (teamPagePrefetchInFlight.has(cacheKey)) return;
+  teamPagePrefetchInFlight.add(cacheKey);
+  try {
+    const query = new URLSearchParams();
+    query.set("team", teamText);
+    if (competitionText) {
+      query.set("competition", competitionText);
+    }
+    if (seasonText) {
+      query.set("season", seasonText);
+    }
+    query.set("xg_mode", alternateMode);
+    const { res, payload } = await fetchJsonWithTimeout(`/api/team-page?${query.toString()}`);
+    if (!res.ok) return;
+    cacheTeamPagePayloadForMode(teamText, competitionText, seasonText, alternateMode, payload);
+  } catch (_err) {
+    // Ignore prefetch failures to avoid disrupting active UI paths.
+  } finally {
+    teamPagePrefetchInFlight.delete(cacheKey);
+  }
+}
+
+async function prefetchAlternateGameXgd(marketId, currentMode = getCurrentXgMetricMode()) {
+  const marketKey = String(marketId || "").trim();
+  if (!marketKey) return;
+  const alternateMode = getAlternateXgMetricMode(currentMode);
+  const cacheKey = buildModeScopedCacheKey(marketKey, alternateMode);
+  if (xgdPayloadByMarket.has(cacheKey)) return;
+  if (gameXgdPrefetchInFlight.has(cacheKey)) return;
+  gameXgdPrefetchInFlight.add(cacheKey);
+  try {
+    const query = new URLSearchParams();
+    query.set("market_id", marketKey);
+    query.set("xg_mode", alternateMode);
+    const { res, payload } = await fetchJsonWithTimeout(`/api/game-xgd?${query.toString()}`);
+    if (!res.ok) return;
+    xgdPayloadByMarket.set(cacheKey, payload || {});
+  } catch (_err) {
+    // Ignore prefetch failures to avoid disrupting active UI paths.
+  } finally {
+    gameXgdPrefetchInFlight.delete(cacheKey);
+  }
 }
 
 function buildTeamStatsSummaryTableHtml(teamLabel, rows) {
@@ -6055,6 +8684,75 @@ function buildTeamStatsSummaryTableHtml(teamLabel, rows) {
               <td>${formatMetricValue(averageMetric(safeRows, "yellow_against"), 2)}</td>
               <td>${formatMetricValue(averageMetric(safeRows, "red_for"), 2)}</td>
               <td>${formatMetricValue(averageMetric(safeRows, "red_against"), 2)}</td>
+            </tr>
+          </tbody>
+        </table>
+      </div>
+    </section>
+  `;
+}
+
+function buildTeamShotsSummaryTableHtml(teamLabel, rows) {
+  const safeRows = Array.isArray(rows) ? rows : [];
+  if (!safeRows.length) {
+    return `
+      <section class="recent-team-block">
+        <h4>${escapeHtml(teamLabel || "Team")} - Shots Summary</h4>
+        <p class="recent-empty">No season shot data available.</p>
+      </section>
+    `;
+  }
+  const shotsForTotal = sumMetric(safeRows, "shots_for");
+  const shotsAgainstTotal = sumMetric(safeRows, "shots_against");
+  const xgForTotal = sumMetric(safeRows, "xG");
+  const xgAgainstTotal = sumMetric(safeRows, "xGA");
+  const xgPerShot = (
+    Number.isFinite(xgForTotal)
+    && Number.isFinite(shotsForTotal)
+    && shotsForTotal > 0
+  )
+    ? (xgForTotal / shotsForTotal)
+    : null;
+  const xgaPerShotAgainst = (
+    Number.isFinite(xgAgainstTotal)
+    && Number.isFinite(shotsAgainstTotal)
+    && shotsAgainstTotal > 0
+  )
+    ? (xgAgainstTotal / shotsAgainstTotal)
+    : null;
+  return `
+    <section class="recent-team-block">
+      <h4>${escapeHtml(teamLabel || "Team")} - Shots Summary</h4>
+      <div class="recent-table-wrap">
+        <table class="lines-table recent-lines-table">
+          <thead>
+            <tr>
+              <th>Games</th>
+              <th>Shots For</th>
+              <th>Shots Against</th>
+              <th>On Target For</th>
+              <th>On Target Against</th>
+              <th>xG For</th>
+              <th>xG Against</th>
+              <th>xG/Shot</th>
+              <th>xGA/ShotA</th>
+              <th>xGoT For</th>
+              <th>xGoT Against</th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr>
+              <td>${safeRows.length}</td>
+              <td>${formatMetricValue(averageMetric(safeRows, "shots_for"), 2)}</td>
+              <td>${formatMetricValue(averageMetric(safeRows, "shots_against"), 2)}</td>
+              <td>${formatMetricValue(averageMetric(safeRows, "shots_on_target_for"), 2)}</td>
+              <td>${formatMetricValue(averageMetric(safeRows, "shots_on_target_against"), 2)}</td>
+              <td>${formatMetricValue(averageMetric(safeRows, "xG"), 2)}</td>
+              <td>${formatMetricValue(averageMetric(safeRows, "xGA"), 2)}</td>
+              <td>${formatMetricValue(xgPerShot, 3)}</td>
+              <td>${formatMetricValue(xgaPerShotAgainst, 3)}</td>
+              <td>${formatMetricValue(averageMetric(safeRows, "xGoT"), 2)}</td>
+              <td>${formatMetricValue(averageMetric(safeRows, "xGoTA"), 2)}</td>
             </tr>
           </tbody>
         </table>
@@ -6160,7 +8858,7 @@ function renderTeamDetailsPanel(payload) {
     }
   }
 
-  if (teamDetailsMainTab !== "stats" && teamDetailsMainTab !== "hcperf") {
+  if (teamDetailsMainTab !== "stats" && teamDetailsMainTab !== "shots" && teamDetailsMainTab !== "hcperf") {
     teamDetailsMainTab = "xg";
   }
   const maxTeamXgGames = Math.max(1, recentRows.length || 1);
@@ -6225,6 +8923,28 @@ function renderTeamDetailsPanel(payload) {
     <h3 class="section-title">All Games</h3>
     ${buildCardsCornersMatchesTableHtml(teamText, recentRows, null, "Season games")}
   `;
+  const shotsTabContent = `
+    <h3 class="section-title">Season Shots</h3>
+    ${buildTeamShotsSummaryTableHtml(teamText, recentRows)}
+    ${buildSingleTeamShotGamestateTableHtml(recentRows, `${teamText} (General)`)}
+    <h3 class="section-title">Venue Split</h3>
+    ${buildShotsAveragesTableHtml(
+      homeVenueRows,
+      awayVenueRows,
+      `${teamText} (Home)`,
+      `${teamText} (Away)`
+    )}
+    ${buildShotGamestateTableHtml(
+      homeVenueRows,
+      awayVenueRows,
+      `${teamText} (Home)`,
+      `${teamText} (Away)`
+    )}
+    ${buildShotsMatchesTableHtml(teamText, homeVenueRows, null, "Home games")}
+    ${buildShotsMatchesTableHtml(teamText, awayVenueRows, null, "Away games")}
+    <h3 class="section-title">All Games</h3>
+    ${buildShotsMatchesTableHtml(teamText, recentRows, null, "Season games")}
+  `;
   const hcPerfTabContent = `
     <h3 class="section-title">Season Handicap Performance</h3>
     ${buildHcPerfSummaryTableHtml(teamText, seasonHandicapRows)}
@@ -6245,12 +8965,15 @@ function renderTeamDetailsPanel(payload) {
     <section class="page-tabs details-main-tabs">
       <button type="button" class="tab-btn team-details-main-tab ${teamDetailsMainTab === "xg" ? "active" : ""}" data-team-details-tab="xg">xG Games</button>
       <button type="button" class="tab-btn team-details-main-tab ${teamDetailsMainTab === "stats" ? "active" : ""}" data-team-details-tab="stats">Stats</button>
+      <button type="button" class="tab-btn team-details-main-tab ${teamDetailsMainTab === "shots" ? "active" : ""}" data-team-details-tab="shots">Shots</button>
       <button type="button" class="tab-btn team-details-main-tab ${teamDetailsMainTab === "hcperf" ? "active" : ""}" data-team-details-tab="hcperf">HC Perf</button>
     </section>
   `;
   const activeTabContent = teamDetailsMainTab === "stats"
     ? statsTabContent
-    : (teamDetailsMainTab === "hcperf" ? hcPerfTabContent : xgTabContent);
+    : (teamDetailsMainTab === "shots"
+      ? shotsTabContent
+      : (teamDetailsMainTab === "hcperf" ? hcPerfTabContent : xgTabContent));
   teamDetailsContent.innerHTML = `${teamTabNav}${activeTabContent}`;
   bindTeamLinkButtons(teamDetailsContent);
 
@@ -6259,7 +8982,9 @@ function renderTeamDetailsPanel(payload) {
     if (!(button instanceof HTMLButtonElement)) return;
     button.addEventListener("click", () => {
       const nextTabRaw = String(button.dataset.teamDetailsTab || "").trim().toLowerCase();
-      const nextTab = nextTabRaw === "stats" || nextTabRaw === "hcperf" ? nextTabRaw : "xg";
+      const nextTab = nextTabRaw === "stats" || nextTabRaw === "shots" || nextTabRaw === "hcperf"
+        ? nextTabRaw
+        : "xg";
       if (nextTab === teamDetailsMainTab) return;
       teamDetailsMainTab = nextTab;
       if (teamDetailsPayload) {
@@ -6318,6 +9043,7 @@ async function openTeamPage(teamName, competitionName = null, seasonKey = null, 
   const teamText = String(teamName || "").trim();
   const competitionText = String(competitionName || "").trim();
   const seasonText = String(seasonKey || "").trim();
+  const metricMode = getCurrentXgMetricMode();
   const forceRefresh = Boolean(options?.force);
   if (!teamText) return;
 
@@ -6349,7 +9075,7 @@ async function openTeamPage(teamName, competitionName = null, seasonKey = null, 
     </div>
   `;
 
-  const cacheKey = getTeamPageCacheKey(teamText, competitionText, seasonText);
+  const cacheKey = getTeamPageCacheKey(teamText, competitionText, seasonText, metricMode);
   if (!forceRefresh && teamPagePayloadByKey.has(cacheKey)) {
     const cachedPayload = teamPagePayloadByKey.get(cacheKey);
     if (cachedPayload && typeof cachedPayload === "object") {
@@ -6363,11 +9089,17 @@ async function openTeamPage(teamName, competitionName = null, seasonKey = null, 
       teamDetailsSeason = resolvedSeason || seasonText;
       teamDetailsPayload = cachedPayload;
       renderTeamDetailsPanel(cachedPayload);
+      void prefetchAlternateTeamPage(
+        resolvedTeam || teamText,
+        resolvedCompetition || competitionText,
+        resolvedSeason || seasonText,
+        metricMode
+      );
       return;
     }
   }
 
-  const requestKey = `${teamText}::${competitionText}::${seasonText}`;
+  const requestKey = `${metricMode}::${teamText}::${competitionText}::${seasonText}`;
   teamDetailsLoadingKey = requestKey;
   try {
     const query = new URLSearchParams();
@@ -6378,36 +9110,28 @@ async function openTeamPage(teamName, competitionName = null, seasonKey = null, 
     if (seasonText) {
       query.set("season", seasonText);
     }
-    query.set("xg_mode", getCurrentXgMetricMode());
+    query.set("xg_mode", metricMode);
     const { res, payload } = await fetchJsonWithTimeout(`/api/team-page?${query.toString()}`);
     if (!res.ok) throw new Error(payload.error || "Failed to load team page");
     if (teamDetailsLoadingKey !== requestKey) return;
-    const nextPayload = payload && typeof payload === "object" ? payload : {};
-    const resolvedTeam = String(nextPayload?.team || "").trim();
-    const resolvedCompetition = String(nextPayload?.competition || "").trim();
-    const resolvedSeason = String(nextPayload?.season || "").trim();
-    teamPagePayloadByKey.set(cacheKey, nextPayload);
-    if (resolvedCompetition || resolvedSeason) {
-      teamPagePayloadByKey.set(
-        getTeamPageCacheKey(teamText, resolvedCompetition || competitionText, resolvedSeason || seasonText),
-        nextPayload
-      );
-    }
+    const cached = cacheTeamPagePayloadForMode(teamText, competitionText, seasonText, metricMode, payload);
+    const nextPayload = cached.payload;
+    const resolvedTeam = cached.resolvedTeam;
+    const resolvedCompetition = cached.resolvedCompetition;
+    const resolvedSeason = cached.resolvedSeason;
     if (resolvedTeam) {
       teamDetailsTeam = resolvedTeam;
-      teamPagePayloadByKey.set(
-        getTeamPageCacheKey(
-          resolvedTeam,
-          resolvedCompetition || competitionText,
-          resolvedSeason || seasonText
-        ),
-        nextPayload
-      );
     }
     teamDetailsPayload = nextPayload;
     teamDetailsCompetition = resolvedCompetition || competitionText;
     teamDetailsSeason = resolvedSeason || seasonText;
     renderTeamDetailsPanel(nextPayload);
+    void prefetchAlternateTeamPage(
+      resolvedTeam || teamText,
+      resolvedCompetition || competitionText,
+      resolvedSeason || seasonText,
+      metricMode
+    );
   } catch (err) {
     if (teamDetailsLoadingKey !== requestKey) return;
     const errorParts = [];
@@ -6421,28 +9145,30 @@ async function openTeamPage(teamName, competitionName = null, seasonKey = null, 
 
 async function loadGameHcPerf(marketId, force = false) {
   const key = String(marketId || "").trim();
+  const metricMode = getCurrentXgMetricMode();
+  const cacheKey = buildModeScopedCacheKey(key, metricMode);
   if (!key) return;
-  if (!force && hcPerfPayloadByMarket.has(key)) return;
-  if (hcPerfLoadingMarketId === key) return;
+  if (!force && hcPerfPayloadByMarket.has(cacheKey)) return;
+  if (hcPerfLoadingMarketId === cacheKey) return;
 
-  hcPerfLoadingMarketId = key;
+  hcPerfLoadingMarketId = cacheKey;
   if (selectedMarketId === key && detailsMainTab === "hcperf" && lastXgdPayload) {
     renderXgd(lastXgdPayload);
   }
   try {
     const query = new URLSearchParams();
     query.set("market_id", key);
-    query.set("xg_mode", getCurrentXgMetricMode());
+    query.set("xg_mode", metricMode);
     const { res, payload } = await fetchJsonWithTimeout(`/api/game-hcperf?${query.toString()}`);
     if (!res.ok) throw new Error(payload.error || "Failed to load HC performance");
-    hcPerfPayloadByMarket.set(key, payload || {});
+    hcPerfPayloadByMarket.set(cacheKey, payload || {});
   } catch (err) {
-    hcPerfPayloadByMarket.set(key, {
+    hcPerfPayloadByMarket.set(cacheKey, {
       season_handicap_rows: { home: [], away: [] },
       error: String(err.message || err),
     });
   } finally {
-    if (hcPerfLoadingMarketId === key) {
+    if (hcPerfLoadingMarketId === cacheKey) {
       hcPerfLoadingMarketId = null;
     }
     if (selectedMarketId === key && detailsMainTab === "hcperf" && lastXgdPayload) {
@@ -6455,9 +9181,12 @@ async function loadGameXgd(marketId) {
   const game = findGameByMarketId(marketId);
   if (!game) return;
   const key = String(marketId || "").trim();
+  const metricMode = getCurrentXgMetricMode();
+  const cacheKey = buildModeScopedCacheKey(key, metricMode);
+  const requestKey = `${cacheKey}`;
 
   selectedMarketId = marketId;
-  if (activeTab === "saved") {
+  if (isSavedGamesViewActive()) {
     renderSavedGames();
   } else {
     renderCurrentDay();
@@ -6480,23 +9209,27 @@ async function loadGameXgd(marketId) {
   statsTeamView = "home";
   statsGeneralTeamView = "home";
   hcPerfTeamView = "home";
+  pricingTotalsExpanded = false;
+  pricingHandicapExpanded = false;
   activeXgdViewId = null;
   lastXgdPayload = null;
   hcPerfLoadingMarketId = null;
+  gameXgdLoadingKey = requestKey;
   const scoreMeta = game.is_historical ? ` | FT ${String(game.scoreline || "-")}` : "";
   detailsMeta.textContent = `${game.competition} | ${formatGameKickoffLocalDateTime(game)}${scoreMeta}`;
 
-  const cachedPayload = xgdPayloadByMarket.get(key);
+  const cachedPayload = xgdPayloadByMarket.get(cacheKey);
   if (cachedPayload && typeof cachedPayload === "object") {
     renderXgd(cachedPayload);
     const updatedMainTableMetrics = applyCalculatedXgdToMainTable(marketId, cachedPayload);
     if (updatedMainTableMetrics) {
-      if (activeTab === "saved") {
+      if (isSavedGamesViewActive()) {
         renderSavedGames();
       } else {
         renderCurrentDay();
       }
     }
+    void prefetchAlternateGameXgd(marketId, metricMode);
     return;
   }
 
@@ -6505,20 +9238,23 @@ async function loadGameXgd(marketId) {
   try {
     const query = new URLSearchParams();
     query.set("market_id", String(marketId || ""));
-    query.set("xg_mode", getCurrentXgMetricMode());
+    query.set("xg_mode", metricMode);
     const { res, payload } = await fetchJsonWithTimeout(`/api/game-xgd?${query.toString()}`);
     if (!res.ok) throw new Error(payload.error || "Failed to load xGD");
-    xgdPayloadByMarket.set(key, payload || {});
+    if (gameXgdLoadingKey !== requestKey) return;
+    xgdPayloadByMarket.set(cacheKey, payload || {});
     renderXgd(payload);
     const updatedMainTableMetrics = applyCalculatedXgdToMainTable(marketId, payload);
     if (updatedMainTableMetrics) {
-      if (activeTab === "saved") {
+      if (isSavedGamesViewActive()) {
         renderSavedGames();
       } else {
         renderCurrentDay();
       }
     }
+    void prefetchAlternateGameXgd(marketId, metricMode);
   } catch (err) {
+    if (gameXgdLoadingKey !== requestKey) return;
     linesContainer.innerHTML = `<p>${escapeHtml(String(err.message || err))}</p>`;
   }
 }
@@ -6551,12 +9287,13 @@ function findGameByMarketId(marketId) {
 
 function closeGameDetailsPanel(clearSelection = true) {
   detailsPanel.classList.add("hidden");
+  gameXgdLoadingKey = "";
   if (!clearSelection) return;
   if (!selectedMarketId) return;
   selectedMarketId = null;
-  if (activeTab === "saved") {
+  if (isSavedGamesViewActive()) {
     renderSavedGames();
-  } else if (activeTab === "games") {
+  } else if (isGamesCalendarTab()) {
     renderCurrentDay();
   }
 }
@@ -6612,6 +9349,12 @@ async function requestHardRefreshXgd() {
     xgdPayloadByMarket.clear();
     hcPerfPayloadByMarket.clear();
     teamPagePayloadByKey.clear();
+    gamesPayloadByModeAndView.clear();
+    gamesPayloadPrefetchInFlight.clear();
+    gameXgdPrefetchInFlight.clear();
+    teamPagePrefetchInFlight.clear();
+    matchupPayload = null;
+    matchupErrorText = "";
     teamDetailsPayload = null;
     teamHcPerfDetailRows = [];
     teamHcRankingsLoaded = false;
@@ -6646,11 +9389,23 @@ if (exitAppBtn instanceof HTMLButtonElement) {
   });
 }
 gamesTabBtn.addEventListener("click", () => {
+  activeGamesPaneView = "main";
   setActiveTab("games");
 });
-if (savedGamesTabBtn instanceof HTMLButtonElement) {
-  savedGamesTabBtn.addEventListener("click", () => {
-    setActiveTab("saved");
+if (modellingPricesTabBtn instanceof HTMLButtonElement) {
+  modellingPricesTabBtn.addEventListener("click", () => {
+    activeGamesPaneView = "main";
+    setActiveTab("modelling");
+  });
+}
+if (gamesMainSubTabBtn instanceof HTMLButtonElement) {
+  gamesMainSubTabBtn.addEventListener("click", () => {
+    setGamesPaneView("main");
+  });
+}
+if (savedGamesSubTabBtn instanceof HTMLButtonElement) {
+  savedGamesSubTabBtn.addEventListener("click", () => {
+    setGamesPaneView("saved");
   });
 }
 if (teamHcRankingsTabBtn instanceof HTMLButtonElement) {
@@ -6661,6 +9416,11 @@ if (teamHcRankingsTabBtn instanceof HTMLButtonElement) {
 if (teamsTabBtn instanceof HTMLButtonElement) {
   teamsTabBtn.addEventListener("click", () => {
     setActiveTab("teams");
+  });
+}
+if (matchupTabBtn instanceof HTMLButtonElement) {
+  matchupTabBtn.addEventListener("click", () => {
+    setActiveTab("matchup");
   });
 }
 manualMappingTabBtn.addEventListener("click", () => {
@@ -6680,6 +9440,26 @@ if (teamsSearchInput instanceof HTMLInputElement) {
     }
   });
 }
+if (matchupRunBtn instanceof HTMLButtonElement) {
+  matchupRunBtn.addEventListener("click", () => {
+    loadMatchup();
+  });
+}
+for (const input of [matchupHomeInput, matchupAwayInput]) {
+  if (!(input instanceof HTMLInputElement)) continue;
+  input.addEventListener("keydown", (event) => {
+    if (event.key !== "Enter") return;
+    event.preventDefault();
+    loadMatchup();
+  });
+}
+if (matchupCompetitionSelect instanceof HTMLSelectElement) {
+  matchupCompetitionSelect.addEventListener("keydown", (event) => {
+    if (event.key !== "Enter") return;
+    event.preventDefault();
+    loadMatchup();
+  });
+}
 upcomingModeBtn.addEventListener("click", () => {
   setGamesMode("upcoming");
 });
@@ -6697,12 +9477,20 @@ mappingRefreshBtn.addEventListener("click", () => {
 });
 if (mappingSaveSelectedBtn instanceof HTMLButtonElement) {
   mappingSaveSelectedBtn.addEventListener("click", () => {
+    if (mappingSubTab === "competitions") {
+      saveSelectedManualCompetitionMappings();
+      return;
+    }
     saveSelectedManualTeamMappings();
   });
 }
 if (mappingClearSelectedBtn instanceof HTMLButtonElement) {
   mappingClearSelectedBtn.addEventListener("click", () => {
-    clearAllTeamMappingSelections();
+    if (mappingSubTab === "competitions") {
+      clearAllCompetitionMappingSelections();
+    } else {
+      clearAllTeamMappingSelections();
+    }
     updateTeamMappingBatchButtons();
     if (lastManualMappingPayload) {
       renderManualMappingSections(lastManualMappingPayload);
@@ -6850,7 +9638,7 @@ if (savedSortModeBtn instanceof HTMLSelectElement) {
   savedSortModeBtn.addEventListener("change", () => {
     savedSortMode = normalizeGameSortMode(savedSortModeBtn.value);
     updateSortButtonLabel();
-    if (activeTab === "saved") {
+    if (isSavedGamesViewActive()) {
       renderSavedGames();
     }
   });
@@ -6952,9 +9740,22 @@ xgMetricMode = getStoredXgMetricMode();
 xgPushThreshold = getStoredXgPushThreshold();
 xgdHcHighlightEnabled = false;
 showGamesWithoutHandicap = getStoredShowGamesWithoutHandicap();
+modellingPriceEdge = getStoredModellingPriceEdge();
 updateXgMetricModeToggleButton();
 if (xgMetricModeToggleBtn instanceof HTMLButtonElement) {
   xgMetricModeToggleBtn.addEventListener("click", () => {
+    const nextMode = getCurrentXgMetricMode() === "xg" ? "npxg" : "xg";
+    void applyGlobalXgMetricMode(nextMode);
+  });
+}
+if (detailsXgMetricModeToggleBtn instanceof HTMLButtonElement) {
+  detailsXgMetricModeToggleBtn.addEventListener("click", () => {
+    const nextMode = getCurrentXgMetricMode() === "xg" ? "npxg" : "xg";
+    void applyGlobalXgMetricMode(nextMode);
+  });
+}
+if (teamDetailsXgMetricModeToggleBtn instanceof HTMLButtonElement) {
+  teamDetailsXgMetricModeToggleBtn.addEventListener("click", () => {
     const nextMode = getCurrentXgMetricMode() === "xg" ? "npxg" : "xg";
     void applyGlobalXgMetricMode(nextMode);
   });
@@ -6969,6 +9770,18 @@ if (xgThresholdInput instanceof HTMLInputElement) {
     event.preventDefault();
     applyGlobalXgPushThreshold(xgThresholdInput.value);
     xgThresholdInput.blur();
+  });
+}
+if (modelEdgeInput instanceof HTMLInputElement) {
+  modelEdgeInput.value = formatModellingPriceEdgeForInput(modellingPriceEdge);
+  modelEdgeInput.addEventListener("change", () => {
+    applyGlobalModellingPriceEdge(modelEdgeInput.value);
+  });
+  modelEdgeInput.addEventListener("keydown", (event) => {
+    if (event.key !== "Enter") return;
+    event.preventDefault();
+    applyGlobalModellingPriceEdge(modelEdgeInput.value);
+    modelEdgeInput.blur();
   });
 }
 updateXgdHcHighlightToggleButton();

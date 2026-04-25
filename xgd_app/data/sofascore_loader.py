@@ -3,9 +3,12 @@
 from __future__ import annotations
 
 import re
+import math
+import json
 import sqlite3
+import unicodedata
 from pathlib import Path
-from typing import Any
+from typing import Any, Callable
 
 import pandas as pd
 
@@ -43,10 +46,34 @@ REQUIRED_SOFASCORE_TABLES = {
     "stat_definitions",
 }
 
+REQUIRED_MATCH_EVENTS_TABLES = {
+    "matches",
+    "teams",
+    "competitions",
+    "match_events",
+}
+
+TEAM_TOKEN_REPLACEMENTS = {
+    "utd": "united",
+    "munchen": "munich",
+    "st": "saint",
+}
+
+TEAM_STOP_WORDS = {
+    "fc",
+    "cf",
+    "ac",
+    "sc",
+    "afc",
+    "club",
+    "de",
+    "the",
+}
+
 GAMESTATES = ("drawing", "winning", "losing")
 GAMESTATE_EVENT_METRIC_KEYS = tuple(
     f"{metric}_{direction}_{state}"
-    for metric in ("corners", "cards")
+    for metric in ("corners", "cards", "shots", "shots_on_target", "xg")
     for direction in ("for", "against")
     for state in GAMESTATES
 )
@@ -108,16 +135,31 @@ def gamestate_for_perspective(home_score: int, away_score: int, perspective_side
     return "drawing"
 
 
+def concat_event_frames_without_all_na_columns(frames: list[pd.DataFrame]) -> pd.DataFrame:
+    concat_frames = [
+        frame.dropna(axis=1, how="all")
+        for frame in frames
+        if isinstance(frame, pd.DataFrame) and not frame.empty
+    ]
+    if not concat_frames:
+        return pd.DataFrame()
+    if len(concat_frames) == 1:
+        return concat_frames[0].copy()
+    return pd.concat(concat_frames, ignore_index=True, sort=False)
+
+
 def build_match_gamestate_event_counts(
     events_df: pd.DataFrame,
     goal_shots_df: pd.DataFrame | None = None,
+    shots_df: pd.DataFrame | None = None,
 ) -> pd.DataFrame:
     out_cols = ["match_id"] + [f"home_{key}" for key in GAMESTATE_ALL_KEYS] + [
         f"away_{key}" for key in GAMESTATE_ALL_KEYS
     ]
     has_events = isinstance(events_df, pd.DataFrame) and not events_df.empty
     has_goal_shots = isinstance(goal_shots_df, pd.DataFrame) and not goal_shots_df.empty
-    if not has_events and not has_goal_shots:
+    has_shots = isinstance(shots_df, pd.DataFrame) and not shots_df.empty
+    if not has_events and not has_goal_shots and not has_shots:
         return pd.DataFrame(columns=out_cols)
 
     work = events_df.copy() if isinstance(events_df, pd.DataFrame) else pd.DataFrame()
@@ -127,6 +169,8 @@ def build_match_gamestate_event_counts(
         "event_type",
         "card_type",
         "goal_type",
+        "shot_type",
+        "xg",
         "score_after",
         "minute",
         "added_time",
@@ -136,7 +180,16 @@ def build_match_gamestate_event_counts(
         if col not in work.columns:
             work[col] = pd.NA
 
+    goal_source_df: pd.DataFrame | None = None
     if has_goal_shots:
+        goal_source_df = goal_shots_df.copy()
+    elif has_shots:
+        goal_source_df = shots_df.copy()
+        goal_shot_type = goal_source_df.get("shot_type", pd.Series(index=goal_source_df.index, dtype=object))
+        goal_shot_type = goal_shot_type.fillna("").astype(str).str.strip().str.lower()
+        goal_source_df = goal_source_df[goal_shot_type == "goal"].copy()
+
+    if isinstance(goal_source_df, pd.DataFrame) and not goal_source_df.empty:
         work_event_type_norm = work["event_type"].fillna("").astype(str).str.strip().str.lower()
         match_ids_with_event_goals: set[int] = set(
             pd.to_numeric(
@@ -148,7 +201,9 @@ def build_match_gamestate_event_counts(
             .tolist()
         )
 
-        goal_work = goal_shots_df.copy()
+        goal_work = goal_source_df.copy()
+        if "minute" not in goal_work.columns and "time_minute" in goal_work.columns:
+            goal_work["minute"] = goal_work["time_minute"]
         if "team_side_code" not in goal_work.columns and "is_home" in goal_work.columns:
             is_home_num = pd.to_numeric(goal_work.get("is_home"), errors="coerce")
             goal_work["team_side_code"] = is_home_num.map(
@@ -185,15 +240,68 @@ def build_match_gamestate_event_counts(
                     "team_side_code": goal_work["side_int"],
                 }
             )
-            work = pd.concat([work, shot_goal_events], ignore_index=True, sort=False)
+            if work.empty:
+                work = shot_goal_events.copy()
+            else:
+                work = concat_event_frames_without_all_na_columns([work, shot_goal_events])
+
+    if has_shots:
+        shot_work = shots_df.copy()
+        if "minute" not in shot_work.columns and "time_minute" in shot_work.columns:
+            shot_work["minute"] = shot_work["time_minute"]
+        if "team_side_code" not in shot_work.columns and "is_home" in shot_work.columns:
+            is_home_num = pd.to_numeric(shot_work.get("is_home"), errors="coerce")
+            shot_work["team_side_code"] = is_home_num.map(
+                lambda v: 1 if pd.notna(v) and int(v) == 1 else (2 if pd.notna(v) and int(v) == 0 else pd.NA)
+            )
+
+        shot_work["match_id_int"] = pd.to_numeric(shot_work.get("match_id"), errors="coerce")
+        shot_work["minute_int"] = pd.to_numeric(shot_work.get("minute"), errors="coerce")
+        shot_work["side_int"] = pd.to_numeric(shot_work.get("team_side_code"), errors="coerce")
+        shot_work["id_int"] = pd.to_numeric(shot_work.get("id"), errors="coerce")
+        shot_work["xg_num"] = pd.to_numeric(shot_work.get("xg"), errors="coerce")
+        shot_work["shot_type_norm"] = shot_work.get("shot_type", pd.Series(index=shot_work.index, dtype=object)).fillna(
+            ""
+        ).astype(str).str.strip().str.lower()
+        shot_work = shot_work[
+            shot_work["match_id_int"].notna()
+            & shot_work["minute_int"].notna()
+            & shot_work["side_int"].isin([1, 2])
+        ].copy()
+        if not shot_work.empty:
+            shot_work["match_id_int"] = shot_work["match_id_int"].astype(int)
+            shot_work["side_int"] = shot_work["side_int"].astype(int)
+            fallback_ids = pd.Series(range(-1, -len(shot_work) - 1, -1), index=shot_work.index, dtype="int64")
+            shot_ids = shot_work["id_int"].where(shot_work["id_int"].notna(), fallback_ids)
+            shot_events = pd.DataFrame(
+                {
+                    "id": shot_ids,
+                    "match_id": shot_work["match_id_int"],
+                    "event_type": "shot",
+                    "card_type": pd.NA,
+                    "goal_type": pd.NA,
+                    "shot_type": shot_work["shot_type_norm"],
+                    "xg": shot_work["xg_num"],
+                    "score_after": pd.NA,
+                    "minute": shot_work["minute_int"],
+                    "added_time": 0,
+                    "team_side_code": shot_work["side_int"],
+                }
+            )
+            if work.empty:
+                work = shot_events.copy()
+            else:
+                work = concat_event_frames_without_all_na_columns([work, shot_events])
 
     work["event_type_norm"] = work["event_type"].fillna("").astype(str).str.strip().str.lower()
-    work = work[work["event_type_norm"].isin({"goal", "corner", "card"})].copy()
+    work = work[work["event_type_norm"].isin({"goal", "corner", "card", "shot"})].copy()
     if work.empty:
         return pd.DataFrame(columns=out_cols)
 
     work["card_type_norm"] = work.get("card_type", pd.Series(index=work.index, dtype=object)).fillna("").astype(str).str.strip().str.lower()
     work["goal_type_norm"] = work.get("goal_type", pd.Series(index=work.index, dtype=object)).fillna("").astype(str).str.strip().str.lower()
+    work["shot_type_norm"] = work.get("shot_type", pd.Series(index=work.index, dtype=object)).fillna("").astype(str).str.strip().str.lower()
+    work["shot_xg_num"] = pd.to_numeric(work.get("xg"), errors="coerce")
     work["minute_int"] = pd.to_numeric(work.get("minute"), errors="coerce")
     work["added_int"] = pd.to_numeric(work.get("added_time"), errors="coerce").fillna(0)
     work["side_int"] = pd.to_numeric(work.get("team_side_code"), errors="coerce")
@@ -209,9 +317,9 @@ def build_match_gamestate_event_counts(
 
         score_home = 0
         score_away = 0
-        side_counts: dict[int, dict[str, int]] = {
-            1: {key: 0 for key in GAMESTATE_EVENT_METRIC_KEYS},
-            2: {key: 0 for key in GAMESTATE_EVENT_METRIC_KEYS},
+        side_counts: dict[int, dict[str, float]] = {
+            1: {key: 0.0 for key in GAMESTATE_EVENT_METRIC_KEYS},
+            2: {key: 0.0 for key in GAMESTATE_EVENT_METRIC_KEYS},
         }
         side_minutes: dict[int, dict[str, float]] = {
             1: {state: 0.0 for state in GAMESTATES},
@@ -229,13 +337,25 @@ def build_match_gamestate_event_counts(
             side = int(side_raw) if pd.notna(side_raw) and int(side_raw) in (1, 2) else None
             minute_known = pd.notna(event.get("minute_int"))
 
-            if event_type in {"corner", "card"} and side in (1, 2) and minute_known:
-                metric_prefix = "corners" if event_type == "corner" else "cards"
+            if event_type in {"corner", "card", "shot"} and side in (1, 2) and minute_known:
+                if event_type == "corner":
+                    metric_prefix = "corners"
+                elif event_type == "card":
+                    metric_prefix = "cards"
+                else:
+                    metric_prefix = "shots"
+                shot_xg = float(event.get("shot_xg_num")) if pd.notna(event.get("shot_xg_num")) else 0.0
                 for perspective_side in (1, 2):
                     gamestate = gamestate_for_perspective(score_home, score_away, perspective_side)
                     direction = "for" if side == perspective_side else "against"
                     metric_key = f"{metric_prefix}_{direction}_{gamestate}"
                     side_counts[perspective_side][metric_key] += 1
+                    if event_type == "shot" and str(event.get("shot_type_norm", "")) in {"goal", "attempt saved"}:
+                        on_target_key = f"shots_on_target_{direction}_{gamestate}"
+                        side_counts[perspective_side][on_target_key] += 1
+                    if event_type == "shot" and shot_xg > 0:
+                        xg_key = f"xg_{direction}_{gamestate}"
+                        side_counts[perspective_side][xg_key] += shot_xg
 
             if event_type == "goal":
                 if minute_known:
@@ -325,20 +445,578 @@ def resolve_sofascore_db_path(db_path: str) -> Path:
     return requested
 
 
-def load_sofascore_inputs(db_path: str) -> tuple[pd.DataFrame, pd.DataFrame, list[str], Path]:
+def resolve_match_events_db_path(match_events_db_path: str | None, source_db_path: str | Path) -> Path:
+    source = Path(source_db_path).expanduser()
+    source = source.resolve() if source.is_absolute() else (Path.cwd() / source).resolve()
+    requested_text = str(match_events_db_path or "").strip()
+    if not requested_text:
+        requested = source
+    else:
+        requested = Path(requested_text).expanduser()
+        requested = requested.resolve() if requested.is_absolute() else (Path.cwd() / requested).resolve()
+
+    if not requested.exists():
+        raise RuntimeError(
+            f"Match-events DB not found: {requested}\n"
+            "Set --match-events-db-path in app_data/launcher_config.json to a valid DB file."
+        )
+
+    try:
+        tables = _sqlite_table_names(requested)
+    except Exception as exc:
+        raise RuntimeError(f"Match-events DB is unreadable: {requested} ({exc})") from exc
+
+    missing = sorted(REQUIRED_MATCH_EVENTS_TABLES - tables)
+    if missing:
+        raise RuntimeError(
+            "Match-events DB is missing required schema "
+            f"(missing tables: {', '.join(missing)}): {requested}"
+        )
+    return requested
+
+
+def _normalize_team_key(value: Any) -> str:
+    text = str(value or "").strip()
+    if not text:
+        return ""
+    text = unicodedata.normalize("NFKD", text)
+    text = "".join(ch for ch in text if not unicodedata.combining(ch))
+    text = text.lower().replace("&", " and ")
+    text = re.sub(r"[^a-z0-9\s]", " ", text)
+    tokens: list[str] = []
+    for token in text.split():
+        token = TEAM_TOKEN_REPLACEMENTS.get(token, token)
+        if token in TEAM_STOP_WORDS:
+            continue
+        tokens.append(token)
+    return " ".join(tokens)
+
+
+def _normalize_competition_key(value: Any) -> str:
+    text = str(value or "").strip()
+    if not text:
+        return ""
+    text = unicodedata.normalize("NFKD", text)
+    text = "".join(ch for ch in text if not unicodedata.combining(ch))
+    text = text.lower()
+    text = re.sub(r"\[[^\]]*\]", " ", text)
+    text = re.sub(r"[^a-z0-9\s]", " ", text)
+    return " ".join(text.split())
+
+
+def _load_manual_mapping_pairs(path: str | Path | None) -> list[tuple[str, str]]:
+    if path is None:
+        return []
+    candidate = Path(path).expanduser().resolve()
+    if not candidate.exists():
+        return []
+    try:
+        raw_data = json.loads(candidate.read_text(encoding="utf-8"))
+    except Exception:
+        return []
+
+    if isinstance(raw_data, dict):
+        return [
+            (str(raw_name).strip(), str(source_name).strip())
+            for raw_name, source_name in raw_data.items()
+            if str(raw_name).strip() and str(source_name).strip()
+        ]
+
+    if isinstance(raw_data, list):
+        pairs = []
+        for row in raw_data:
+            if not isinstance(row, dict):
+                continue
+            raw_name = str(row.get("raw_name", "")).strip()
+            source_name = str(row.get("sofa_name", "")).strip()
+            if raw_name and source_name:
+                pairs.append((raw_name, source_name))
+        return pairs
+
+    return []
+
+
+def _build_source_to_raw_lookup(
+    mapping_path: str | Path | None,
+    normalize_key: Callable[[Any], str],
+) -> dict[str, str]:
+    out: dict[str, str] = {}
+    for raw_name, source_name in _load_manual_mapping_pairs(mapping_path):
+        source_norm = normalize_key(source_name)
+        raw_text = str(raw_name).strip()
+        if not source_norm or not raw_text:
+            continue
+        out.setdefault(source_norm, raw_text)
+    return out
+
+
+def _canonical_from_source_name(
+    source_name: Any,
+    source_to_raw_lookup: dict[str, str],
+    normalize_key: Callable[[Any], str],
+) -> str:
+    source_text = str(source_name or "").strip()
+    if not source_text:
+        return ""
+    source_norm = normalize_key(source_text)
+    if not source_norm:
+        return ""
+    mapped_raw = str(source_to_raw_lookup.get(source_norm, source_text)).strip()
+    return normalize_key(mapped_raw)
+
+
+def _to_utc_ts(value: Any) -> pd.Timestamp | pd.NaT:
+    try:
+        return pd.to_datetime(value, errors="coerce", utc=True)
+    except Exception:
+        return pd.NaT
+
+
+def _build_cross_db_match_map(
+    primary_matches: pd.DataFrame,
+    event_matches: pd.DataFrame,
+    *,
+    primary_team_map: dict[str, str],
+    primary_comp_map: dict[str, str],
+    event_team_map: dict[str, str],
+    event_comp_map: dict[str, str],
+    max_delta_minutes: float = 24.0 * 60.0,
+) -> pd.DataFrame:
+    if (
+        not isinstance(primary_matches, pd.DataFrame)
+        or primary_matches.empty
+        or not isinstance(event_matches, pd.DataFrame)
+        or event_matches.empty
+    ):
+        return pd.DataFrame(columns=["primary_match_id", "event_match_id", "swap_sides", "delta_minutes"])
+
+    primary = primary_matches.copy()
+    events = event_matches.copy()
+
+    primary["primary_match_id"] = pd.to_numeric(primary.get("match_id"), errors="coerce")
+    primary["kickoff_ts"] = primary.get("date_time").map(_to_utc_ts)
+    primary["home_key"] = primary.get("home_team_name").map(
+        lambda value: _canonical_from_source_name(value, primary_team_map, _normalize_team_key)
+    )
+    primary["away_key"] = primary.get("away_team_name").map(
+        lambda value: _canonical_from_source_name(value, primary_team_map, _normalize_team_key)
+    )
+    primary["comp_key"] = primary.get("competition_name").map(
+        lambda value: _canonical_from_source_name(value, primary_comp_map, _normalize_competition_key)
+    )
+    primary = primary[
+        primary["primary_match_id"].notna()
+        & primary["kickoff_ts"].notna()
+        & (primary["home_key"] != "")
+        & (primary["away_key"] != "")
+    ].copy()
+    if primary.empty:
+        return pd.DataFrame(columns=["primary_match_id", "event_match_id", "swap_sides", "delta_minutes"])
+
+    events["event_match_id"] = pd.to_numeric(events.get("match_id"), errors="coerce")
+    events["kickoff_ts"] = events.get("date_time").map(_to_utc_ts)
+    events["home_key"] = events.get("home_team_name").map(
+        lambda value: _canonical_from_source_name(value, event_team_map, _normalize_team_key)
+    )
+    events["away_key"] = events.get("away_team_name").map(
+        lambda value: _canonical_from_source_name(value, event_team_map, _normalize_team_key)
+    )
+    events["comp_key"] = events.get("competition_name").map(
+        lambda value: _canonical_from_source_name(value, event_comp_map, _normalize_competition_key)
+    )
+    events = events[
+        events["event_match_id"].notna()
+        & events["kickoff_ts"].notna()
+        & (events["home_key"] != "")
+        & (events["away_key"] != "")
+    ].copy()
+    if events.empty:
+        return pd.DataFrame(columns=["primary_match_id", "event_match_id", "swap_sides", "delta_minutes"])
+
+    event_records = events[
+        ["event_match_id", "kickoff_ts", "comp_key", "home_key", "away_key"]
+    ].to_dict(orient="records")
+    by_comp_pair: dict[tuple[str, str, str], list[int]] = {}
+    by_pair: dict[tuple[str, str], list[int]] = {}
+    for idx, row in enumerate(event_records):
+        comp_key = str(row.get("comp_key") or "")
+        home_key = str(row.get("home_key") or "")
+        away_key = str(row.get("away_key") or "")
+        if not home_key or not away_key:
+            continue
+        by_pair.setdefault((home_key, away_key), []).append(idx)
+        if comp_key:
+            by_comp_pair.setdefault((comp_key, home_key, away_key), []).append(idx)
+
+    primary_records = primary[
+        ["primary_match_id", "kickoff_ts", "comp_key", "home_key", "away_key"]
+    ].sort_values("kickoff_ts", kind="mergesort").to_dict(orient="records")
+
+    used_event_indices: set[int] = set()
+    rows: list[dict[str, Any]] = []
+    for row in primary_records:
+        primary_match_id = int(row["primary_match_id"])
+        kickoff_ts = row["kickoff_ts"]
+        comp_key = str(row.get("comp_key") or "")
+        home_key = str(row.get("home_key") or "")
+        away_key = str(row.get("away_key") or "")
+
+        candidate_groups: list[tuple[list[int], bool]] = []
+        if comp_key:
+            candidate_groups.append((by_comp_pair.get((comp_key, home_key, away_key), []), False))
+        candidate_groups.append((by_pair.get((home_key, away_key), []), False))
+        if comp_key:
+            candidate_groups.append((by_comp_pair.get((comp_key, away_key, home_key), []), True))
+        candidate_groups.append((by_pair.get((away_key, home_key), []), True))
+
+        best_idx: int | None = None
+        best_swap = False
+        best_delta_minutes: float | None = None
+        for candidate_indices, swap_sides in candidate_groups:
+            for candidate_idx in candidate_indices:
+                if candidate_idx in used_event_indices:
+                    continue
+                candidate = event_records[candidate_idx]
+                candidate_ts = candidate.get("kickoff_ts")
+                if pd.isna(candidate_ts):
+                    continue
+                delta_minutes = abs((candidate_ts - kickoff_ts).total_seconds()) / 60.0
+                if delta_minutes > float(max_delta_minutes):
+                    continue
+                if (best_delta_minutes is None) or (delta_minutes < best_delta_minutes):
+                    best_idx = candidate_idx
+                    best_swap = bool(swap_sides)
+                    best_delta_minutes = float(delta_minutes)
+            if best_idx is not None:
+                break
+
+        if best_idx is None:
+            continue
+        used_event_indices.add(best_idx)
+        rows.append(
+            {
+                "primary_match_id": primary_match_id,
+                "event_match_id": int(event_records[best_idx]["event_match_id"]),
+                "swap_sides": bool(best_swap),
+                "delta_minutes": float(best_delta_minutes or 0.0),
+            }
+        )
+
+    if not rows:
+        return pd.DataFrame(columns=["primary_match_id", "event_match_id", "swap_sides", "delta_minutes"])
+    return pd.DataFrame(rows)
+
+
+def _load_cross_db_event_inputs(
+    *,
+    events_db_path: Path,
+    primary_matches: pd.DataFrame,
+    source_team_mappings_path: str | Path | None,
+    source_competition_mappings_path: str | Path | None,
+    match_events_team_mappings_path: str | Path | None,
+    match_events_competition_mappings_path: str | Path | None,
+) -> tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame]:
+    conn = sqlite3.connect(str(events_db_path))
+    try:
+        event_matches = pd.read_sql_query(
+            """
+            SELECT
+                m.id AS match_id,
+                m.kickoff_ts AS date_time,
+                c.name AS competition_name,
+                ht.name AS home_team_name,
+                at.name AS away_team_name
+            FROM matches m
+            JOIN teams ht ON ht.id = m.home_team_id
+            JOIN teams at ON at.id = m.away_team_id
+            LEFT JOIN competitions c ON c.id = m.competition_id
+            WHERE m.kickoff_ts IS NOT NULL
+            """,
+            conn,
+        )
+        event_rows = pd.read_sql_query(
+            """
+            SELECT
+                me.id,
+                me.match_id,
+                me.event_type,
+                me.card_type,
+                me.goal_type,
+                me.score_after,
+                me.minute,
+                me.added_time,
+                me.team_side_code
+            FROM match_events me
+            WHERE LOWER(COALESCE(me.event_type, '')) IN ('goal', 'corner', 'card')
+            """,
+            conn,
+        )
+        tables = _sqlite_table_names(events_db_path)
+        if "match_shots" in tables:
+            shot_rows = pd.read_sql_query(
+                """
+                SELECT
+                    ms.id,
+                    ms.match_id,
+                    ms.time_minute AS minute,
+                    CASE
+                        WHEN ms.is_home = 1 THEN 1
+                        WHEN ms.is_home = 0 THEN 2
+                        ELSE NULL
+                    END AS team_side_code,
+                    ms.shot_type,
+                    ms.xg
+                FROM match_shots ms
+                """,
+                conn,
+            )
+        else:
+            shot_rows = pd.DataFrame(columns=["id", "match_id", "minute", "team_side_code", "shot_type", "xg"])
+    finally:
+        conn.close()
+
+    primary_team_lookup = _build_source_to_raw_lookup(source_team_mappings_path, _normalize_team_key)
+    primary_comp_lookup = _build_source_to_raw_lookup(source_competition_mappings_path, _normalize_competition_key)
+    events_team_lookup = _build_source_to_raw_lookup(match_events_team_mappings_path, _normalize_team_key)
+    events_comp_lookup = _build_source_to_raw_lookup(match_events_competition_mappings_path, _normalize_competition_key)
+
+    cross_map = _build_cross_db_match_map(
+        primary_matches=primary_matches,
+        event_matches=event_matches,
+        primary_team_map=primary_team_lookup,
+        primary_comp_map=primary_comp_lookup,
+        event_team_map=events_team_lookup,
+        event_comp_map=events_comp_lookup,
+    )
+    if cross_map.empty:
+        return (
+            pd.DataFrame(columns=["id", "match_id", "event_type", "card_type", "goal_type", "score_after", "minute", "added_time", "team_side_code"]),
+            pd.DataFrame(columns=["id", "match_id", "minute", "team_side_code"]),
+            pd.DataFrame(columns=["id", "match_id", "minute", "team_side_code", "shot_type", "xg"]),
+        )
+
+    primary_status = primary_matches[["match_id", "match_status"]].copy()
+    primary_status["match_id"] = pd.to_numeric(primary_status["match_id"], errors="coerce")
+    primary_status = primary_status.dropna(subset=["match_id"])
+    primary_status["match_id"] = primary_status["match_id"].astype(int)
+    status_lookup = dict(zip(primary_status["match_id"], primary_status["match_status"]))
+
+    mapped_events = event_rows.merge(
+        cross_map,
+        left_on="match_id",
+        right_on="event_match_id",
+        how="inner",
+    )
+    if mapped_events.empty:
+        return (
+            pd.DataFrame(columns=["id", "match_id", "event_type", "card_type", "goal_type", "score_after", "minute", "added_time", "team_side_code"]),
+            pd.DataFrame(columns=["id", "match_id", "minute", "team_side_code"]),
+            pd.DataFrame(columns=["id", "match_id", "minute", "team_side_code", "shot_type", "xg"]),
+        )
+    mapped_events["match_id"] = pd.to_numeric(mapped_events["primary_match_id"], errors="coerce")
+    mapped_events["team_side_code"] = pd.to_numeric(mapped_events["team_side_code"], errors="coerce")
+    swap_mask = mapped_events["swap_sides"].astype(bool) & mapped_events["team_side_code"].isin([1, 2])
+    if bool(swap_mask.any()):
+        mapped_events.loc[swap_mask, "team_side_code"] = mapped_events.loc[swap_mask, "team_side_code"].map(
+            lambda side: 1 if int(side) == 2 else 2
+        )
+    mapped_events = mapped_events.dropna(subset=["match_id"]).copy()
+    mapped_events["match_id"] = mapped_events["match_id"].astype(int)
+    mapped_events["match_status"] = mapped_events["match_id"].map(status_lookup)
+    mapped_events["match_status_norm"] = mapped_events["match_status"].fillna("").astype(str).str.strip().str.upper()
+    mapped_events["minute_num"] = pd.to_numeric(mapped_events["minute"], errors="coerce")
+    is_aet = mapped_events["match_status_norm"].isin({"AET", "AP"})
+    keep_mask = (~is_aet) | (mapped_events["minute_num"].notna() & (mapped_events["minute_num"] <= 90))
+    mapped_events = mapped_events[keep_mask].copy()
+    mapped_events = mapped_events[
+        ["id", "match_id", "event_type", "card_type", "goal_type", "score_after", "minute", "added_time", "team_side_code"]
+    ]
+
+    mapped_shots = shot_rows.merge(
+        cross_map,
+        left_on="match_id",
+        right_on="event_match_id",
+        how="inner",
+    )
+    if mapped_shots.empty:
+        return (
+            mapped_events,
+            pd.DataFrame(columns=["id", "match_id", "minute", "team_side_code"]),
+            pd.DataFrame(columns=["id", "match_id", "minute", "team_side_code", "shot_type", "xg"]),
+        )
+    mapped_shots["match_id"] = pd.to_numeric(mapped_shots["primary_match_id"], errors="coerce")
+    mapped_shots["team_side_code"] = pd.to_numeric(mapped_shots["team_side_code"], errors="coerce")
+    swap_goal_mask = mapped_shots["swap_sides"].astype(bool) & mapped_shots["team_side_code"].isin([1, 2])
+    if bool(swap_goal_mask.any()):
+        mapped_shots.loc[swap_goal_mask, "team_side_code"] = mapped_shots.loc[
+            swap_goal_mask, "team_side_code"
+        ].map(lambda side: 1 if int(side) == 2 else 2)
+    mapped_shots = mapped_shots.dropna(subset=["match_id"]).copy()
+    mapped_shots["match_id"] = mapped_shots["match_id"].astype(int)
+    mapped_shots["match_status"] = mapped_shots["match_id"].map(status_lookup)
+    mapped_shots["match_status_norm"] = mapped_shots["match_status"].fillna("").astype(str).str.strip().str.upper()
+    mapped_shots["minute_num"] = pd.to_numeric(mapped_shots["minute"], errors="coerce")
+    is_aet_goal = mapped_shots["match_status_norm"].isin({"AET", "AP"})
+    keep_goal_mask = (~is_aet_goal) | (mapped_shots["minute_num"].notna() & (mapped_shots["minute_num"] <= 90))
+    mapped_shots = mapped_shots[keep_goal_mask].copy()
+    mapped_shots["shot_type_norm"] = mapped_shots.get("shot_type", pd.Series(index=mapped_shots.index, dtype=object)).fillna(
+        ""
+    ).astype(str).str.strip().str.lower()
+
+    mapped_goal_shots = mapped_shots[mapped_shots["shot_type_norm"] == "goal"].copy()
+    mapped_goal_shots = mapped_goal_shots[["id", "match_id", "minute", "team_side_code"]]
+    mapped_shots = mapped_shots[["id", "match_id", "minute", "team_side_code", "shot_type", "xg"]]
+
+    return mapped_events, mapped_goal_shots, mapped_shots
+
+
+def _competition_id_key(value: Any) -> str:
+    try:
+        if value is None or pd.isna(value):
+            return ""
+    except Exception:
+        pass
+    text = str(value).strip()
+    if not text:
+        return ""
+    try:
+        numeric = float(text)
+    except Exception:
+        return text
+    if math.isfinite(numeric) and abs(numeric - round(numeric)) <= 1e-9:
+        return str(int(round(numeric)))
+    return text
+
+
+def _disambiguate_competition_names_by_id(
+    raw_finished: pd.DataFrame,
+    fixtures_df: pd.DataFrame,
+) -> tuple[pd.DataFrame, pd.DataFrame]:
+    if not isinstance(raw_finished, pd.DataFrame) or raw_finished.empty:
+        return raw_finished, fixtures_df
+    required_cols = {"competition_name", "competition_id"}
+    if not required_cols.issubset(set(raw_finished.columns)):
+        return raw_finished, fixtures_df
+
+    work = raw_finished.copy()
+    work["_comp_name"] = work["competition_name"].fillna("").astype(str).str.strip()
+    work["_comp_id"] = work["competition_id"].map(_competition_id_key)
+    work = work[(work["_comp_name"] != "") & (work["_comp_id"] != "")].copy()
+    if work.empty:
+        return raw_finished, fixtures_df
+
+    id_counts = work.groupby("_comp_name", dropna=False)["_comp_id"].nunique()
+    duplicate_names = {str(name).strip() for name, count in id_counts.items() if int(count or 0) > 1}
+    if not duplicate_names:
+        return raw_finished, fixtures_df
+
+    def _build_label(name: str, comp_id: str, area: str) -> str:
+        comp_name = str(name or "").strip()
+        if not comp_name:
+            return ""
+        if comp_name not in duplicate_names:
+            return comp_name
+        comp_id_text = str(comp_id or "").strip()
+        area_text = str(area or "").strip()
+        if comp_id_text and area_text:
+            return f"{comp_name} [{area_text} | {comp_id_text}]"
+        if comp_id_text:
+            return f"{comp_name} [{comp_id_text}]"
+        return comp_name
+
+    def _apply(df: pd.DataFrame) -> pd.DataFrame:
+        if not isinstance(df, pd.DataFrame) or df.empty:
+            return df
+        if not {"competition_name", "competition_id"}.issubset(set(df.columns)):
+            return df
+        out = df.copy()
+        out["_comp_name"] = out["competition_name"].fillna("").astype(str).str.strip()
+        out["_comp_id"] = out["competition_id"].map(_competition_id_key)
+        if "area_name" in out.columns:
+            out["_comp_area"] = out["area_name"].fillna("").astype(str).str.strip()
+        else:
+            out["_comp_area"] = ""
+        out["competition_name"] = out.apply(
+            lambda row: _build_label(row.get("_comp_name"), row.get("_comp_id"), row.get("_comp_area")),
+            axis=1,
+        )
+        return out.drop(columns=["_comp_name", "_comp_id", "_comp_area"], errors="ignore")
+
+    return _apply(raw_finished), _apply(fixtures_df)
+
+
+def load_sofascore_inputs(
+    db_path: str,
+    *,
+    match_events_db_path: str | None = None,
+    source_team_mappings_path: str | Path | None = None,
+    source_competition_mappings_path: str | Path | None = None,
+    match_events_team_mappings_path: str | Path | None = None,
+    match_events_competition_mappings_path: str | Path | None = None,
+) -> tuple[pd.DataFrame, pd.DataFrame, list[str], Path]:
     path = resolve_sofascore_db_path(db_path)
+    resolved_match_events_path = resolve_match_events_db_path(match_events_db_path, path)
 
     finished_sql = """
     WITH xg_stats AS (
         SELECT
             ms.match_id,
-            MAX(COALESCE(CAST(NULLIF(ms.home_value_num, '') AS REAL), CAST(NULLIF(ms.home_value_text, '') AS REAL))) AS home_xg_stat,
-            MAX(COALESCE(CAST(NULLIF(ms.away_value_num, '') AS REAL), CAST(NULLIF(ms.away_value_text, '') AS REAL))) AS away_xg_stat
+            MAX(
+                CASE
+                    WHEN LOWER(TRIM(COALESCE(sd.metric, ''))) LIKE 'expected goals%'
+                     AND LOWER(TRIM(COALESCE(sd.metric, ''))) NOT LIKE '%non%pen%'
+                     AND LOWER(TRIM(COALESCE(sd.metric, ''))) NOT LIKE '%without%pen%'
+                     AND LOWER(TRIM(COALESCE(sd.metric, ''))) NOT LIKE '%excluding%pen%'
+                     AND LOWER(TRIM(COALESCE(sd.metric, ''))) NOT LIKE '%excl%pen%'
+                     AND LOWER(TRIM(COALESCE(sd.metric, ''))) NOT LIKE '%no%penalty%'
+                     AND UPPER(COALESCE(ms.period, '')) = 'ALL'
+                    THEN COALESCE(CAST(NULLIF(ms.home_value_num, '') AS REAL), CAST(NULLIF(ms.home_value_text, '') AS REAL))
+                END
+            ) AS home_xg_stat,
+            MAX(
+                CASE
+                    WHEN LOWER(TRIM(COALESCE(sd.metric, ''))) LIKE 'expected goals%'
+                     AND LOWER(TRIM(COALESCE(sd.metric, ''))) NOT LIKE '%non%pen%'
+                     AND LOWER(TRIM(COALESCE(sd.metric, ''))) NOT LIKE '%without%pen%'
+                     AND LOWER(TRIM(COALESCE(sd.metric, ''))) NOT LIKE '%excluding%pen%'
+                     AND LOWER(TRIM(COALESCE(sd.metric, ''))) NOT LIKE '%excl%pen%'
+                     AND LOWER(TRIM(COALESCE(sd.metric, ''))) NOT LIKE '%no%penalty%'
+                     AND UPPER(COALESCE(ms.period, '')) = 'ALL'
+                    THEN COALESCE(CAST(NULLIF(ms.away_value_num, '') AS REAL), CAST(NULLIF(ms.away_value_text, '') AS REAL))
+                END
+            ) AS away_xg_stat,
+            MAX(
+                CASE
+                    WHEN LOWER(TRIM(COALESCE(sd.metric, ''))) LIKE 'expected goals%'
+                     AND (
+                        LOWER(TRIM(COALESCE(sd.metric, ''))) LIKE '%non%pen%'
+                        OR LOWER(TRIM(COALESCE(sd.metric, ''))) LIKE '%without%pen%'
+                        OR LOWER(TRIM(COALESCE(sd.metric, ''))) LIKE '%excluding%pen%'
+                        OR LOWER(TRIM(COALESCE(sd.metric, ''))) LIKE '%excl%pen%'
+                        OR LOWER(TRIM(COALESCE(sd.metric, ''))) LIKE '%no%penalty%'
+                     )
+                     AND UPPER(COALESCE(ms.period, '')) = 'ALL'
+                    THEN COALESCE(CAST(NULLIF(ms.home_value_num, '') AS REAL), CAST(NULLIF(ms.home_value_text, '') AS REAL))
+                END
+            ) AS home_npxg_stat,
+            MAX(
+                CASE
+                    WHEN LOWER(TRIM(COALESCE(sd.metric, ''))) LIKE 'expected goals%'
+                     AND (
+                        LOWER(TRIM(COALESCE(sd.metric, ''))) LIKE '%non%pen%'
+                        OR LOWER(TRIM(COALESCE(sd.metric, ''))) LIKE '%without%pen%'
+                        OR LOWER(TRIM(COALESCE(sd.metric, ''))) LIKE '%excluding%pen%'
+                        OR LOWER(TRIM(COALESCE(sd.metric, ''))) LIKE '%excl%pen%'
+                        OR LOWER(TRIM(COALESCE(sd.metric, ''))) LIKE '%no%penalty%'
+                     )
+                     AND UPPER(COALESCE(ms.period, '')) = 'ALL'
+                    THEN COALESCE(CAST(NULLIF(ms.away_value_num, '') AS REAL), CAST(NULLIF(ms.away_value_text, '') AS REAL))
+                END
+            ) AS away_npxg_stat
         FROM match_stats ms
         JOIN stat_definitions sd
             ON sd.id = ms.stat_definition_id
         WHERE LOWER(TRIM(COALESCE(sd.metric, ''))) LIKE 'expected goals%'
-          AND UPPER(COALESCE(ms.period, '')) = 'ALL'
         GROUP BY ms.match_id
     ),
     shot_aggs AS (
@@ -354,14 +1032,13 @@ def load_sofascore_inputs(db_path: str) -> tuple[pd.DataFrame, pd.DataFrame, lis
                             AND CAST(NULLIF(TRIM(COALESCE(ms.time_minute, '')), '') AS REAL) <= 90
                         )
                      )
-                    THEN COALESCE(CAST(NULLIF(ms.xg, '') AS REAL), 0)
+                    THEN 1
                     ELSE 0
                 END
-            ) AS home_xg_shots,
+            ) AS home_shots,
             SUM(
                 CASE
-                    WHEN ms.is_home = 1
-                     AND LOWER(TRIM(COALESCE(ms.situation, ''))) <> 'penalty'
+                    WHEN ms.is_home = 0
                      AND (
                         UPPER(TRIM(COALESCE(m.status, ''))) NOT IN ('AET', 'AP')
                         OR (
@@ -369,8 +1046,66 @@ def load_sofascore_inputs(db_path: str) -> tuple[pd.DataFrame, pd.DataFrame, lis
                             AND CAST(NULLIF(TRIM(COALESCE(ms.time_minute, '')), '') AS REAL) <= 90
                         )
                      )
-                    THEN COALESCE(CAST(NULLIF(ms.xg, '') AS REAL), 0)
+                    THEN 1
                     ELSE 0
+                END
+            ) AS away_shots,
+            SUM(
+                CASE
+                    WHEN ms.is_home = 1
+                     AND LOWER(TRIM(COALESCE(ms.shot_type, ''))) IN ('goal', 'attempt saved')
+                     AND (
+                        UPPER(TRIM(COALESCE(m.status, ''))) NOT IN ('AET', 'AP')
+                        OR (
+                            NULLIF(TRIM(COALESCE(ms.time_minute, '')), '') IS NOT NULL
+                            AND CAST(NULLIF(TRIM(COALESCE(ms.time_minute, '')), '') AS REAL) <= 90
+                        )
+                     )
+                    THEN 1
+                    ELSE 0
+                END
+            ) AS home_shots_on_target,
+            SUM(
+                CASE
+                    WHEN ms.is_home = 0
+                     AND LOWER(TRIM(COALESCE(ms.shot_type, ''))) IN ('goal', 'attempt saved')
+                     AND (
+                        UPPER(TRIM(COALESCE(m.status, ''))) NOT IN ('AET', 'AP')
+                        OR (
+                            NULLIF(TRIM(COALESCE(ms.time_minute, '')), '') IS NOT NULL
+                            AND CAST(NULLIF(TRIM(COALESCE(ms.time_minute, '')), '') AS REAL) <= 90
+                        )
+                     )
+                    THEN 1
+                    ELSE 0
+                END
+            ) AS away_shots_on_target,
+            SUM(
+                CASE
+                    WHEN ms.is_home = 1
+                     AND (
+                        UPPER(TRIM(COALESCE(m.status, ''))) NOT IN ('AET', 'AP')
+                        OR (
+                            NULLIF(TRIM(COALESCE(ms.time_minute, '')), '') IS NOT NULL
+                            AND CAST(NULLIF(TRIM(COALESCE(ms.time_minute, '')), '') AS REAL) <= 90
+                        )
+                     )
+                    THEN CAST(NULLIF(ms.xg, '') AS REAL)
+                END
+            ) AS home_xg_shots,
+            SUM(
+                CASE
+                    WHEN ms.is_home = 1
+                     AND LOWER(TRIM(COALESCE(ms.situation, ''))) NOT LIKE '%penalt%'
+                     AND LOWER(TRIM(COALESCE(ms.shot_type, ''))) NOT LIKE '%penalt%'
+                     AND (
+                        UPPER(TRIM(COALESCE(m.status, ''))) NOT IN ('AET', 'AP')
+                        OR (
+                            NULLIF(TRIM(COALESCE(ms.time_minute, '')), '') IS NOT NULL
+                            AND CAST(NULLIF(TRIM(COALESCE(ms.time_minute, '')), '') AS REAL) <= 90
+                        )
+                     )
+                    THEN CAST(NULLIF(ms.xg, '') AS REAL)
                 END
             ) AS home_npxg_shots,
             SUM(
@@ -383,14 +1118,14 @@ def load_sofascore_inputs(db_path: str) -> tuple[pd.DataFrame, pd.DataFrame, lis
                             AND CAST(NULLIF(TRIM(COALESCE(ms.time_minute, '')), '') AS REAL) <= 90
                         )
                      )
-                    THEN COALESCE(CAST(NULLIF(ms.xg, '') AS REAL), 0)
-                    ELSE 0
+                    THEN CAST(NULLIF(ms.xg, '') AS REAL)
                 END
             ) AS away_xg_shots,
             SUM(
                 CASE
                     WHEN ms.is_home = 0
-                     AND LOWER(TRIM(COALESCE(ms.situation, ''))) <> 'penalty'
+                     AND LOWER(TRIM(COALESCE(ms.situation, ''))) NOT LIKE '%penalt%'
+                     AND LOWER(TRIM(COALESCE(ms.shot_type, ''))) NOT LIKE '%penalt%'
                      AND (
                         UPPER(TRIM(COALESCE(m.status, ''))) NOT IN ('AET', 'AP')
                         OR (
@@ -398,8 +1133,7 @@ def load_sofascore_inputs(db_path: str) -> tuple[pd.DataFrame, pd.DataFrame, lis
                             AND CAST(NULLIF(TRIM(COALESCE(ms.time_minute, '')), '') AS REAL) <= 90
                         )
                      )
-                    THEN COALESCE(CAST(NULLIF(ms.xg, '') AS REAL), 0)
-                    ELSE 0
+                    THEN CAST(NULLIF(ms.xg, '') AS REAL)
                 END
             ) AS away_npxg_shots,
             SUM(
@@ -412,8 +1146,7 @@ def load_sofascore_inputs(db_path: str) -> tuple[pd.DataFrame, pd.DataFrame, lis
                             AND CAST(NULLIF(TRIM(COALESCE(ms.time_minute, '')), '') AS REAL) <= 90
                         )
                      )
-                    THEN COALESCE(CAST(NULLIF(ms.xgot, '') AS REAL), 0)
-                    ELSE 0
+                    THEN CAST(NULLIF(ms.xgot, '') AS REAL)
                 END
             ) AS home_xgot_shots,
             SUM(
@@ -426,8 +1159,7 @@ def load_sofascore_inputs(db_path: str) -> tuple[pd.DataFrame, pd.DataFrame, lis
                             AND CAST(NULLIF(TRIM(COALESCE(ms.time_minute, '')), '') AS REAL) <= 90
                         )
                      )
-                    THEN COALESCE(CAST(NULLIF(ms.xgot, '') AS REAL), 0)
-                    ELSE 0
+                    THEN CAST(NULLIF(ms.xgot, '') AS REAL)
                 END
             ) AS away_xgot_shots
         FROM match_shots ms
@@ -613,6 +1345,7 @@ def load_sofascore_inputs(db_path: str) -> tuple[pd.DataFrame, pd.DataFrame, lis
     )
     SELECT
         m.id AS match_id,
+        m.competition_id AS competition_id,
         m.season_id,
         m.kickoff_ts AS date_time,
         m.status AS match_status,
@@ -643,6 +1376,20 @@ def load_sofascore_inputs(db_path: str) -> tuple[pd.DataFrame, pd.DataFrame, lis
             THEN NULL
             ELSE xg.away_xg_stat
         END AS away_xg_stat,
+        CASE
+            WHEN UPPER(TRIM(COALESCE(m.status, ''))) IN ('AET', 'AP')
+            THEN NULL
+            ELSE xg.home_npxg_stat
+        END AS home_npxg_stat,
+        CASE
+            WHEN UPPER(TRIM(COALESCE(m.status, ''))) IN ('AET', 'AP')
+            THEN NULL
+            ELSE xg.away_npxg_stat
+        END AS away_npxg_stat,
+        sa.home_shots,
+        sa.away_shots,
+        sa.home_shots_on_target,
+        sa.away_shots_on_target,
         sa.home_xg_shots,
         sa.away_xg_shots,
         sa.home_npxg_shots,
@@ -712,6 +1459,7 @@ def load_sofascore_inputs(db_path: str) -> tuple[pd.DataFrame, pd.DataFrame, lis
     fixtures_sql = """
     SELECT
         m.id AS match_id,
+        m.competition_id AS competition_id,
         m.season_id,
         m.kickoff_ts AS date_time,
         m.status AS match_status,
@@ -730,7 +1478,7 @@ def load_sofascore_inputs(db_path: str) -> tuple[pd.DataFrame, pd.DataFrame, lis
     try:
         raw_finished = pd.read_sql_query(finished_sql, conn)
         fixtures_df = pd.read_sql_query(fixtures_sql, conn)
-        match_events_df = pd.read_sql_query(
+        primary_match_events_df = pd.read_sql_query(
             """
             SELECT
                 me.id,
@@ -755,7 +1503,7 @@ def load_sofascore_inputs(db_path: str) -> tuple[pd.DataFrame, pd.DataFrame, lis
             """,
             conn,
         )
-        goal_shots_df = pd.read_sql_query(
+        primary_shots_df = pd.read_sql_query(
             """
             SELECT
                 ms.id,
@@ -765,11 +1513,12 @@ def load_sofascore_inputs(db_path: str) -> tuple[pd.DataFrame, pd.DataFrame, lis
                     WHEN ms.is_home = 1 THEN 1
                     WHEN ms.is_home = 0 THEN 2
                     ELSE NULL
-                END AS team_side_code
+                END AS team_side_code,
+                ms.shot_type,
+                ms.xg
             FROM match_shots ms
             JOIN matches m ON m.id = ms.match_id
-            WHERE LOWER(TRIM(COALESCE(ms.shot_type, ''))) = 'goal'
-              AND (
+            WHERE (
                 UPPER(TRIM(COALESCE(m.status, ''))) NOT IN ('AET', 'AP')
                 OR (
                     NULLIF(TRIM(COALESCE(ms.time_minute, '')), '') IS NOT NULL
@@ -792,6 +1541,138 @@ def load_sofascore_inputs(db_path: str) -> tuple[pd.DataFrame, pd.DataFrame, lis
     finally:
         conn.close()
 
+    primary_goal_shots_df = primary_shots_df.copy()
+    primary_goal_shots_df["shot_type_norm"] = primary_goal_shots_df.get(
+        "shot_type", pd.Series(index=primary_goal_shots_df.index, dtype=object)
+    ).fillna("").astype(str).str.strip().str.lower()
+    primary_goal_shots_df = primary_goal_shots_df[primary_goal_shots_df["shot_type_norm"] == "goal"].copy()
+    primary_goal_shots_df = primary_goal_shots_df[["id", "match_id", "minute", "team_side_code"]]
+
+    match_events_df = primary_match_events_df
+    goal_shots_df = primary_goal_shots_df
+    shots_df = primary_shots_df
+
+    if resolved_match_events_path != path:
+        mapped_match_events_df, mapped_goal_shots_df, mapped_shots_df = _load_cross_db_event_inputs(
+            events_db_path=resolved_match_events_path,
+            primary_matches=raw_finished[
+                [
+                    "match_id",
+                    "date_time",
+                    "match_status",
+                    "competition_name",
+                    "home_team_name",
+                    "away_team_name",
+                ]
+            ].copy(),
+            source_team_mappings_path=source_team_mappings_path,
+            source_competition_mappings_path=source_competition_mappings_path,
+            match_events_team_mappings_path=match_events_team_mappings_path,
+            match_events_competition_mappings_path=match_events_competition_mappings_path,
+        )
+        mapped_match_ids: set[int] = set()
+        if isinstance(mapped_match_events_df, pd.DataFrame) and (not mapped_match_events_df.empty):
+            mapped_match_ids.update(
+                pd.to_numeric(mapped_match_events_df.get("match_id"), errors="coerce")
+                .dropna()
+                .astype(int)
+                .tolist()
+            )
+        if isinstance(mapped_goal_shots_df, pd.DataFrame) and (not mapped_goal_shots_df.empty):
+            mapped_match_ids.update(
+                pd.to_numeric(mapped_goal_shots_df.get("match_id"), errors="coerce")
+                .dropna()
+                .astype(int)
+                .tolist()
+            )
+        if isinstance(mapped_shots_df, pd.DataFrame) and (not mapped_shots_df.empty):
+            mapped_match_ids.update(
+                pd.to_numeric(mapped_shots_df.get("match_id"), errors="coerce")
+                .dropna()
+                .astype(int)
+                .tolist()
+            )
+
+        if mapped_match_ids:
+            primary_match_events_keep = primary_match_events_df.copy()
+            if "match_id" in primary_match_events_keep.columns:
+                primary_match_events_keep = primary_match_events_keep[
+                    ~pd.to_numeric(primary_match_events_keep["match_id"], errors="coerce")
+                    .fillna(-1)
+                    .astype(int)
+                    .isin(mapped_match_ids)
+                ].copy()
+            primary_goal_shots_keep = primary_goal_shots_df.copy()
+            if "match_id" in primary_goal_shots_keep.columns:
+                primary_goal_shots_keep = primary_goal_shots_keep[
+                    ~pd.to_numeric(primary_goal_shots_keep["match_id"], errors="coerce")
+                    .fillna(-1)
+                    .astype(int)
+                    .isin(mapped_match_ids)
+                ].copy()
+            primary_shots_keep = primary_shots_df.copy()
+            if "match_id" in primary_shots_keep.columns:
+                primary_shots_keep = primary_shots_keep[
+                    ~pd.to_numeric(primary_shots_keep["match_id"], errors="coerce")
+                    .fillna(-1)
+                    .astype(int)
+                    .isin(mapped_match_ids)
+                ].copy()
+
+            match_event_frames = [
+                frame
+                for frame in (mapped_match_events_df, primary_match_events_keep)
+                if isinstance(frame, pd.DataFrame) and (not frame.empty)
+            ]
+            if match_event_frames:
+                match_events_df = pd.concat(match_event_frames, ignore_index=True, sort=False)
+            else:
+                match_events_df = primary_match_events_df.iloc[0:0].copy()
+
+            goal_shot_frames = [
+                frame
+                for frame in (mapped_goal_shots_df, primary_goal_shots_keep)
+                if isinstance(frame, pd.DataFrame) and (not frame.empty)
+            ]
+            if goal_shot_frames:
+                goal_shots_df = pd.concat(goal_shot_frames, ignore_index=True, sort=False)
+            else:
+                goal_shots_df = primary_goal_shots_df.iloc[0:0].copy()
+
+            shot_frames = [
+                frame
+                for frame in (mapped_shots_df, primary_shots_keep)
+                if isinstance(frame, pd.DataFrame) and (not frame.empty)
+            ]
+            if shot_frames:
+                shots_df = pd.concat(shot_frames, ignore_index=True, sort=False)
+            else:
+                shots_df = primary_shots_df.iloc[0:0].copy()
+
+        mapped_match_count = int(
+            pd.to_numeric(mapped_match_events_df.get("match_id"), errors="coerce").dropna().astype(int).nunique()
+        )
+        fallback_match_count = int(
+            pd.to_numeric(primary_match_events_df.get("match_id"), errors="coerce")
+            .dropna()
+            .astype(int)
+            .nunique()
+            - len(mapped_match_ids)
+        )
+        final_event_match_count = int(
+            pd.to_numeric(match_events_df.get("match_id"), errors="coerce").dropna().astype(int).nunique()
+        )
+        print(
+            "[xgd_web_app] Stage 2/3: Mapped external match-events "
+            f"({len(mapped_match_events_df)} events, {mapped_match_count} matches) "
+            f"from {resolved_match_events_path}; "
+            f"fallback primary matches={max(0, fallback_match_count)}, "
+            f"final event coverage matches={final_event_match_count}",
+            flush=True,
+        )
+
+    raw_finished, fixtures_df = _disambiguate_competition_names_by_id(raw_finished, fixtures_df)
+
     raw_finished["status_norm"] = raw_finished["match_status"].fillna("").astype(str).str.strip().str.lower()
     raw_finished = raw_finished[raw_finished["status_norm"].isin(FINISHED_STATUSES)].copy()
     raw_finished["date_time"] = pd.to_datetime(raw_finished["date_time"], errors="coerce", utc=True)
@@ -803,6 +1684,12 @@ def load_sofascore_inputs(db_path: str) -> tuple[pd.DataFrame, pd.DataFrame, lis
         "away_goals",
         "home_xg_stat",
         "away_xg_stat",
+        "home_npxg_stat",
+        "away_npxg_stat",
+        "home_shots",
+        "away_shots",
+        "home_shots_on_target",
+        "away_shots_on_target",
         "home_xg_shots",
         "away_xg_shots",
         "home_npxg_shots",
@@ -826,7 +1713,11 @@ def load_sofascore_inputs(db_path: str) -> tuple[pd.DataFrame, pd.DataFrame, lis
         if col in raw_finished.columns:
             raw_finished[col] = pd.to_numeric(raw_finished[col], errors="coerce")
 
-    gamestate_counts_df = build_match_gamestate_event_counts(match_events_df, goal_shots_df=goal_shots_df)
+    gamestate_counts_df = build_match_gamestate_event_counts(
+        match_events_df,
+        goal_shots_df=goal_shots_df,
+        shots_df=shots_df,
+    )
     if not gamestate_counts_df.empty and "match_id" in raw_finished.columns:
         raw_finished = raw_finished.merge(gamestate_counts_df, on="match_id", how="left")
         gamestate_numeric_cols = [col for col in gamestate_counts_df.columns if col != "match_id"]
@@ -836,12 +1727,20 @@ def load_sofascore_inputs(db_path: str) -> tuple[pd.DataFrame, pd.DataFrame, lis
 
     raw_finished["home_xg"] = raw_finished["home_xg_stat"].where(raw_finished["home_xg_stat"].notna(), raw_finished["home_xg_shots"])
     raw_finished["away_xg"] = raw_finished["away_xg_stat"].where(raw_finished["away_xg_stat"].notna(), raw_finished["away_xg_shots"])
-    raw_finished["home_npxg"] = raw_finished["home_npxg_shots"].where(
-        raw_finished["home_npxg_shots"].notna(),
+    raw_finished["home_npxg"] = raw_finished["home_npxg_stat"].where(
+        raw_finished["home_npxg_stat"].notna(),
+        raw_finished["home_npxg_shots"],
+    )
+    raw_finished["home_npxg"] = raw_finished["home_npxg"].where(
+        raw_finished["home_npxg"].notna(),
         raw_finished["home_xg"],
     )
-    raw_finished["away_npxg"] = raw_finished["away_npxg_shots"].where(
-        raw_finished["away_npxg_shots"].notna(),
+    raw_finished["away_npxg"] = raw_finished["away_npxg_stat"].where(
+        raw_finished["away_npxg_stat"].notna(),
+        raw_finished["away_npxg_shots"],
+    )
+    raw_finished["away_npxg"] = raw_finished["away_npxg"].where(
+        raw_finished["away_npxg"].notna(),
         raw_finished["away_xg"],
     )
     raw_finished["home_xgot_keeper"] = raw_finished["home_goals"] + raw_finished["away_goalkeeper_goals_prevented"]
@@ -903,6 +1802,7 @@ def load_sofascore_inputs(db_path: str) -> tuple[pd.DataFrame, pd.DataFrame, lis
     finished = raw_finished[
         [
             "match_id",
+            "competition_id",
             "season_id",
             "competition_name",
             "area_name",
@@ -920,6 +1820,10 @@ def load_sofascore_inputs(db_path: str) -> tuple[pd.DataFrame, pd.DataFrame, lis
             "away_npxg",
             "home_xgot",
             "away_xgot",
+            "home_shots",
+            "away_shots",
+            "home_shots_on_target",
+            "away_shots_on_target",
             "home_corners",
             "away_corners",
             "home_yellow_cards",
@@ -936,6 +1840,7 @@ def load_sofascore_inputs(db_path: str) -> tuple[pd.DataFrame, pd.DataFrame, lis
     home_rows = pd.DataFrame(
         {
             "match_id": finished["match_id"],
+            "competition_id": finished["competition_id"],
             "team": finished["home_team_name"],
             "opponent": finished["away_team_name"],
             "venue": "Home",
@@ -948,6 +1853,10 @@ def load_sofascore_inputs(db_path: str) -> tuple[pd.DataFrame, pd.DataFrame, lis
             "NPxGA": finished["away_npxg"].where(finished["away_npxg"].notna(), finished["away_xg"]),
             "xGoT": finished["home_xgot"].where(finished["home_xgot"].notna(), finished["home_xg"]),
             "xGoTA": finished["away_xgot"].where(finished["away_xgot"].notna(), finished["away_xg"]),
+            "shots_for": finished["home_shots"],
+            "shots_against": finished["away_shots"],
+            "shots_on_target_for": finished["home_shots_on_target"],
+            "shots_on_target_against": finished["away_shots_on_target"],
             "corners_for": finished["home_corners"],
             "corners_against": finished["away_corners"],
             "yellow_for": finished["home_yellow_cards"],
@@ -968,6 +1877,7 @@ def load_sofascore_inputs(db_path: str) -> tuple[pd.DataFrame, pd.DataFrame, lis
     away_rows = pd.DataFrame(
         {
             "match_id": finished["match_id"],
+            "competition_id": finished["competition_id"],
             "team": finished["away_team_name"],
             "opponent": finished["home_team_name"],
             "venue": "Away",
@@ -980,6 +1890,10 @@ def load_sofascore_inputs(db_path: str) -> tuple[pd.DataFrame, pd.DataFrame, lis
             "NPxGA": finished["home_npxg"].where(finished["home_npxg"].notna(), finished["home_xg"]),
             "xGoT": finished["away_xgot"].where(finished["away_xgot"].notna(), finished["away_xg"]),
             "xGoTA": finished["home_xgot"].where(finished["home_xgot"].notna(), finished["home_xg"]),
+            "shots_for": finished["away_shots"],
+            "shots_against": finished["home_shots"],
+            "shots_on_target_for": finished["away_shots_on_target"],
+            "shots_on_target_against": finished["home_shots_on_target"],
             "corners_for": finished["away_corners"],
             "corners_against": finished["home_corners"],
             "yellow_for": finished["away_yellow_cards"],
@@ -1041,5 +1955,6 @@ __all__ = [
     "load_sofascore_inputs",
     "parse_score_after",
     "parse_season_date",
+    "resolve_match_events_db_path",
     "resolve_sofascore_db_path",
 ]

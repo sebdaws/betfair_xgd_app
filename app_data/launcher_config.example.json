@@ -10,7 +10,9 @@
       "--port",
       "8090",
       "--db-path",
-      "../Sofascore_scraper/fotmob_local.db"
+      "../Sofascore_scraper/fotmob_local.db",
+      "--match-events-db-path",
+      "../Sofascore_scraper/sofascore_local.db"
     ],
     "env_vars": {
       "BETFAIR_USERNAME": "replace_me"

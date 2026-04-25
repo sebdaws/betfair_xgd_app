@@ -17,6 +17,7 @@ MatchCompetitionNameFn = Callable[..., tuple[str | None, float | None, str]]
 MAX_UNMATCHED_TEAM_ROWS_PAYLOAD = 5000
 MAX_UNMATCHED_COMPETITION_ROWS_PAYLOAD = 600
 DISABLED_AUTO_TEAM_MAPPINGS_FILENAME = "disabled_auto_team_mappings.json"
+DISABLED_AUTO_COMPETITION_MAPPINGS_FILENAME = "disabled_auto_competition_mappings.json"
 
 
 class MappingService:
@@ -38,6 +39,8 @@ class MappingService:
         self.match_competition_name = match_competition_name
         self.disabled_auto_team_mappings_path = Path(DISABLED_AUTO_TEAM_MAPPINGS_FILENAME)
         self.disabled_auto_team_mappings_by_norm: dict[str, str] = {}
+        self.disabled_auto_competition_mappings_path = Path(DISABLED_AUTO_COMPETITION_MAPPINGS_FILENAME)
+        self.disabled_auto_competition_mappings_by_norm: dict[str, str] = {}
         self.refresh_mapping_paths()
 
     def refresh_mapping_paths(self) -> None:
@@ -53,6 +56,23 @@ class MappingService:
             disabled_filename = DISABLED_AUTO_TEAM_MAPPINGS_FILENAME
         self.disabled_auto_team_mappings_path = manual_path.with_name(disabled_filename)
         self.disabled_auto_team_mappings_by_norm = self._load_disabled_auto_team_mappings()
+
+        manual_comp_path = Path(
+            getattr(self.state, "manual_competition_mappings_path", "manual_competition_mappings.json")
+        )
+        comp_source_suffix = ""
+        manual_comp_stem = str(manual_comp_path.stem or "").strip()
+        comp_prefix = "manual_competition_mappings."
+        if manual_comp_stem.startswith(comp_prefix):
+            comp_source_suffix = manual_comp_stem[len(comp_prefix):].strip()
+        if comp_source_suffix:
+            disabled_comp_filename = (
+                f"disabled_auto_competition_mappings.{comp_source_suffix}{manual_comp_path.suffix}"
+            )
+        else:
+            disabled_comp_filename = DISABLED_AUTO_COMPETITION_MAPPINGS_FILENAME
+        self.disabled_auto_competition_mappings_path = manual_comp_path.with_name(disabled_comp_filename)
+        self.disabled_auto_competition_mappings_by_norm = self._load_disabled_auto_competition_mappings()
 
     def _active_db_path(self) -> Path:
         db_path_raw = getattr(
@@ -190,6 +210,54 @@ class MappingService:
         }
         body = json.dumps(ordered, indent=2, ensure_ascii=True)
         path = Path(self.disabled_auto_team_mappings_path)
+        path.parent.mkdir(parents=True, exist_ok=True)
+        tmp_path = path.with_suffix(path.suffix + ".tmp")
+        tmp_path.write_text(body + "\n", encoding="utf-8")
+        tmp_path.replace(path)
+
+    def _load_disabled_auto_competition_mappings(self) -> dict[str, str]:
+        path = Path(self.disabled_auto_competition_mappings_path)
+        if not path.exists():
+            return {}
+        try:
+            raw_data = json.loads(path.read_text(encoding="utf-8"))
+        except Exception:
+            return {}
+
+        out: dict[str, str] = {}
+        if isinstance(raw_data, dict):
+            for raw_norm, raw_name in raw_data.items():
+                raw_text = str(raw_name).strip()
+                norm_text = str(raw_norm).strip()
+                if raw_text and not norm_text:
+                    norm_text = self.normalize_competition_key(raw_text)
+                if not norm_text:
+                    continue
+                out[norm_text] = raw_text or norm_text
+            return out
+
+        if isinstance(raw_data, list):
+            for raw_name in raw_data:
+                raw_text = str(raw_name).strip()
+                norm_text = self.normalize_competition_key(raw_text)
+                if not raw_text or not norm_text:
+                    continue
+                out[norm_text] = raw_text
+        return out
+
+    def _save_disabled_auto_competition_mappings_locked(self) -> None:
+        ordered = {
+            norm: self.disabled_auto_competition_mappings_by_norm[norm]
+            for norm in sorted(
+                self.disabled_auto_competition_mappings_by_norm,
+                key=lambda key: (
+                    str(self.disabled_auto_competition_mappings_by_norm.get(key, "")).lower(),
+                    str(key).lower(),
+                ),
+            )
+        }
+        body = json.dumps(ordered, indent=2, ensure_ascii=True)
+        path = Path(self.disabled_auto_competition_mappings_path)
         path.parent.mkdir(parents=True, exist_ok=True)
         tmp_path = path.with_suffix(path.suffix + ".tmp")
         tmp_path.write_text(body + "\n", encoding="utf-8")
@@ -484,6 +552,10 @@ class MappingService:
         with self.state.lock:
             return dict(self.state.manual_competition_mapping_lookup)
 
+    def get_disabled_auto_competition_mapping_norms_snapshot(self) -> set[str]:
+        with self.state.lock:
+            return set(self.disabled_auto_competition_mappings_by_norm.keys())
+
     def _selected_betfair_competition_names(self) -> set[str]:
         games_service = getattr(self.state, "games_service", None)
         if games_service is None:
@@ -502,10 +574,29 @@ class MappingService:
             if str(row.get("competition_name", "")).strip()
         }
 
+    def _selected_betfair_competition_ids(self) -> set[str]:
+        games_service = getattr(self.state, "games_service", None)
+        if games_service is None:
+            return set()
+        selected_path = getattr(games_service, "default_selected_leagues", None)
+        loader = getattr(games_service, "load_selected_league_entries", None)
+        if selected_path is None or not callable(loader):
+            return set()
+        try:
+            entries, _ = loader(selected_path)
+        except Exception:
+            return set()
+        return {
+            str(row.get("competition_id", "")).strip()
+            for row in entries
+            if str(row.get("competition_id", "")).strip()
+        }
+
     def _load_historical_db_unmatched_team_rows(
         self,
         *,
         allowed_competitions: set[str] | None = None,
+        allowed_competition_ids: set[str] | None = None,
     ) -> list[dict[str, Any]]:
         db_path = self._active_db_path()
         if not db_path.exists():
@@ -515,6 +606,11 @@ class MappingService:
             self.normalize_competition_key(name)
             for name in (allowed_competitions or set())
             if self.normalize_competition_key(name)
+        }
+        allowed_competition_id_values = {
+            str(value).strip()
+            for value in (allowed_competition_ids or set())
+            if str(value).strip()
         }
 
         conn: sqlite3.Connection | None = None
@@ -548,25 +644,43 @@ class MappingService:
                 if found:
                     competition_col = found
                     break
+            competition_id_col = None
+            for candidate in (
+                "betfair_competition_id",
+                "competition_id",
+            ):
+                found = hist_cols.get(candidate.casefold())
+                if found:
+                    competition_id_col = found
+                    break
 
-            if allowed_competition_norms and not competition_col:
+            if (
+                (allowed_competition_norms or allowed_competition_id_values)
+                and (not competition_col)
+                and (not competition_id_col)
+            ):
                 return []
 
             comp_expr = f"TRIM(COALESCE({competition_col}, ''))" if competition_col else "''"
+            comp_id_expr = f"TRIM(COALESCE({competition_id_col}, ''))" if competition_id_col else "''"
 
             query = """
-                SELECT DISTINCT TRIM(raw_name) AS raw_name, TRIM(competition) AS competition, 0 AS seen_count
+                SELECT DISTINCT
+                    TRIM(raw_name) AS raw_name,
+                    TRIM(competition) AS competition,
+                    TRIM(competition_id) AS competition_id,
+                    0 AS seen_count
                 FROM (
-                    SELECT betfair_home_team_name AS raw_name, {comp_expr} AS competition
+                    SELECT betfair_home_team_name AS raw_name, {comp_expr} AS competition, {comp_id_expr} AS competition_id
                     FROM betfair_historical_prices
                     WHERE betfair_home_team_name IS NOT NULL AND TRIM(betfair_home_team_name) <> ''
                     UNION ALL
-                    SELECT betfair_away_team_name AS raw_name, {comp_expr} AS competition
+                    SELECT betfair_away_team_name AS raw_name, {comp_expr} AS competition, {comp_id_expr} AS competition_id
                     FROM betfair_historical_prices
                     WHERE betfair_away_team_name IS NOT NULL AND TRIM(betfair_away_team_name) <> ''
                 )
                 WHERE raw_name IS NOT NULL AND TRIM(raw_name) <> ''
-            """.format(comp_expr=comp_expr)
+            """.format(comp_expr=comp_expr, comp_id_expr=comp_id_expr)
             params: list[Any] = []
             rows = conn.execute(query, params).fetchall()
         except Exception:
@@ -587,13 +701,20 @@ class MappingService:
             seen_raw_lower.add(raw_lower)
             seen_count = 0
             try:
-                seen_count = int(row[2] if len(row) > 2 else 0)
+                seen_count = int(row[3] if len(row) > 3 else 0)
             except Exception:
                 seen_count = 0
             competition_name = str(row[1] if len(row) > 1 else "").strip()
-            if allowed_competition_norms:
-                competition_norm = self.normalize_competition_key(competition_name)
-                if not competition_norm or competition_norm not in allowed_competition_norms:
+            competition_id = str(row[2] if len(row) > 2 else "").strip()
+            if allowed_competition_norms or allowed_competition_id_values:
+                matches_name = False
+                matches_id = False
+                if allowed_competition_norms:
+                    competition_norm = self.normalize_competition_key(competition_name)
+                    matches_name = bool(competition_norm and competition_norm in allowed_competition_norms)
+                if allowed_competition_id_values:
+                    matches_id = bool(competition_id and competition_id in allowed_competition_id_values)
+                if not (matches_name or matches_id):
                     continue
             event_label = "Historical Betfair Prices"
             if seen_count > 0:
@@ -603,7 +724,7 @@ class MappingService:
                     "raw_name": raw_name,
                     "side": "Any",
                     "event_name": event_label,
-                    "competition": competition_name or "Historical DB",
+                    "competition": competition_name or competition_id or "Historical DB",
                     "kickoff_raw": "",
                 }
             )
@@ -661,6 +782,7 @@ class MappingService:
             fixtures_df = self.state.fixtures_df.copy()
             manual_mapping_lookup = dict(self.state.manual_mapping_lookup)
             disabled_auto_team_norms = set(self.disabled_auto_team_mappings_by_norm.keys())
+            disabled_auto_competition_norms = set(self.disabled_auto_competition_mappings_by_norm.keys())
             sofa_teams = list(self.state.team_matcher.teams)
             competition_mappings = dict(self.state.manual_competition_mappings)
             competition_mapping_lookup = dict(self.state.manual_competition_mapping_lookup)
@@ -834,6 +956,16 @@ class MappingService:
                             }
                         )
 
+        unmatched_rows = [
+            row
+            for row in unmatched_rows
+            if (
+                self.normalize_team_name(str(row.get("raw_name", "")).strip()) not in mapped_raw_norms
+                and self.normalize_team_name(str(row.get("raw_name", "")).strip()) not in manual_raw_norms
+            )
+        ]
+        unmatched_rows = self._collapse_unmatched_team_rows(unmatched_rows)
+
         if auto_mapping_candidates:
             auto_mapping_candidates = {
                 raw_norm: candidate
@@ -863,36 +995,6 @@ class MappingService:
             key=lambda row: str(row.get("raw_name", "")).lower(),
         )
         mapping_rows.extend(auto_mapping_rows)
-        unmatched_rows = [
-            row
-            for row in unmatched_rows
-            if (
-                self.normalize_team_name(str(row.get("raw_name", "")).strip()) not in mapped_raw_norms
-                and self.normalize_team_name(str(row.get("raw_name", "")).strip()) not in manual_raw_norms
-            )
-        ]
-        unmatched_rows = self._collapse_unmatched_team_rows(unmatched_rows)
-        historical_unmatched_rows = self._load_historical_db_unmatched_team_rows(
-            allowed_competitions=selected_betfair_competitions
-        )
-        if historical_unmatched_rows:
-            existing_unmatched_norms = {
-                self.normalize_team_name(str(row.get("raw_name", "")).strip())
-                for row in unmatched_rows
-                if self.normalize_team_name(str(row.get("raw_name", "")).strip())
-            }
-            auto_candidate_norms = set(auto_mapping_candidates.keys())
-            for row in historical_unmatched_rows:
-                raw_name = str(row.get("raw_name", "")).strip()
-                raw_norm = self.normalize_team_name(raw_name)
-                if not raw_name or not raw_norm:
-                    continue
-                if raw_norm in mapped_raw_norms or raw_norm in manual_raw_norms or raw_norm in auto_candidate_norms:
-                    continue
-                if raw_norm in existing_unmatched_norms:
-                    continue
-                existing_unmatched_norms.add(raw_norm)
-                unmatched_rows.append(row)
         unmatched_rows = sorted(
             unmatched_rows,
             key=lambda row: (
@@ -966,6 +1068,15 @@ class MappingService:
             raw_norm = str(entry.get("raw_norm", "")).strip()
             if not raw_name or not raw_norm:
                 continue
+            if raw_norm in disabled_auto_competition_norms and raw_norm not in competition_manual_norms:
+                unmatched_competitions.append(
+                    {
+                        "raw_name": raw_name,
+                        "games_count": int(entry.get("games_count", 0)),
+                        "next_kickoff": str(entry.get("next_kickoff", "")).strip(),
+                    }
+                )
+                continue
 
             manual_target = competition_mapping_lookup.get(raw_norm)
             if manual_target and manual_target in sofa_competitions:
@@ -979,7 +1090,7 @@ class MappingService:
             )
             if matched_name and match_method not in {"missing", "unmatched"}:
                 mapped_competition_norms.add(raw_norm)
-                if raw_norm not in competition_manual_norms:
+                if raw_norm not in competition_manual_norms and raw_norm not in disabled_auto_competition_norms:
                     candidate = {
                         "raw_name": raw_name,
                         "sofa_name": matched_name,
@@ -1005,41 +1116,6 @@ class MappingService:
                     "next_kickoff": str(entry.get("next_kickoff", "")).strip(),
                 }
             )
-
-        if auto_competition_candidates:
-            with self.state.lock:
-                changed = False
-                for raw_norm, candidate in auto_competition_candidates.items():
-                    if raw_norm in self.state.manual_competition_mapping_lookup:
-                        continue
-                    raw_name = str(candidate.get("raw_name", "")).strip()
-                    sofa_name = str(candidate.get("sofa_name", "")).strip()
-                    if not raw_name or not sofa_name:
-                        continue
-                    if sofa_name not in self.state.sofa_competition_set:
-                        continue
-                    self.state.manual_competition_mappings[raw_name] = sofa_name
-                    changed = True
-                if changed:
-                    self.state.manual_competition_mapping_lookup = (
-                        self.build_manual_competition_mapping_lookup(
-                            self.state.manual_competition_mappings
-                        )
-                    )
-                    self._save_manual_competition_mappings()
-                competition_mappings = dict(self.state.manual_competition_mappings)
-                competition_mapping_lookup = dict(self.state.manual_competition_mapping_lookup)
-
-            competition_manual_norms = {
-                self.normalize_competition_key(raw_name)
-                for raw_name in competition_mappings.keys()
-                if self.normalize_competition_key(raw_name)
-            }
-            auto_competition_candidates = {
-                raw_norm: candidate
-                for raw_norm, candidate in auto_competition_candidates.items()
-                if raw_norm not in competition_manual_norms
-            }
 
         competition_mapping_rows = [
             {
@@ -1206,27 +1282,91 @@ class MappingService:
         if sofa_comp not in self.state.sofa_competition_set:
             raise ValueError(f"Unknown Database competition: {sofa_comp}")
 
+        raw_norm = self.normalize_competition_key(raw_comp)
         with self.state.lock:
+            if raw_norm:
+                conflicting_keys = [
+                    existing_raw
+                    for existing_raw, existing_sofa in self.state.manual_competition_mappings.items()
+                    if (
+                        str(existing_raw).strip()
+                        and str(existing_raw).strip() != raw_comp
+                        and self.normalize_competition_key(existing_raw) == raw_norm
+                        and str(existing_sofa).strip() != sofa_comp
+                    )
+                ]
+                for existing_raw in conflicting_keys:
+                    self.state.manual_competition_mappings.pop(existing_raw, None)
+                if raw_norm in self.disabled_auto_competition_mappings_by_norm:
+                    self.disabled_auto_competition_mappings_by_norm.pop(raw_norm, None)
+                    self._save_disabled_auto_competition_mappings_locked()
             self.state.manual_competition_mappings[raw_comp] = sofa_comp
             self.state.manual_competition_mapping_lookup = self.build_manual_competition_mapping_lookup(
                 self.state.manual_competition_mappings
             )
             self._save_manual_competition_mappings()
 
+    def upsert_manual_competition_mappings_bulk(self, mappings: list[dict[str, Any]]) -> int:
+        if not isinstance(mappings, list) or not mappings:
+            raise ValueError("mappings must be a non-empty list")
+
+        deduped_by_raw: dict[str, str] = {}
+        for row in mappings:
+            if not isinstance(row, dict):
+                raise ValueError("Each mapping must be an object with raw_name and sofa_name")
+            raw_comp = str(row.get("raw_name", "")).strip()
+            sofa_comp = str(row.get("sofa_name", "")).strip()
+            if not raw_comp:
+                raise ValueError("raw_name is required for each mapping")
+            if not sofa_comp:
+                raise ValueError(f"sofa_name is required for '{raw_comp}'")
+            deduped_by_raw[raw_comp] = sofa_comp
+
+        saved_count = 0
+        for raw_comp, sofa_comp in deduped_by_raw.items():
+            self.upsert_manual_competition_mapping(raw_name=raw_comp, sofa_name=sofa_comp)
+            saved_count += 1
+        return saved_count
+
     def delete_manual_competition_mapping(self, raw_name: str) -> bool:
         raw_comp = str(raw_name).strip()
         if not raw_comp:
             raise ValueError("raw_name is required")
         deleted = False
+        disabled_changed = False
+        raw_norm = self.normalize_competition_key(raw_comp)
         with self.state.lock:
-            if raw_comp in self.state.manual_competition_mappings:
-                self.state.manual_competition_mappings.pop(raw_comp, None)
+            keys_to_remove: list[str] = []
+            if raw_norm:
+                keys_to_remove = [
+                    existing_raw
+                    for existing_raw in list(self.state.manual_competition_mappings.keys())
+                    if (
+                        str(existing_raw).strip()
+                        and self.normalize_competition_key(existing_raw) == raw_norm
+                    )
+                ]
+            elif raw_comp in self.state.manual_competition_mappings:
+                keys_to_remove = [raw_comp]
+
+            for key in keys_to_remove:
+                self.state.manual_competition_mappings.pop(key, None)
+            if keys_to_remove:
                 deleted = True
+
+            if raw_norm:
+                current = str(self.disabled_auto_competition_mappings_by_norm.get(raw_norm, "")).strip()
+                if current != raw_comp:
+                    self.disabled_auto_competition_mappings_by_norm[raw_norm] = raw_comp
+                    disabled_changed = True
+                if disabled_changed:
+                    self._save_disabled_auto_competition_mappings_locked()
+
             self.state.manual_competition_mapping_lookup = self.build_manual_competition_mapping_lookup(
                 self.state.manual_competition_mappings
             )
             self._save_manual_competition_mappings()
-        return deleted
+        return bool(deleted or disabled_changed)
 
 
 __all__ = ["MappingService"]

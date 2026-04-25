@@ -72,8 +72,11 @@ Use `betfair_credentials.example.py` as a template.
 
 Source DB is taken from launcher/app args (`--db-path`), typically via `app_data/launcher_config.json`.
 
+Optional separate events DB can be set with `--match-events-db-path`. This lets you use one DB for match/xG rows (for example FotMob) and another DB for timed `match_events` (for example SofaScore corners/events).
+
 Example:
 - `--db-path ../Sofascore_scraper/fotmob_local.db`
+- `--match-events-db-path ../Sofascore_scraper/sofascore_local.db`
 
 If you run without launcher args, the app still falls back to local defaults.
 
@@ -145,6 +148,7 @@ Team details panel:
   - `app_data/manual_team_mappings.<db_stem>.json`
   - `app_data/manual_competition_mappings.<db_stem>.json`
   - Example for FotMob: `manual_team_mappings.fotmob_local.json`
+- In hybrid mode (`--db-path` + `--match-events-db-path`), the app uses both DBs' mapping files to align matches across sources before applying event-based gamestate stats.
 
 ## Notes
 

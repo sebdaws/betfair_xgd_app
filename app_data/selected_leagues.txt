@@ -8,10 +8,14 @@
 89979|Belgian Pro League|Tier 3
 13|Brazilian Serie A|Tier 2
 17|Croatian HNL|Tier 4
+844197|Colombian Primera A|Tier 4
+12147796|CONMEBOL Copa Libertadores|Tier 0
 23|Danish Superliga|Tier 3
 9404054|Dutch Eredivisie|Tier 2
 801976|Egyptian Premier|Tier 4
 30558|English FA Cup|Tier 0
+35|English Sky Bet League 1|Tier 3
+37|English Sky Bet League 2|Tier 4
 10932509|English Premier League|Tier 1
 7129730|English Sky Bet Championship|Tier 2
 55|French Ligue 1|Tier 1
@@ -23,6 +27,7 @@
 12199689|Italian Serie B|Tier 3
 12782082|Japanese J. League 100 Year Vision|Tier 3
 5627174|Mexican Liga MX|Tier 3
+11068551|Norwegian Eliteserien|Tier 3
 97|Polish Ekstraklasa|Tier 4
 99|Portuguese Primeira Liga|Tier 2
 4905|Romanian Liga I|Tier 4

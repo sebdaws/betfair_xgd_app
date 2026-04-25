@@ -209,7 +209,7 @@ PERIOD_METRIC_COLUMNS = (
 GAMESTATES = ("drawing", "winning", "losing")
 GAMESTATE_EVENT_METRIC_KEYS = tuple(
     f"{metric}_{direction}_{state}"
-    for metric in ("corners", "cards")
+    for metric in ("corners", "cards", "shots", "shots_on_target", "xg")
     for direction in ("for", "against")
     for state in GAMESTATES
 )
@@ -269,6 +269,7 @@ def parse_args() -> argparse.Namespace:
         default=_parse_int_or_default(_launcher_arg_values.get("--refresh-seconds"), 45),
     )
     p.add_argument("--db-path", default=str(DEFAULT_SOFASCORE_DB))
+    p.add_argument("--match-events-db-path", default=str(_launcher_arg_values.get("--match-events-db-path", "")))
     p.add_argument("--periods", default="Season,5,3")
     p.add_argument("--min-games", type=int, default=3)
     return p.parse_args()
@@ -599,6 +600,7 @@ def build_predictions(
     manual_mapping_lookup: dict[str, str] | None = None,
     blocked_auto_mapping_norms: set[str] | None = None,
     manual_competition_mapping_lookup: dict[str, str] | None = None,
+    blocked_auto_competition_mapping_norms: set[str] | None = None,
     progress_callback: Any | None = None,
 ) -> pd.DataFrame:
     if betfair_games_df.empty:
@@ -683,6 +685,7 @@ def build_predictions(
             resolved_competition = resolve_sofa_competition_name(
                 raw_competition=raw_competition,
                 manual_competition_mapping_lookup=manual_competition_mapping_lookup,
+                blocked_auto_competition_mapping_norms=blocked_auto_competition_mapping_norms,
                 sofa_competitions=sofa_competitions,
                 sofa_competition_by_norm=sofa_competition_by_norm,
                 sofa_competition_set=sofa_competition_set,
@@ -869,6 +872,7 @@ def build_predictions(
                 fallback_competition = resolve_sofa_competition_name(
                     raw_competition=betfair_competition_text,
                     manual_competition_mapping_lookup=manual_competition_mapping_lookup,
+                    blocked_auto_competition_mapping_norms=blocked_auto_competition_mapping_norms,
                     sofa_competitions=sofa_competitions,
                     sofa_competition_by_norm=sofa_competition_by_norm,
                     sofa_competition_set=sofa_competition_set,
@@ -996,6 +1000,7 @@ def build_predictions(
                 fallback_competition = resolve_sofa_competition_name(
                     raw_competition=betfair_competition_text,
                     manual_competition_mapping_lookup=manual_competition_mapping_lookup,
+                    blocked_auto_competition_mapping_norms=blocked_auto_competition_mapping_norms,
                     sofa_competitions=sofa_competitions,
                     sofa_competition_by_norm=sofa_competition_by_norm,
                     sofa_competition_set=sofa_competition_set,
@@ -1089,6 +1094,7 @@ def build_predictions(
                 calc_wyscout_form_tables=calc_wyscout_form_tables,
                 periods=periods,
                 min_games=min_games,
+                season_id=fixture_season_id,
                 home_venue_filter={
                     "season_id": fixture_season_id,
                     "competition_name": fixture_competition_text,
@@ -1167,8 +1173,16 @@ def build_predictions(
         )
 
         for _, period_row in reduced.iterrows():
-            home_xg = first_numeric_value(period_row, ("Team Home Real xG", "Avg Home Real xG"), default=0.0)
-            away_xg = first_numeric_value(period_row, ("Team Away Real xG", "Avg Away Real xG"), default=0.0)
+            home_xg = first_numeric_value(
+                period_row,
+                ("Avg Home Real xG", "Team Home Real xG", "Avg Home xG", "Team Home xG"),
+                default=0.0,
+            )
+            away_xg = first_numeric_value(
+                period_row,
+                ("Avg Away Real xG", "Team Away Real xG", "Avg Away xG", "Team Away xG"),
+                default=0.0,
+            )
             total_xg = first_numeric_value(period_row, ("Total Team Real xG", "Total Avg Real xG"), default=0.0)
             xgd = first_numeric_value(period_row, ("Avg Real xGD", "Team Real xGD"), default=0.0)
             xgd_perf = first_numeric_value(period_row, ("Team Real xGD", "Avg Real xGD"), default=0.0)
@@ -1390,8 +1404,16 @@ def period_rows_from_reduced_table(
     )
     period_rows: list[dict[str, Any]] = []
     for _, period_row in reduced_df.iterrows():
-        home_xg = first_numeric_value(period_row, ("Team Home Real xG", "Avg Home Real xG"), default=0.0)
-        away_xg = first_numeric_value(period_row, ("Team Away Real xG", "Avg Away Real xG"), default=0.0)
+        home_xg = first_numeric_value(
+            period_row,
+            ("Avg Home Real xG", "Team Home Real xG", "Avg Home xG", "Team Home xG"),
+            default=0.0,
+        )
+        away_xg = first_numeric_value(
+            period_row,
+            ("Avg Away Real xG", "Team Away Real xG", "Avg Away xG", "Team Away xG"),
+            default=0.0,
+        )
         total_xg = first_numeric_value(period_row, ("Total Team Real xG", "Total Avg Real xG"), default=0.0)
         xgd = first_numeric_value(period_row, ("Avg Real xGD", "Team Real xGD"), default=0.0)
         xgd_perf = first_numeric_value(period_row, ("Team Real xGD", "Avg Real xGD"), default=0.0)
@@ -1678,13 +1700,21 @@ def build_xgd_view_from_form_df(
     calc_wyscout_form_tables: Any,
     periods: tuple[Any, ...],
     min_games: int,
+    season_id: Any | None = None,
     home_venue_filter: dict[str, Any] | None = None,
     away_venue_filter: dict[str, Any] | None = None,
 ) -> dict[str, Any] | None:
     if calc_form_df.empty:
         return None
 
-    model_games_df = pd.DataFrame([{"home": home_sofa, "away": away_sofa, "match_date": kickoff_time}])
+    model_row: dict[str, Any] = {"home": home_sofa, "away": away_sofa, "match_date": kickoff_time}
+    try:
+        if season_id is not None and not pd.isna(season_id):
+            model_row["season_id"] = season_id
+    except Exception:
+        if season_id is not None:
+            model_row["season_id"] = season_id
+    model_games_df = pd.DataFrame([model_row])
     try:
         game_tables, source_games = calc_wyscout_form_tables(
             model_games_df,
@@ -1762,6 +1792,7 @@ def build_xgd_view_from_form_df(
 def resolve_sofa_competition_name(
     raw_competition: str | None,
     manual_competition_mapping_lookup: dict[str, str] | None,
+    blocked_auto_competition_mapping_norms: set[str] | None,
     sofa_competitions: list[str],
     sofa_competition_by_norm: dict[str, str],
     sofa_competition_set: set[str],
@@ -1775,6 +1806,9 @@ def resolve_sofa_competition_name(
         manual_target = manual_competition_mapping_lookup.get(raw_key)
         if manual_target and manual_target in sofa_competition_set:
             return manual_target
+    blocked_auto_norms = set(blocked_auto_competition_mapping_norms or set())
+    if raw_key and raw_key in blocked_auto_norms:
+        return None
 
     matched_name, _, _ = match_competition_name(
         raw_text,
@@ -2156,6 +2190,10 @@ def build_recent_form_rows(source_df: Any, recent_n: int | None = None) -> list[
         "season_end_date",
         "corners_for",
         "corners_against",
+        "shots_for",
+        "shots_against",
+        "shots_on_target_for",
+        "shots_on_target_against",
         "cards_for",
         "cards_against",
         "yellow_for",

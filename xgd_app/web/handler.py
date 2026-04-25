@@ -135,6 +135,20 @@ class AppHandler(BaseHTTPRequestHandler):
                 season_id=season_id,
                 xg_metric_mode=xg_metric_mode,
             )
+        if path == "/api/matchup":
+            query = parse_qs(parsed.query)
+            home_team = (query.get("home") or [""])[0]
+            away_team = (query.get("away") or [""])[0]
+            competition_name = (query.get("competition") or [""])[0]
+            season_id = (query.get("season") or [""])[0]
+            xg_metric_mode = (query.get("xg_mode") or ["xg"])[0]
+            return self._serve_matchup_xgd(
+                home_team=home_team,
+                away_team=away_team,
+                competition_name=competition_name,
+                season_id=season_id,
+                xg_metric_mode=xg_metric_mode,
+            )
         if path == "/api/teams":
             return self._serve_teams_directory()
 
@@ -156,6 +170,8 @@ class AppHandler(BaseHTTPRequestHandler):
             return self._delete_manual_mapping()
         if path == "/api/manual-competition-mappings":
             return self._upsert_manual_competition_mapping()
+        if path == "/api/manual-competition-mappings/bulk":
+            return self._bulk_upsert_manual_competition_mappings()
         if path == "/api/manual-competition-mappings/delete":
             return self._delete_manual_competition_mapping()
         if path == "/api/saved-games":
@@ -219,6 +235,34 @@ class AppHandler(BaseHTTPRequestHandler):
             self._json(payload)
         except KeyError:
             self._json({"error": "Market not found"}, status=HTTPStatus.NOT_FOUND)
+        except Exception as exc:
+            self._json({"error": str(exc)}, status=HTTPStatus.INTERNAL_SERVER_ERROR)
+
+    def _serve_matchup_xgd(
+        self,
+        home_team: str,
+        away_team: str,
+        competition_name: str = "",
+        season_id: str = "",
+        xg_metric_mode: str = "xg",
+    ) -> None:
+        if not str(home_team or "").strip():
+            self._json({"error": "home team is required"}, status=HTTPStatus.BAD_REQUEST)
+            return
+        if not str(away_team or "").strip():
+            self._json({"error": "away team is required"}, status=HTTPStatus.BAD_REQUEST)
+            return
+        try:
+            payload = self.state.get_matchup_xgd(
+                home_team=home_team,
+                away_team=away_team,
+                competition_name=str(competition_name or "").strip() or None,
+                season_id=str(season_id or "").strip() or None,
+                xg_metric_mode=xg_metric_mode,
+            )
+            self._json(payload)
+        except ValueError as exc:
+            self._json({"error": str(exc)}, status=HTTPStatus.BAD_REQUEST)
         except Exception as exc:
             self._json({"error": str(exc)}, status=HTTPStatus.INTERNAL_SERVER_ERROR)
 
@@ -349,8 +393,10 @@ class AppHandler(BaseHTTPRequestHandler):
             self._json({"error": str(exc)}, status=HTTPStatus.INTERNAL_SERVER_ERROR)
 
     def _serve_hard_refresh_xgd(self) -> None:
+        payload = self._read_json_body()
+        db_path = str(payload.get("db_path", "")).strip()
         try:
-            out = self.state.hard_refresh_xgd_data()
+            out = self.state.hard_refresh_xgd_data(db_path=(db_path or None))
             self._json({"ok": True, **out})
         except Exception as exc:
             self._json({"error": str(exc)}, status=HTTPStatus.INTERNAL_SERVER_ERROR)
@@ -405,6 +451,17 @@ class AppHandler(BaseHTTPRequestHandler):
         try:
             self.state.upsert_manual_competition_mapping(raw_name=raw_name, sofa_name=sofa_name)
             self._json({"ok": True})
+        except ValueError as exc:
+            self._json({"error": str(exc)}, status=HTTPStatus.BAD_REQUEST)
+        except Exception as exc:
+            self._json({"error": str(exc)}, status=HTTPStatus.INTERNAL_SERVER_ERROR)
+
+    def _bulk_upsert_manual_competition_mappings(self) -> None:
+        payload = self._read_json_body()
+        mappings = payload.get("mappings", [])
+        try:
+            saved_count = self.state.upsert_manual_competition_mappings_bulk(mappings=mappings)
+            self._json({"ok": True, "saved_count": int(saved_count)})
         except ValueError as exc:
             self._json({"error": str(exc)}, status=HTTPStatus.BAD_REQUEST)
         except Exception as exc:

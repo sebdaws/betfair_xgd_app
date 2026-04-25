@@ -15,7 +15,7 @@ import pandas as pd
 
 from xgd_app.default_paths import get_external_path
 from xgd_app.markets.goals import event_goal_mainline_snapshot, is_goal_line_market
-from xgd_app.markets.handicap import market_mainline_snapshot
+from xgd_app.markets.handicap import market_mainline_snapshot, match_odds_snapshot
 
 
 EnsureSelectedLeaguesFileFn = Callable[[Path], None]
@@ -30,7 +30,7 @@ FormatDayLabelFn = Callable[[str], str]
 
 class GamesService:
     """Owns Betfair credential resolution and upcoming-game refresh flow."""
-    XGD_CACHE_VERSION = 4
+    XGD_CACHE_VERSION = 5
 
     def __init__(
         self,
@@ -308,6 +308,7 @@ class GamesService:
         manual_mapping_lookup = self.state.get_manual_mapping_lookup_snapshot()
         blocked_auto_mapping_norms = self.state.get_disabled_auto_team_mapping_norms_snapshot()
         manual_competition_mapping_lookup = self.state.get_manual_competition_mapping_lookup_snapshot()
+        blocked_auto_competition_mapping_norms = self.state.get_disabled_auto_competition_mapping_norms_snapshot()
         form_df_for_mode = self.state.get_form_df_for_metric_mode(xg_metric_mode)
         try:
             prediction_df = self.build_predictions(
@@ -321,6 +322,7 @@ class GamesService:
                 manual_mapping_lookup=manual_mapping_lookup,
                 blocked_auto_mapping_norms=blocked_auto_mapping_norms,
                 manual_competition_mapping_lookup=manual_competition_mapping_lookup,
+                blocked_auto_competition_mapping_norms=blocked_auto_competition_mapping_norms,
             )
         except Exception:
             return pd.DataFrame()
@@ -436,17 +438,42 @@ class GamesService:
         if not force and last_refresh is not None:
             delta = (now - last_refresh).total_seconds()
             if delta < self.state.refresh_seconds:
-                tier_zero_market_ids = self._tier_zero_market_ids(games_df_snapshot)
+                if games_df_snapshot.empty or "market_id" not in games_df_snapshot.columns:
+                    return
+
+                market_ids = [
+                    str(value).strip()
+                    for value in games_df_snapshot["market_id"].tolist()
+                    if str(value).strip()
+                ]
+
+                def _has_complete_cached_metrics(market_id: str) -> bool:
+                    cached = metrics_cache.get(market_id)
+                    if not isinstance(cached, dict):
+                        return False
+                    if int(cached.get("_xgd_cache_version", 0) or 0) != int(self.XGD_CACHE_VERSION):
+                        return False
+                    return all(col in cached for col in self.period_metric_columns)
+
+                missing_market_ids = {
+                    market_id
+                    for market_id in market_ids
+                    if not _has_complete_cached_metrics(market_id)
+                }
+                if not missing_market_ids:
+                    return
+
                 metric_rows_df = self._compute_period_metrics_for_market_ids(
                     games_df=games_df_snapshot,
-                    market_ids=tier_zero_market_ids,
+                    market_ids=missing_market_ids,
                 )
+                updated_games_df = games_df_snapshot.copy()
+                updated_games_df["_market_id_key"] = updated_games_df["market_id"].astype(str).str.strip()
+                for col in self.period_metric_columns:
+                    if col not in updated_games_df.columns:
+                        updated_games_df[col] = None
+
                 if not metric_rows_df.empty:
-                    updated_games_df = games_df_snapshot.copy()
-                    updated_games_df["_market_id_key"] = updated_games_df["market_id"].astype(str).str.strip()
-                    for col in self.period_metric_columns:
-                        if col not in updated_games_df.columns:
-                            updated_games_df[col] = None
                     for row in metric_rows_df.to_dict(orient="records"):
                         market_id = str(row.get("market_id", "")).strip()
                         if not market_id:
@@ -455,18 +482,29 @@ class GamesService:
                         if not bool(mask.any()):
                             continue
                         metrics_cache[market_id] = {col: row.get(col) for col in self.period_metric_columns}
+                        metrics_cache[market_id]["_xgd_cache_version"] = int(self.XGD_CACHE_VERSION)
                         for col in self.period_metric_columns:
                             if col in row:
                                 updated_games_df.loc[mask, col] = row.get(col)
-                    updated_games_df = updated_games_df.drop(columns=["_market_id_key"], errors="ignore")
-                    with self.state.lock:
-                        self.state.games_df = updated_games_df
-                        self.state.upcoming_metrics_cache = metrics_cache
-                        cache_by_mode = getattr(self.state, "upcoming_metrics_cache_by_mode", None)
-                        if not isinstance(cache_by_mode, dict):
-                            cache_by_mode = {}
-                        cache_by_mode["xg"] = metrics_cache
-                        self.state.upcoming_metrics_cache_by_mode = cache_by_mode
+
+                for market_id in missing_market_ids:
+                    metrics_cache.setdefault(
+                        market_id,
+                        {
+                            **{col: None for col in self.period_metric_columns},
+                            "_xgd_cache_version": int(self.XGD_CACHE_VERSION),
+                        },
+                    )
+
+                updated_games_df = updated_games_df.drop(columns=["_market_id_key"], errors="ignore")
+                with self.state.lock:
+                    self.state.games_df = updated_games_df
+                    self.state.upcoming_metrics_cache = metrics_cache
+                    cache_by_mode = getattr(self.state, "upcoming_metrics_cache_by_mode", None)
+                    if not isinstance(cache_by_mode, dict):
+                        cache_by_mode = {}
+                    cache_by_mode["xg"] = metrics_cache
+                    self.state.upcoming_metrics_cache_by_mode = cache_by_mode
                 return
 
         client = self._login_client()
@@ -597,12 +635,70 @@ class GamesService:
             if market_id:
                 book_by_market_id[market_id] = book
 
-        goal_catalogues = client.list_markets(competition_ids, self.asian_goal_market_types)
         candidate_event_ids = {
             str(row.get("event_id", "")).strip()
             for row in candidate_markets
             if str(row.get("event_id", "")).strip()
         }
+
+        match_odds_catalogues = client.list_markets(competition_ids, ["MATCH_ODDS"]) or []
+        candidate_match_odds_catalogues: list[dict[str, Any]] = []
+        for cat in match_odds_catalogues:
+            market_id = str(cat.get("marketId", "")).strip()
+            kickoff_raw = str(cat.get("marketStartTime", "")).strip()
+            kickoff_ts = self.parse_iso_utc(kickoff_raw)
+            event_id = str(cat.get("event", {}).get("id", "")).strip()
+            if not market_id or pd.isna(kickoff_ts) or not event_id:
+                continue
+            if kickoff_ts <= now_ts:
+                continue
+            if horizon is not None and kickoff_ts > horizon:
+                continue
+            if candidate_event_ids and event_id not in candidate_event_ids:
+                continue
+            candidate_match_odds_catalogues.append(cat)
+
+        match_odds_market_ids = [str(cat.get("marketId", "")).strip() for cat in candidate_match_odds_catalogues]
+        match_odds_books = client.list_market_books(match_odds_market_ids) if match_odds_market_ids else []
+        match_odds_books_by_market_id: dict[str, dict[str, Any]] = {}
+        for book in match_odds_books:
+            market_id = str(book.get("marketId", "")).strip()
+            if market_id:
+                match_odds_books_by_market_id[market_id] = book
+
+        def _to_price(value: Any) -> float | None:
+            if value is None:
+                return None
+            text = str(value).strip()
+            if not text or text == "-":
+                return None
+            try:
+                return float(text)
+            except Exception:
+                return None
+
+        def _match_odds_score(snapshot: dict[str, str]) -> float:
+            home = _to_price(snapshot.get("home_price"))
+            draw = _to_price(snapshot.get("draw_price"))
+            away = _to_price(snapshot.get("away_price"))
+            score = 0.0
+            score += abs(home - 2.0) if home is not None else 100.0
+            score += abs(draw - 3.25) if draw is not None else 100.0
+            score += abs(away - 2.0) if away is not None else 100.0
+            return score
+
+        match_odds_by_event: dict[str, dict[str, str]] = {}
+        for cat in candidate_match_odds_catalogues:
+            market_id = str(cat.get("marketId", "")).strip()
+            event_id = str(cat.get("event", {}).get("id", "")).strip()
+            if not market_id or not event_id:
+                continue
+            snap = match_odds_snapshot(cat, match_odds_books_by_market_id.get(market_id))
+            existing = match_odds_by_event.get(event_id)
+            if existing is None or _match_odds_score(snap) < _match_odds_score(existing):
+                match_odds_by_event[event_id] = snap
+
+        goal_catalogues = client.list_markets(competition_ids, self.asian_goal_market_types)
         candidate_goal_catalogues: list[dict[str, Any]] = []
         for cat in goal_catalogues:
             market_id = str(cat.get("marketId", "")).strip()
@@ -640,14 +736,19 @@ class GamesService:
         for market in candidate_markets:
             cat = market["catalogue"]
             market_id = market["market_id"]
+            event_id = str(market.get("event_id", "")).strip()
             market_type_code = str(cat.get("description", {}).get("marketType", "")).strip().upper()
             is_match_odds_market = market_type_code == "MATCH_ODDS"
             mainline_snapshot = market_mainline_snapshot(cat, book_by_market_id.get(market_id))
+            match_odds_event_snapshot = match_odds_by_event.get(
+                event_id,
+                {"home_price": "-", "draw_price": "-", "away_price": "-"},
+            )
             if is_match_odds_market:
                 goal_snapshot = {"goal_mainline": "-", "goal_under_price": "-", "goal_over_price": "-"}
             else:
                 goal_snapshot = event_goal_mainline_snapshot(
-                    goal_catalogues_by_event.get(str(market.get("event_id", "")).strip(), []),
+                    goal_catalogues_by_event.get(event_id, []),
                     goal_books_by_market_id,
                 )
             rows.append(
@@ -669,6 +770,9 @@ class GamesService:
                     "goal_mainline": goal_snapshot["goal_mainline"],
                     "goal_under_price": goal_snapshot["goal_under_price"],
                     "goal_over_price": goal_snapshot["goal_over_price"],
+                    "win_home_price": match_odds_event_snapshot["home_price"],
+                    "win_draw_price": match_odds_event_snapshot["draw_price"],
+                    "win_away_price": match_odds_event_snapshot["away_price"],
                 }
             )
 
@@ -709,6 +813,9 @@ class GamesService:
                 manual_mapping_lookup = self.state.get_manual_mapping_lookup_snapshot()
                 blocked_auto_mapping_norms = self.state.get_disabled_auto_team_mapping_norms_snapshot()
                 manual_competition_mapping_lookup = self.state.get_manual_competition_mapping_lookup_snapshot()
+                blocked_auto_competition_mapping_norms = (
+                    self.state.get_disabled_auto_competition_mapping_norms_snapshot()
+                )
                 target_games_df = games_df[games_df["market_id"].astype(str).isin(markets_to_compute)].copy()
                 progress_total = int(len(target_games_df))
                 progress_step = max(1, progress_total // 20) if progress_total > 0 else 1
@@ -748,6 +855,7 @@ class GamesService:
                         manual_mapping_lookup=manual_mapping_lookup,
                         blocked_auto_mapping_norms=blocked_auto_mapping_norms,
                         manual_competition_mapping_lookup=manual_competition_mapping_lookup,
+                        blocked_auto_competition_mapping_norms=blocked_auto_competition_mapping_norms,
                         progress_callback=_startup_progress if force else None,
                     )
                 except Exception:
@@ -830,7 +938,12 @@ class GamesService:
             "goal_mainline": str(row.get("goal_mainline", "-") or "-"),
             "goal_under_price": str(row.get("goal_under_price", "-") or "-"),
             "goal_over_price": str(row.get("goal_over_price", "-") or "-"),
+            "win_home_price": str(row.get("win_home_price", "-") or "-"),
+            "win_draw_price": str(row.get("win_draw_price", "-") or "-"),
+            "win_away_price": str(row.get("win_away_price", "-") or "-"),
             "scoreline": str(row.get("scoreline", "")).strip(),
+            "season_home_xg": self.format_float_value(row.get("season_home_xg"), decimals=2),
+            "season_away_xg": self.format_float_value(row.get("season_away_xg"), decimals=2),
             "season_xgd": self.format_float_value(row.get("season_xgd"), decimals=2),
             "last5_xgd": self.format_float_value(row.get("last5_xgd"), decimals=2),
             "last3_xgd": self.format_float_value(row.get("last3_xgd"), decimals=2),
