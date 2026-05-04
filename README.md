@@ -4,11 +4,22 @@ Web app version of the Betfair + Database xGD workflow (no Streamlit).
 
 ## Quick Start
 
+Python 3.10+ is required. Python 3.11 is recommended.
+
 ```bash
+python -m venv .venv
+source .venv/bin/activate
+python -m pip install -r requirements.txt
 python xgd_web_app.py --host 127.0.0.1 --port 8090
 ```
 
 Open: `http://127.0.0.1:8090`
+
+On Windows, activate the virtual environment with:
+
+```powershell
+.\.venv\Scripts\Activate.ps1
+```
 
 ## Conda Launcher Script
 
@@ -17,6 +28,7 @@ Use `launch_app.cmd` to start the app via `conda run`:
 This is the single launcher entrypoint for Windows shells (CMD, PowerShell, VS Code terminal, and Git Bash on Windows).
 By default it auto-loads config from `app_data/launcher_config.json`.
 The launcher now prints startup stages, and the app prints a clear `Fully running` line when the server is live.
+Install the packages from `requirements.txt` into the selected conda environment before launching.
 
 Examples:
 
@@ -57,6 +69,7 @@ The launcher auto-discovers conda when possible (`--conda-exe` still overrides).
 - `webapp/`: frontend assets (`index.html`, `app.js`, `styles.css`)
 - `scripts/`: utility scripts for local data inspection
 - `app_data/`: selected leagues, generated leagues list, mappings, saved games, and path defaults
+- `requirements.txt`: Python package dependencies
 
 ## Credentials
 
@@ -67,6 +80,7 @@ The app reads credentials in this order:
 4. `external_paths.betfair_credentials` from `app_data/default_paths.json`
 
 Use `betfair_credentials.example.py` as a template.
+Do not commit real credentials. Local credential/config files such as `betfair_credentials.py` and `app_data/launcher_config.json` are ignored by git.
 
 ## Data
 
@@ -88,34 +102,44 @@ Update that file to point this app at shared data or modules in other repositori
 ## App Navigation
 
 1. Launch the app and open `http://127.0.0.1:8090`.
-2. Use the top row tabs to switch between `Games`, `Saved Games`, `HC Rankings`, `Teams`, and `Mapping`.
+2. Use the top row tabs to switch between `Games`, `Modelling Prices`, `HC Rankings`, `Teams`, `Matchup`, and `Mapping`.
 3. Click a game row (or team button) to open the right-side details panel.
 4. Use `Close` in the panel header to return to the table view.
 
-Top-bar controls (always visible):
+Use the `Settings` button in the top right to open the settings sidebar. It contains:
 - `Refresh Betfair Odds`: reloads upcoming game/price data.
 - `xG Threshold`: changes highlight and HC/xG decision thresholds used across views.
+- `xG Mode`: switches between xG and NPxG where supported.
 - `Highlight`: toggles xGD/HC highlighting.
 - `No-HC Games`: show or hide games with missing handicap prices.
+- `Theme`: switches between light and dark mode.
 - `Hard Refresh xGD`: recomputes xGD data from source rows.
+- `Exit App`: shuts down the local app server.
 
 ## Tabs Overview
 
 ### Games
 - Main working view for upcoming and historical fixtures.
+- Sub-tabs switch between `Games` and `Saved Games`.
 - `Upcoming` / `Historical` switch controls mode.
 - Day navigation: `Previous Day`, `Next Day`, `Today`/`Latest`, plus date jump input.
-- Filters: leagues, tier, sort, and team search.
+- Filters: leagues, tier, sort, team search, model edge, and pricing period.
+- Pricing period can be switched between `Season`, `Last 5`, and `Last 3`.
+- Historical mode shows summary cells at the top of the `HC Bet` and `Goals Bet` columns for the visible rows.
 - Clicking a fixture opens a details panel with sub-tabs:
   - `xGD`: matchup, venue-based and general form.
   - `Stats`: corner/card stats and gamestate-based numbers.
+  - `Shots`: shot maps and shot-level detail when available.
+  - `Pricing`: model price outputs with the same `Season` / `Last 5` / `Last 3` selector.
   - `HC Perf`: season handicap performance tables for both teams.
 - `Save` in the details panel adds/removes the game from `Saved Games`.
 
-### Saved Games
-- Shows only markets you have saved.
-- Uses its own sort selector.
-- Clicking a row opens the same details panel as in `Games`.
+### Modelling Prices
+- Compares Betfair prices with model prices for upcoming fixtures.
+- Supports `Season`, `Last 5`, and `Last 3` pricing periods.
+- Shows xGD as the same three-value stack used in the Games page.
+- Applies the xGD highlighting logic to the xGD column.
+- Uses the model edge threshold from the Games toolbar/settings context when highlighting price differences.
 
 ### HC Rankings
 - League-level handicap performance ranking table by team.
@@ -138,6 +162,11 @@ Team details panel:
   - `Stats`: aggregate team metrics
   - `HC Perf`: handicap performance and summary tables
 
+### Matchup
+- Manual matchup tool for checking two teams without needing a Betfair market row.
+- Enter home team, away team, and competition, then run the matchup to view xGD and pricing outputs.
+- Uses the same source database and mapping logic as the main Games views.
+
 ### Mapping
 - Used to resolve Betfair vs Database naming mismatches.
 - Sub-tabs:
@@ -154,3 +183,5 @@ Team details panel:
 
 - `betfair_credentials.py` should be gitignored if it contains secrets.
 - `app_data/selected_leagues.txt` controls which competitions are fetched from Betfair.
+- Backup SQL files matching `app_data/*backup*.sql` are ignored by git.
+- Generated local artifacts such as `__pycache__`, `.DS_Store`, launcher config, saved games, and historical data should stay out of commits.
