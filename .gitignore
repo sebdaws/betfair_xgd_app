@@ -9,4 +9,5 @@ all_leagues.txt
 app_data/saved_games.json
 app_data/all_leagues.txt
 app_data/launcher_config.json
+app_data/*backup*.sql
 tmp_exit_test_*.log

@@ -1,10 +1,39 @@
 :root {
   --bg: #f6f8fb;
   --panel: #ffffff;
+  --panel-soft: #f8fafc;
+  --panel-weak: #fbfdff;
   --ink: #1e293b;
   --muted: #64748b;
   --accent: #0f766e;
+  --accent-strong: #065f46;
+  --accent-soft: #ecfdf5;
   --line: #d9e2ec;
+  --line-soft: #edf2f7;
+  --field-bg: #ffffff;
+  --topbar-bg: rgba(255, 255, 255, 0.92);
+  --page-bg: linear-gradient(135deg, #eef3ff 0%, #f8fbf4 100%);
+  --shadow: rgba(15, 23, 42, 0.12);
+  color-scheme: light;
+}
+
+:root[data-theme="dark"] {
+  --bg: #0f172a;
+  --panel: #172033;
+  --panel-soft: #111827;
+  --panel-weak: #142033;
+  --ink: #e5edf7;
+  --muted: #94a3b8;
+  --accent: #2dd4bf;
+  --accent-strong: #99f6e4;
+  --accent-soft: rgba(45, 212, 191, 0.14);
+  --line: #334155;
+  --line-soft: #253247;
+  --field-bg: #0f172a;
+  --topbar-bg: rgba(15, 23, 42, 0.94);
+  --page-bg: linear-gradient(135deg, #08111f 0%, #132016 100%);
+  --shadow: rgba(0, 0, 0, 0.38);
+  color-scheme: dark;
 }
 
 * { box-sizing: border-box; }
@@ -12,7 +41,11 @@ body {
   margin: 0;
   font-family: "Avenir Next", "Segoe UI", sans-serif;
   color: var(--ink);
-  background: linear-gradient(135deg, #eef3ff 0%, #f8fbf4 100%);
+  background: var(--page-bg);
+}
+
+body.settings-sidebar-open {
+  overflow: hidden;
 }
 
 .topbar {
@@ -24,7 +57,7 @@ body {
   align-items: center;
   padding: 14px 18px;
   border-bottom: 1px solid var(--line);
-  background: rgba(255, 255, 255, 0.92);
+  background: var(--topbar-bg);
   backdrop-filter: blur(5px);
 }
 
@@ -33,6 +66,13 @@ body {
   align-items: center;
   gap: 10px;
   min-width: 0;
+}
+
+.topbar-right {
+  display: inline-flex;
+  align-items: center;
+  justify-content: flex-end;
+  flex-shrink: 0;
 }
 
 .topbar h1 {
@@ -57,6 +97,83 @@ body {
   align-items: center;
   gap: 10px;
   flex-wrap: wrap;
+}
+
+.settings-open-btn {
+  border-color: rgba(15, 118, 110, 0.45);
+  background: rgba(15, 118, 110, 0.08);
+  color: var(--ink);
+  font-weight: 700;
+}
+
+.settings-overlay {
+  position: fixed;
+  inset: 0;
+  z-index: 45;
+  background: rgba(15, 23, 42, 0.34);
+  backdrop-filter: blur(2px);
+}
+
+.settings-sidebar {
+  position: fixed;
+  top: 0;
+  right: 0;
+  z-index: 50;
+  width: min(380px, calc(100vw - 28px));
+  height: 100vh;
+  padding: 16px;
+  border-left: 1px solid var(--line);
+  background: var(--panel);
+  color: var(--ink);
+  box-shadow: -18px 0 40px var(--shadow);
+  overflow-y: auto;
+}
+
+.settings-sidebar-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  padding-bottom: 12px;
+  margin-bottom: 12px;
+  border-bottom: 1px solid var(--line);
+}
+
+.settings-sidebar-header h2 {
+  margin: 0;
+  font-size: 1.05rem;
+}
+
+.settings-close-btn {
+  padding: 6px 10px;
+}
+
+.settings-actions {
+  display: grid;
+  grid-template-columns: 1fr;
+  gap: 10px;
+  align-items: stretch;
+}
+
+.settings-actions > button,
+.settings-actions > label {
+  width: 100%;
+}
+
+.settings-actions > button {
+  justify-content: center;
+}
+
+.settings-actions .topbar-threshold-field {
+  justify-content: space-between;
+  padding: 10px 12px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: var(--panel-soft);
+}
+
+.settings-actions .topbar-threshold-field > input {
+  width: 96px;
 }
 
 .topbar-threshold-field {
@@ -107,7 +224,7 @@ body {
 
 button {
   border: 1px solid var(--line);
-  background: #fff;
+  background: var(--field-bg);
   color: var(--ink);
   padding: 7px 12px;
   border-radius: 8px;
@@ -118,7 +235,7 @@ button:disabled { opacity: 0.55; cursor: default; }
 
 select {
   border: 1px solid var(--line);
-  background: #fff;
+  background: var(--field-bg);
   color: var(--ink);
   padding: 7px 10px;
   border-radius: 8px;
@@ -127,7 +244,7 @@ select:hover { border-color: var(--accent); }
 input[type="text"],
 input[type="search"] {
   border: 1px solid var(--line);
-  background: #fff;
+  background: var(--field-bg);
   color: var(--ink);
   padding: 7px 10px;
   border-radius: 8px;
@@ -141,7 +258,7 @@ input[type="search"]:focus {
 }
 input[type="number"] {
   border: 1px solid var(--line);
-  background: #fff;
+  background: var(--field-bg);
   color: var(--ink);
   padding: 7px 10px;
   border-radius: 8px;
@@ -170,7 +287,7 @@ main {
 
 .tab-btn {
   border: 1px solid var(--line);
-  background: #fff;
+  background: var(--field-bg);
   color: var(--ink);
   padding: 8px 12px;
   border-radius: 8px;
@@ -179,8 +296,8 @@ main {
 
 .tab-btn.active {
   border-color: var(--accent);
-  background: #ecfdf5;
-  color: #065f46;
+  background: var(--accent-soft);
+  color: var(--accent-strong);
 }
 
 .tab-pane.hidden {
@@ -204,8 +321,8 @@ main {
 
 .mode-btn.active {
   border-color: var(--accent);
-  background: #ecfdf5;
-  color: #065f46;
+  background: var(--accent-soft);
+  color: var(--accent-strong);
 }
 
 .day-nav {
@@ -409,6 +526,40 @@ main {
   margin-left: auto;
 }
 
+.saved-games-toolbar,
+.pricing-toolbar {
+  display: flex;
+  justify-content: flex-end;
+  margin: 0 0 10px;
+}
+
+.pricing-period-control {
+  display: inline-flex;
+  align-items: center;
+  gap: 2px;
+  padding: 3px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: #f8fafc;
+}
+
+.pricing-period-btn {
+  min-width: 68px;
+  padding: 6px 10px;
+  border: 0;
+  border-radius: 6px;
+  background: transparent;
+  color: var(--muted);
+  font-size: 0.82rem;
+  font-weight: 700;
+}
+
+.pricing-period-btn.active {
+  background: var(--panel);
+  color: var(--accent);
+  box-shadow: 0 1px 4px rgba(15, 23, 42, 0.12);
+}
+
 .day-calc-btn {
   white-space: nowrap;
   font-size: 0.82rem;
@@ -578,6 +729,17 @@ main {
 .historical-games-table td.metric-stack-cell {
   padding-top: 4px;
   padding-bottom: 4px;
+}
+.historical-games-table .historical-bet-summary-row td {
+  background: var(--panel-soft);
+  border-bottom: 1px solid var(--line);
+}
+.historical-games-table .historical-bet-summary-row .metric-stack-cell {
+  padding-top: 7px;
+  padding-bottom: 7px;
+}
+.historical-games-table .historical-bet-summary-row .metric-stack-value {
+  font-weight: 800;
 }
 .historical-games-table .metric-stack-row {
   grid-template-columns: 14px 36px;
@@ -1685,6 +1847,207 @@ main {
   font-size: 0.9rem;
 }
 
+:root[data-theme="dark"] .topbar-status,
+:root[data-theme="dark"] .topbar-threshold-field > span,
+:root[data-theme="dark"] .control-label,
+:root[data-theme="dark"] .day-picker-wrap,
+:root[data-theme="dark"] .day-picker-count,
+:root[data-theme="dark"] .league-filter-empty,
+:root[data-theme="dark"] .mapping-status,
+:root[data-theme="dark"] .mapping-search-field span,
+:root[data-theme="dark"] .mapping-empty,
+:root[data-theme="dark"] .metric-stack-label,
+:root[data-theme="dark"] .metric-label,
+:root[data-theme="dark"] .meta,
+:root[data-theme="dark"] .details-options label,
+:root[data-theme="dark"] .team-panel-league-field > span,
+:root[data-theme="dark"] .betbuilder-control > span,
+:root[data-theme="dark"] .betbuilder-price-cell span,
+:root[data-theme="dark"] .betbuilder-edge-control span,
+:root[data-theme="dark"] .modelling-price-label,
+:root[data-theme="dark"] .recent-empty,
+:root[data-theme="dark"] .trend-legend,
+:root[data-theme="dark"] .trend-control-label,
+:root[data-theme="dark"] .hcperf-loading,
+:root[data-theme="dark"] .hcperf-pick-neutral {
+  color: var(--muted);
+}
+
+:root[data-theme="dark"] .topbar-exit-btn {
+  border-color: rgba(248, 113, 113, 0.42);
+  background: rgba(127, 29, 29, 0.38);
+  color: #fecaca;
+}
+
+:root[data-theme="dark"] .settings-open-btn {
+  border-color: rgba(45, 212, 191, 0.5);
+  background: var(--accent-soft);
+}
+
+:root[data-theme="dark"] .settings-overlay {
+  background: rgba(2, 6, 23, 0.62);
+}
+
+:root[data-theme="dark"] .topbar-highlight-toggle-btn:not(.is-off),
+:root[data-theme="dark"] #saveGameBtn.is-saved {
+  border-color: rgba(45, 212, 191, 0.55);
+  background: var(--accent-soft);
+  color: var(--accent-strong);
+}
+
+:root[data-theme="dark"] .day-picker-wrap > input,
+:root[data-theme="dark"] .day-picker-wrap > select,
+:root[data-theme="dark"] .league-filter-menu,
+:root[data-theme="dark"] .league-filter-search-input,
+:root[data-theme="dark"] .pricing-period-control,
+:root[data-theme="dark"] .day-block,
+:root[data-theme="dark"] .mapping-panel,
+:root[data-theme="dark"] .mapping-search-input,
+:root[data-theme="dark"] .mapping-table .mapping-team-picker,
+:root[data-theme="dark"] .mapping-team-dropdown,
+:root[data-theme="dark"] .details-panel,
+:root[data-theme="dark"] .trend-plot-wrap {
+  background: var(--panel);
+  color: var(--ink);
+}
+
+:root[data-theme="dark"] .league-filter-menu,
+:root[data-theme="dark"] .mapping-team-dropdown,
+:root[data-theme="dark"] .day-block {
+  box-shadow: 0 12px 30px var(--shadow);
+}
+
+:root[data-theme="dark"] .league-filter-search,
+:root[data-theme="dark"] .games-table th,
+:root[data-theme="dark"] .games-table td,
+:root[data-theme="dark"] .mapping-table th,
+:root[data-theme="dark"] .mapping-table td,
+:root[data-theme="dark"] .mapping-team-option,
+:root[data-theme="dark"] .lines-table th,
+:root[data-theme="dark"] .lines-table td {
+  border-color: var(--line-soft);
+}
+
+:root[data-theme="dark"] .league-option:hover,
+:root[data-theme="dark"] .pricing-period-btn.active,
+:root[data-theme="dark"] .day-header,
+:root[data-theme="dark"] .games-table th,
+:root[data-theme="dark"] .lines-table th,
+:root[data-theme="dark"] .metric-card,
+:root[data-theme="dark"] .betbuilder-price-panel,
+:root[data-theme="dark"] .recent-switch,
+:root[data-theme="dark"] .mapping-auto-badge,
+:root[data-theme="dark"] .xgd-context-note {
+  background: var(--panel-soft);
+  color: var(--muted);
+}
+
+:root[data-theme="dark"] .pricing-period-btn.active {
+  color: var(--accent-strong);
+}
+
+:root[data-theme="dark"] .games-table tbody tr:hover {
+  background: #1a2740;
+}
+
+:root[data-theme="dark"] .games-table tbody tr:nth-child(even),
+:root[data-theme="dark"] .lines-table tbody tr:nth-child(even) {
+  background: var(--panel-weak);
+}
+
+:root[data-theme="dark"] .games-table tbody tr.selected td {
+  background: rgba(45, 212, 191, 0.2);
+}
+
+:root[data-theme="dark"] .games-table tbody tr.tier-row-1:not(.selected) td { background: #172541; }
+:root[data-theme="dark"] .games-table tbody tr.tier-row-2:not(.selected) td { background: #142b23; }
+:root[data-theme="dark"] .games-table tbody tr.tier-row-3:not(.selected) td { background: #2c2817; }
+:root[data-theme="dark"] .games-table tbody tr.tier-row-4:not(.selected) td { background: #321b24; }
+:root[data-theme="dark"] .games-table tbody tr.tier-row-1:hover:not(.selected) td { background: #1d3158; }
+:root[data-theme="dark"] .games-table tbody tr.tier-row-2:hover:not(.selected) td { background: #19382d; }
+:root[data-theme="dark"] .games-table tbody tr.tier-row-3:hover:not(.selected) td { background: #3a321c; }
+:root[data-theme="dark"] .games-table tbody tr.tier-row-4:hover:not(.selected) td { background: #41202d; }
+
+:root[data-theme="dark"] .games-table tbody tr.saved-game-row:not(.selected) td,
+:root[data-theme="dark"] .games-table tbody tr.saved-game-row:not(.selected) td:first-child,
+:root[data-theme="dark"] .games-table tbody tr.saved-game-row:not(.selected) td:last-child,
+:root[data-theme="dark"] .games-table th.home-price-col,
+:root[data-theme="dark"] .games-table td.home-price-col,
+:root[data-theme="dark"] .games-table th.goal-under-price-col,
+:root[data-theme="dark"] .games-table td.goal-under-price-col,
+:root[data-theme="dark"] .games-table th.xg-home-col,
+:root[data-theme="dark"] .games-table td.xg-home-col,
+:root[data-theme="dark"] .games-table th.away-price-col,
+:root[data-theme="dark"] .games-table td.away-price-col,
+:root[data-theme="dark"] .games-table th.goal-over-price-col,
+:root[data-theme="dark"] .games-table td.goal-over-price-col,
+:root[data-theme="dark"] .games-table th.xg-away-col,
+:root[data-theme="dark"] .games-table td.xg-away-col,
+:root[data-theme="dark"] .recent-lines-table th.hcperf-odds-col-start,
+:root[data-theme="dark"] .recent-lines-table td.hcperf-odds-col-start,
+:root[data-theme="dark"] .recent-lines-table th.hcperf-odds-col-end,
+:root[data-theme="dark"] .recent-lines-table td.hcperf-odds-col-end {
+  border-color: var(--line);
+}
+
+:root[data-theme="dark"] .mapping-team-option,
+:root[data-theme="dark"] .betbuilder-price-cell,
+:root[data-theme="dark"] .recent-switch-btn.active {
+  background: var(--field-bg);
+  color: var(--ink);
+}
+
+:root[data-theme="dark"] .metric-stack-value,
+:root[data-theme="dark"] .modelling-price-row-model-highlight .modelling-price-label,
+:root[data-theme="dark"] .modelling-price-row-model-highlight .modelling-price-value,
+:root[data-theme="dark"] .betbuilder-price-cell strong {
+  color: var(--ink);
+}
+
+:root[data-theme="dark"] .team-link-btn,
+:root[data-theme="dark"] .team-hc-rank-team-btn,
+:root[data-theme="dark"] .team-hc-sort-head-btn.active,
+:root[data-theme="dark"] .modelling-price-row-model .modelling-price-label {
+  color: var(--accent);
+}
+
+:root[data-theme="dark"] .recent-lines-table tbody tr.pricing-half-line-row td,
+:root[data-theme="dark"] .hcperf-summary-pill-push {
+  background: #253247;
+  color: #cbd5e1;
+}
+
+:root[data-theme="dark"] .trend-axis-line {
+  stroke: #64748b;
+}
+
+:root[data-theme="dark"] .trend-grid-line,
+:root[data-theme="dark"] .trend-grid-line-vertical {
+  stroke: #334155;
+}
+
+:root[data-theme="dark"] .trend-axis-text {
+  fill: var(--muted);
+}
+
+:root[data-theme="dark"] .warning {
+  border-color: rgba(245, 158, 11, 0.55);
+  background: rgba(120, 53, 15, 0.32);
+  color: #fcd34d;
+}
+
+:root[data-theme="dark"] .hcperf-summary-pill-win,
+:root[data-theme="dark"] .hcperf-summary-pill-half-win {
+  background: rgba(22, 101, 52, 0.35);
+  color: #bbf7d0;
+}
+
+:root[data-theme="dark"] .hcperf-summary-pill-half-loss,
+:root[data-theme="dark"] .hcperf-summary-pill-loss {
+  background: rgba(127, 29, 29, 0.38);
+  color: #fecaca;
+}
+
 @media (max-width: 900px) {
   .topbar {
     flex-direction: column;
@@ -1696,6 +2059,11 @@ main {
     width: 100%;
     flex-wrap: wrap;
     gap: 6px 10px;
+  }
+
+  .topbar-right {
+    width: 100%;
+    justify-content: flex-end;
   }
 
   .topbar-status {
@@ -1716,6 +2084,22 @@ main {
   .day-nav {
     justify-content: flex-start;
     flex-wrap: wrap;
+  }
+
+  .day-header-bar,
+  .day-header-actions {
+    align-items: flex-start;
+    flex-direction: column;
+  }
+
+  .day-header-actions {
+    width: 100%;
+    margin-left: 0;
+  }
+
+  .saved-games-toolbar,
+  .pricing-toolbar {
+    justify-content: flex-start;
   }
 
   .metric-grid {

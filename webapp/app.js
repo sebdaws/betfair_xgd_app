@@ -3,6 +3,10 @@ const statusText = document.getElementById("statusText");
 const refreshBtn = document.getElementById("refreshBtn");
 const hardRefreshXgdBtn = document.getElementById("hardRefreshXgdBtn");
 const exitAppBtn = document.getElementById("exitAppBtn");
+const settingsOpenBtn = document.getElementById("settingsOpenBtn");
+const settingsCloseBtn = document.getElementById("settingsCloseBtn");
+const settingsSidebar = document.getElementById("settingsSidebar");
+const settingsOverlay = document.getElementById("settingsOverlay");
 const leagueFilter = document.getElementById("leagueFilter");
 const leagueFilterBtn = document.getElementById("leagueFilterBtn");
 const leagueFilterMenu = document.getElementById("leagueFilterMenu");
@@ -91,6 +95,7 @@ const xgThresholdInput = document.getElementById("xgThresholdInput");
 const xgMetricModeToggleBtn = document.getElementById("xgMetricModeToggleBtn");
 const xgdHcHighlightToggleBtn = document.getElementById("xgdHcHighlightToggleBtn");
 const noHandicapGamesToggleBtn = document.getElementById("noHandicapGamesToggleBtn");
+const themeToggleBtn = document.getElementById("themeToggleBtn");
 const modelEdgeLabel = document.getElementById("modelEdgeLabel");
 const modelEdgeInput = document.getElementById("modelEdgeInput");
 
@@ -141,6 +146,7 @@ let pricingBetBuilderLeg2TotalSide = "over";
 let pricingBetBuilderLeg2TotalLine = "2.5";
 let pricingBetBuilderLeg2BttsSide = "yes";
 let pricingBetBuilderEdge = 0.1;
+let pricingPeriod = "season";
 const hcPerfPayloadByMarket = new Map();
 const xgdPayloadByMarket = new Map();
 const teamPagePayloadByKey = new Map();
@@ -214,6 +220,8 @@ const XG_PUSH_THRESHOLD_STORAGE_KEY = "xgd_hc_xg_threshold";
 const XGD_HC_HIGHLIGHT_ENABLED_STORAGE_KEY = "xgd_hc_highlight_enabled";
 const SHOW_GAMES_WITHOUT_HC_STORAGE_KEY = "show_games_without_hc_pricing";
 const MODELLING_PRICE_EDGE_STORAGE_KEY = "modelling_price_edge";
+const THEME_STORAGE_KEY = "xgd_theme";
+const PRICING_PERIOD_STORAGE_KEY = "pricing_period";
 const DEFAULT_MODELLING_PRICE_EDGE = 0.0;
 const MIN_MODELLING_PRICE_EDGE = -0.95;
 const MAX_MODELLING_PRICE_EDGE = 5.0;
@@ -222,12 +230,60 @@ let xgPushThreshold = DEFAULT_XG_PUSH_THRESHOLD;
 let xgdHcHighlightEnabled = false;
 let showGamesWithoutHandicap = true;
 let modellingPriceEdge = DEFAULT_MODELLING_PRICE_EDGE;
+let colorTheme = "light";
 const AUTO_REFRESH_MS = 2 * 60 * 1000;
 const MAPPING_UNMATCHED_TEAM_RENDER_LIMIT = 250;
 const MAPPING_SAVED_TEAM_RENDER_LIMIT = 400;
 const MAPPING_UNMATCHED_COMPETITION_RENDER_LIMIT = 200;
 const MAPPING_SAVED_COMPETITION_RENDER_LIMIT = 400;
 const API_REQUEST_TIMEOUT_MS = 45000;
+
+function getStoredColorTheme() {
+  const stored = localStorage.getItem(THEME_STORAGE_KEY);
+  if (stored === "light" || stored === "dark") return stored;
+  if (window.matchMedia && window.matchMedia("(prefers-color-scheme: dark)").matches) {
+    return "dark";
+  }
+  return "light";
+}
+
+function updateThemeToggleButton() {
+  if (!(themeToggleBtn instanceof HTMLButtonElement)) return;
+  const isDark = colorTheme === "dark";
+  themeToggleBtn.textContent = isDark ? "Theme: Dark" : "Theme: Light";
+  themeToggleBtn.setAttribute("aria-pressed", isDark ? "true" : "false");
+  themeToggleBtn.title = isDark ? "Switch to light mode" : "Switch to dark mode";
+}
+
+function applyColorTheme(nextTheme, persist = true) {
+  colorTheme = nextTheme === "dark" ? "dark" : "light";
+  document.documentElement.dataset.theme = colorTheme;
+  if (persist) {
+    localStorage.setItem(THEME_STORAGE_KEY, colorTheme);
+  }
+  updateThemeToggleButton();
+}
+
+function setSettingsSidebarOpen(isOpen) {
+  if (!(settingsSidebar instanceof HTMLElement) || !(settingsOverlay instanceof HTMLElement)) return;
+  settingsSidebar.classList.toggle("hidden", !isOpen);
+  settingsOverlay.classList.toggle("hidden", !isOpen);
+  settingsOverlay.setAttribute("aria-hidden", isOpen ? "false" : "true");
+  if (settingsOpenBtn instanceof HTMLButtonElement) {
+    settingsOpenBtn.setAttribute("aria-expanded", isOpen ? "true" : "false");
+  }
+  document.body.classList.toggle("settings-sidebar-open", isOpen);
+  if (isOpen && settingsCloseBtn instanceof HTMLButtonElement) {
+    settingsCloseBtn.focus({ preventScroll: true });
+  }
+}
+
+function closeSettingsSidebar() {
+  setSettingsSidebarOpen(false);
+  if (settingsOpenBtn instanceof HTMLButtonElement) {
+    settingsOpenBtn.focus({ preventScroll: true });
+  }
+}
 
 function escapeHtml(value) {
   return String(value || "")
@@ -682,6 +738,108 @@ function updateNoHandicapGamesToggleButton() {
   noHandicapGamesToggleBtn.title = showGamesWithoutHandicap
     ? "Showing games without handicap prices"
     : "Hiding games without handicap prices";
+}
+
+const PRICING_PERIOD_OPTIONS = [
+  { key: "season", label: "Season", shortLabel: "S" },
+  { key: "last5", label: "Last 5", shortLabel: "L5" },
+  { key: "last3", label: "Last 3", shortLabel: "L3" },
+];
+
+function normalizePricingPeriod(value) {
+  const text = String(value ?? "").trim().toLowerCase().replace(/[\s_-]+/g, "");
+  if (text === "season" || text === "s") return "season";
+  if (text === "last5" || text === "l5" || text === "5") return "last5";
+  if (text === "last3" || text === "l3" || text === "3") return "last3";
+  return "season";
+}
+
+function getPricingPeriodOption(value = pricingPeriod) {
+  const key = normalizePricingPeriod(value);
+  return PRICING_PERIOD_OPTIONS.find((option) => option.key === key) || PRICING_PERIOD_OPTIONS[0];
+}
+
+function getPricingPeriodLabel(value = pricingPeriod) {
+  return getPricingPeriodOption(value).label;
+}
+
+function getPricingPeriodShortLabel(value = pricingPeriod) {
+  return getPricingPeriodOption(value).shortLabel;
+}
+
+function loadStoredPricingPeriod() {
+  try {
+    return normalizePricingPeriod(localStorage.getItem(PRICING_PERIOD_STORAGE_KEY));
+  } catch (err) {
+    return "season";
+  }
+}
+
+function persistPricingPeriod(value) {
+  try {
+    localStorage.setItem(PRICING_PERIOD_STORAGE_KEY, normalizePricingPeriod(value));
+  } catch (err) {
+    // Storage can be unavailable in private contexts; the in-memory state still works.
+  }
+}
+
+function buildPricingPeriodControlHtml() {
+  return `
+    <div class="pricing-period-control" role="group" aria-label="Pricing period">
+      ${PRICING_PERIOD_OPTIONS.map((option) => `
+        <button
+          type="button"
+          class="pricing-period-btn ${pricingPeriod === option.key ? "active" : ""}"
+          data-pricing-period="${escapeHtml(option.key)}"
+          aria-pressed="${pricingPeriod === option.key ? "true" : "false"}"
+        >${escapeHtml(option.label)}</button>
+      `).join("")}
+    </div>
+  `;
+}
+
+function bindPricingPeriodButtons(container) {
+  if (!(container instanceof Element)) return;
+  const buttons = container.querySelectorAll(".pricing-period-btn");
+  for (const button of buttons) {
+    if (!(button instanceof HTMLButtonElement)) continue;
+    button.addEventListener("click", () => {
+      applyPricingPeriod(button.dataset.pricingPeriod);
+    });
+  }
+}
+
+function createPricingPeriodControlElement() {
+  const wrapper = document.createElement("div");
+  wrapper.innerHTML = buildPricingPeriodControlHtml().trim();
+  const element = wrapper.firstElementChild;
+  bindPricingPeriodButtons(element);
+  return element;
+}
+
+function applyPricingPeriod(value, options = {}) {
+  const silent = Boolean(options?.silent);
+  const rerender = options?.rerender !== false;
+  const nextPeriod = normalizePricingPeriod(value);
+  const changed = nextPeriod !== pricingPeriod;
+  pricingPeriod = nextPeriod;
+  persistPricingPeriod(nextPeriod);
+  if (!changed && rerender) return;
+
+  if (rerender) {
+    if (isGamesCalendarTab()) {
+      renderCurrentDay();
+    }
+    if (lastXgdPayload && detailsPanel && !detailsPanel.classList.contains("hidden")) {
+      renderXgd(lastXgdPayload);
+    }
+    if (activeTab === "matchup" && matchupPayload) {
+      renderMatchupPage();
+    }
+  }
+  if (!silent && changed && statusText) {
+    statusText.textContent = `Pricing period set to ${getPricingPeriodLabel(nextPeriod)}`;
+  }
 }
 
 function hasVisibleHandicapPricing(game) {
@@ -2147,6 +2305,45 @@ function normalizePeriodForMainTable(periodValue) {
   return "";
 }
 
+function getPeriodMetricValue(row, periodKey, metricSuffix, options = {}) {
+  const key = normalizePricingPeriod(periodKey);
+  const rawKey = `${key}_${metricSuffix}_raw`;
+  const displayKey = `${key}_${metricSuffix}`;
+  if (options?.preferRaw !== false) {
+    const rawValue = toMetricNumberOrNull(row?.[rawKey]);
+    if (rawValue != null) return rawValue;
+  }
+  return toMetricNumberOrNull(row?.[displayKey]);
+}
+
+function getPeriodRowsSummary(periodRows, periodKey) {
+  const key = normalizePricingPeriod(periodKey);
+  const rows = Array.isArray(periodRows) ? periodRows : [];
+  const row = rows.find((candidate) => normalizePeriodForMainTable(candidate?.period) === key);
+  if (!row || typeof row !== "object") return null;
+  return {
+    home_xg: toMetricNumberOrNull(row.home_xg),
+    away_xg: toMetricNumberOrNull(row.away_xg),
+    total_xg: toMetricNumberOrNull(row.total_xg),
+    xgd: toMetricNumberOrNull(row.xgd),
+    xgd_perf: toMetricNumberOrNull(row.xgd_perf),
+    strength: toMetricNumberOrNull(row.strength),
+  };
+}
+
+function getPricingSummaryForPeriod(view, payload, periodKey = pricingPeriod) {
+  const key = normalizePricingPeriod(periodKey);
+  const viewSummary = getPeriodRowsSummary(view?.period_rows, key);
+  if (viewSummary) return viewSummary;
+  const payloadSummary = getPeriodRowsSummary(payload?.period_rows, key);
+  if (payloadSummary) return payloadSummary;
+  if (key === "season") {
+    if (view?.summary && typeof view.summary === "object") return view.summary;
+    if (payload?.summary && typeof payload.summary === "object") return payload.summary;
+  }
+  return null;
+}
+
 function metricNumberToTableText(value, decimals = 2) {
   if (value == null || value === "") return "-";
   const num = Number(value);
@@ -2279,6 +2476,16 @@ function applyMainTableMetricsForMarket(marketId, metrics) {
       const metricValue = metrics[metricKey];
       if (metricValue == null) continue;
       game[metricKey] = metricNumberToTableText(metricValue, 2);
+    }
+    for (const periodKey of ["season", "last5", "last3"]) {
+      const homeMetricKey = `${periodKey}_home_xg`;
+      const awayMetricKey = `${periodKey}_away_xg`;
+      if (metrics[homeMetricKey] != null) {
+        game[`${homeMetricKey}_raw`] = metrics[homeMetricKey];
+      }
+      if (metrics[awayMetricKey] != null) {
+        game[`${awayMetricKey}_raw`] = metrics[awayMetricKey];
+      }
     }
     if (metrics.xgd_competition_mismatch != null) {
       game.xgd_competition_mismatch = Boolean(metrics.xgd_competition_mismatch);
@@ -2768,6 +2975,16 @@ function formatXgBetReturnValue(value) {
   return num > 0 ? "+1" : "-1";
 }
 
+function formatBetReturnTotalValue(value) {
+  if (!Number.isFinite(value)) return "-";
+  const num = Number(value);
+  if (Math.abs(num) <= 1e-9) return "+0";
+  const rounded = Math.round(num * 10) / 10;
+  const isWhole = Math.abs(rounded - Math.round(rounded)) <= 1e-9;
+  const text = isWhole ? String(Math.round(rounded)) : rounded.toFixed(1);
+  return rounded > 0 ? `+${text}` : text;
+}
+
 function getBetReturnClass(value) {
   if (!Number.isFinite(value)) return "";
   const num = Number(value);
@@ -2795,6 +3012,137 @@ function buildBetResultStackCell(resultValue, xgValue) {
         <span class="metric-stack-value ${xgClass}">${escapeHtml(formatXgBetReturnValue(xgValue))}</span>
       </div>
     </div>
+  `;
+}
+
+function buildBetResultSummaryStackCell(resultValue, xgValue) {
+  if (!Number.isFinite(resultValue) && !Number.isFinite(xgValue)) {
+    return "-";
+  }
+  const resultClass = getBetReturnClass(resultValue);
+  const xgClass = getBetReturnClass(xgValue);
+  return `
+    <div class="metric-stack bet-summary-stack">
+      <div class="metric-stack-row">
+        <span class="metric-stack-label">R</span>
+        <span class="metric-stack-value ${resultClass}">${escapeHtml(formatBetReturnTotalValue(resultValue))}</span>
+      </div>
+      <div class="metric-stack-row">
+        <span class="metric-stack-label">xG</span>
+        <span class="metric-stack-value ${xgClass}">${escapeHtml(formatBetReturnTotalValue(xgValue))}</span>
+      </div>
+    </div>
+  `;
+}
+
+function calculateHistoricalBetReturns(game, options = {}) {
+  const threshold = Number.isFinite(Number(options?.threshold))
+    ? Number(options.threshold)
+    : getCurrentXgPushThreshold();
+  const handicap = toMetricNumberOrNull(game?.mainline);
+  const goalLine = toMetricNumberOrNull(game?.goal_mainline);
+  const homeGoals = toMetricNumberOrNull(game?.home_goals);
+  const awayGoals = toMetricNumberOrNull(game?.away_goals);
+  const homeXgActual = toMetricNumberOrNull(game?.home_xg_actual);
+  const awayXgActual = toMetricNumberOrNull(game?.away_xg_actual);
+  const xgdPeriodValues = [
+    toMetricNumberOrNull(game?.season_strength),
+    toMetricNumberOrNull(game?.last5_strength),
+    toMetricNumberOrNull(game?.last3_strength),
+  ];
+  const minPeriodValues = [
+    toMetricNumberOrNull(game?.season_min_xg),
+    toMetricNumberOrNull(game?.last5_min_xg),
+    toMetricNumberOrNull(game?.last3_min_xg),
+  ];
+  const maxPeriodValues = [
+    toMetricNumberOrNull(game?.season_max_xg),
+    toMetricNumberOrNull(game?.last5_max_xg),
+    toMetricNumberOrNull(game?.last3_max_xg),
+  ];
+  const hcBetSide = getHistoricalHcBetSide(xgdPeriodValues, handicap, threshold);
+  const goalsBetSide = getHistoricalGoalsBetSide(goalLine, minPeriodValues, maxPeriodValues, threshold);
+  let hcBetResult = null;
+  let hcBetResultXg = null;
+  let goalsBetResult = null;
+  let goalsBetResultXg = null;
+
+  if (hcBetSide && handicap != null && homeGoals != null && awayGoals != null) {
+    const homeHandicapDeltaResult = (homeGoals + handicap) - awayGoals;
+    const betDeltaResult = hcBetSide === "home" ? homeHandicapDeltaResult : -homeHandicapDeltaResult;
+    hcBetResult = settleAsianReturnFromDelta(betDeltaResult);
+  }
+  if (hcBetSide && handicap != null && homeXgActual != null && awayXgActual != null) {
+    const homeHandicapDeltaXg = (homeXgActual + handicap) - awayXgActual;
+    const betDeltaXg = hcBetSide === "home" ? homeHandicapDeltaXg : -homeHandicapDeltaXg;
+    hcBetResultXg = settleThresholdReturnFromDelta(betDeltaXg, threshold);
+  }
+
+  if (goalsBetSide && goalLine != null && homeGoals != null && awayGoals != null) {
+    const totalGoals = homeGoals + awayGoals;
+    const betDeltaResult = goalsBetSide === "over" ? (totalGoals - goalLine) : (goalLine - totalGoals);
+    goalsBetResult = settleAsianReturnFromDelta(betDeltaResult);
+  }
+  if (goalsBetSide && goalLine != null && homeXgActual != null && awayXgActual != null) {
+    const totalXg = homeXgActual + awayXgActual;
+    const betDeltaXg = goalsBetSide === "over" ? (totalXg - goalLine) : (goalLine - totalXg);
+    goalsBetResultXg = settleThresholdReturnFromDelta(betDeltaXg, threshold);
+  }
+
+  return {
+    hcBetResult,
+    hcBetResultXg,
+    goalsBetResult,
+    goalsBetResultXg,
+  };
+}
+
+function buildHistoricalBetSummaryRowHtml(games) {
+  const safeGames = Array.isArray(games) ? games : [];
+  const totals = safeGames.reduce(
+    (acc, game) => {
+      const returns = calculateHistoricalBetReturns(game, { threshold: getCurrentXgPushThreshold() });
+      if (Number.isFinite(returns.hcBetResult)) {
+        acc.hcResult += Number(returns.hcBetResult);
+        acc.hcResultCount += 1;
+      }
+      if (Number.isFinite(returns.hcBetResultXg)) {
+        acc.hcXg += Number(returns.hcBetResultXg);
+        acc.hcXgCount += 1;
+      }
+      if (Number.isFinite(returns.goalsBetResult)) {
+        acc.goalsResult += Number(returns.goalsBetResult);
+        acc.goalsResultCount += 1;
+      }
+      if (Number.isFinite(returns.goalsBetResultXg)) {
+        acc.goalsXg += Number(returns.goalsBetResultXg);
+        acc.goalsXgCount += 1;
+      }
+      return acc;
+    },
+    {
+      hcResult: 0,
+      hcResultCount: 0,
+      hcXg: 0,
+      hcXgCount: 0,
+      goalsResult: 0,
+      goalsResultCount: 0,
+      goalsXg: 0,
+      goalsXgCount: 0,
+    },
+  );
+  return `
+    <tr class="historical-bet-summary-row">
+      <td colspan="18"></td>
+      <td class="metric-stack-cell">${buildBetResultSummaryStackCell(
+    totals.hcResultCount ? totals.hcResult : null,
+    totals.hcXgCount ? totals.hcXg : null,
+  )}</td>
+      <td class="metric-stack-cell">${buildBetResultSummaryStackCell(
+    totals.goalsResultCount ? totals.goalsResult : null,
+    totals.goalsXgCount ? totals.goalsXg : null,
+  )}</td>
+    </tr>
   `;
 }
 
@@ -4494,10 +4842,15 @@ function buildGamePricingModel(homeRows, awayRows, options = {}) {
   const awayProfile = calculateTeamSeasonShotProfile(awayRows);
   const overrideHomeXg = toMetricNumber(options?.projectedHomeXg);
   const overrideAwayXg = toMetricNumber(options?.projectedAwayXg);
+  const requireProjectedXg = options?.requireProjectedXg === true;
   const avgHomeXg = averagePair(homeProfile.xgForAvg, awayProfile.xgAgainstAvg);
   const avgAwayXg = averagePair(awayProfile.xgForAvg, homeProfile.xgAgainstAvg);
-  const predictedHomeXg = Number.isFinite(overrideHomeXg) ? overrideHomeXg : avgHomeXg;
-  const predictedAwayXg = Number.isFinite(overrideAwayXg) ? overrideAwayXg : avgAwayXg;
+  const predictedHomeXg = Number.isFinite(overrideHomeXg)
+    ? overrideHomeXg
+    : (requireProjectedXg ? null : avgHomeXg);
+  const predictedAwayXg = Number.isFinite(overrideAwayXg)
+    ? overrideAwayXg
+    : (requireProjectedXg ? null : avgAwayXg);
   const averageProjectedHomeShots = averagePair(homeProfile.shotsForAvg, awayProfile.shotsAgainstAvg);
   const averageProjectedAwayShots = averagePair(awayProfile.shotsForAvg, homeProfile.shotsAgainstAvg);
   const predictedHomeShots = averageProjectedHomeShots;
@@ -4518,12 +4871,7 @@ function buildGamePricingModel(homeRows, awayRows, options = {}) {
     : null;
   const homeShotTrials = roundShotsForDistribution(predictedHomeShots);
   const awayShotTrials = roundShotsForDistribution(predictedAwayShots);
-  const canBuildDistributions = (
-    Number.isFinite(predictedHomeShots)
-    && Number.isFinite(predictedAwayShots)
-    && homeGoalProbPerShot != null
-    && awayGoalProbPerShot != null
-  );
+  const canBuildDistributions = Number.isFinite(predictedHomeXg) && Number.isFinite(predictedAwayXg);
 
   if (!canBuildDistributions) {
     return {
@@ -4552,64 +4900,16 @@ function buildGamePricingModel(homeRows, awayRows, options = {}) {
       totalLines: [],
       handicapLines: [],
       warnings: [
-        "Missing projected xG or shot averages for one side, so pricing cannot be calculated yet.",
+        "Missing projected xG for one side, so pricing cannot be calculated yet.",
       ],
     };
   }
 
-  const homeGoalPmf = buildBinomialGoalPmf(homeShotTrials, homeGoalProbPerShot);
-  const awayGoalPmf = buildBinomialGoalPmf(awayShotTrials, awayGoalProbPerShot);
-  const totalGoalPmf = convolveDiscretePmf(homeGoalPmf, awayGoalPmf);
-  const goalDiffPmf = buildGoalDiffPmf(homeGoalPmf, awayGoalPmf);
-  const matchOdds = computeMatchOddsFromGoalDiffPmf(goalDiffPmf);
-  const expectedTotalGoals = expectedValueFromPmf(totalGoalPmf);
-  const expectedGoalDiff = expectedDiffFromPmf(goalDiffPmf);
-
-  const totalUpperLine = Math.min(
-    10.5,
-    Math.max(6.5, (Math.ceil(expectedTotalGoals + 4) + 0.5))
-  );
-  const totalLineValues = buildQuarterLineRange(0.5, totalUpperLine);
-  const totalLines = totalLineValues.map((line) => {
-    const components = splitAsianLineComponents(line);
-    const over = computeAsianSideFairPrice(
-      components,
-      (componentLine) => computeTotalSideOutcomes(totalGoalPmf, componentLine, "over")
-    );
-    const under = computeAsianSideFairPrice(
-      components,
-      (componentLine) => computeTotalSideOutcomes(totalGoalPmf, componentLine, "under")
-    );
-    return {
-      line,
-      over,
-      under,
-    };
-  });
-
-  const handicapAbs = Math.min(
-    4.0,
-    Math.max(2.0, Math.ceil(Math.abs(expectedGoalDiff) + 2))
-  );
-  const handicapLineValues = buildQuarterLineRange(-handicapAbs, handicapAbs);
-  const handicapLines = handicapLineValues.map((homeLine) => {
-    const homeComponents = splitAsianLineComponents(homeLine);
-    const awayLine = -homeLine;
-    const awayComponents = splitAsianLineComponents(awayLine);
-    const home = computeAsianSideFairPrice(
-      homeComponents,
-      (componentLine) => computeHandicapSideOutcomes(goalDiffPmf, componentLine, "home")
-    );
-    const away = computeAsianSideFairPrice(
-      awayComponents,
-      (componentLine) => computeHandicapSideOutcomes(goalDiffPmf, componentLine, "away")
-    );
-    return {
-      homeLine,
-      awayLine,
-      home,
-      away,
-    };
+  const homeGoalPmf = buildPoissonGoalPmf(predictedHomeXg);
+  const awayGoalPmf = buildPoissonGoalPmf(predictedAwayXg);
+  const pricing = buildPricingLinesFromGoalPmfs(homeGoalPmf, awayGoalPmf, {
+    expectedTotalGoals: predictedHomeXg + predictedAwayXg,
+    expectedGoalDiff: predictedHomeXg - predictedAwayXg,
   });
 
   return {
@@ -4625,11 +4925,11 @@ function buildGamePricingModel(homeRows, awayRows, options = {}) {
     awayShotTrials,
     homeGoalPmf,
     awayGoalPmf,
-    totalGoalPmf,
-    goalDiffPmf,
-    matchOdds,
-    totalLines,
-    handicapLines,
+    totalGoalPmf: pricing.totalGoalPmf,
+    goalDiffPmf: pricing.goalDiffPmf,
+    matchOdds: pricing.matchOdds,
+    totalLines: pricing.totalLines,
+    handicapLines: pricing.handicapLines,
     warnings: [],
   };
 }
@@ -4656,25 +4956,18 @@ function buildPoissonGoalPmf(expectedGoals, options = {}) {
   return pmf;
 }
 
-function buildMainlinePricingFromProjectedXg(homeXgValue, awayXgValue) {
-  const projectedHomeXg = Number(homeXgValue);
-  const projectedAwayXg = Number(awayXgValue);
-  if (!Number.isFinite(projectedHomeXg) || !Number.isFinite(projectedAwayXg)) {
-    return null;
-  }
-
-  const homeGoalPmf = buildPoissonGoalPmf(projectedHomeXg);
-  const awayGoalPmf = buildPoissonGoalPmf(projectedAwayXg);
-  if (!homeGoalPmf.length || !awayGoalPmf.length) {
-    return null;
-  }
-
+function buildPricingLinesFromGoalPmfs(homeGoalPmf, awayGoalPmf, options = {}) {
   const totalGoalPmf = convolveDiscretePmf(homeGoalPmf, awayGoalPmf);
   const goalDiffPmf = buildGoalDiffPmf(homeGoalPmf, awayGoalPmf);
   const matchOdds = computeMatchOddsFromGoalDiffPmf(goalDiffPmf);
-
-  const expectedTotalGoals = Math.max(0, projectedHomeXg + projectedAwayXg);
-  const expectedGoalDiff = projectedHomeXg - projectedAwayXg;
+  const optionExpectedTotalGoals = Number(options?.expectedTotalGoals);
+  const optionExpectedGoalDiff = Number(options?.expectedGoalDiff);
+  const expectedTotalGoals = Number.isFinite(optionExpectedTotalGoals)
+    ? Math.max(0, optionExpectedTotalGoals)
+    : expectedValueFromPmf(totalGoalPmf);
+  const expectedGoalDiff = Number.isFinite(optionExpectedGoalDiff)
+    ? optionExpectedGoalDiff
+    : expectedDiffFromPmf(goalDiffPmf);
 
   const totalUpperLine = Math.min(
     10.5,
@@ -4712,9 +5005,40 @@ function buildMainlinePricingFromProjectedXg(homeXgValue, awayXgValue) {
     return { homeLine, awayLine, home, away };
   });
 
-  const totalMainIndex = findMainLineIndex(totalLines, (row) => row?.under?.fairOdds, (row) => row?.over?.fairOdds);
-  const handicapMainIndex = findMainLineIndex(
+  return {
+    totalGoalPmf,
+    goalDiffPmf,
+    matchOdds,
+    totalLines,
     handicapLines,
+  };
+}
+
+function buildMainlinePricingFromProjectedXg(homeXgValue, awayXgValue) {
+  const projectedHomeXg = Number(homeXgValue);
+  const projectedAwayXg = Number(awayXgValue);
+  if (!Number.isFinite(projectedHomeXg) || !Number.isFinite(projectedAwayXg)) {
+    return null;
+  }
+
+  const homeGoalPmf = buildPoissonGoalPmf(projectedHomeXg);
+  const awayGoalPmf = buildPoissonGoalPmf(projectedAwayXg);
+  if (!homeGoalPmf.length || !awayGoalPmf.length) {
+    return null;
+  }
+
+  const pricing = buildPricingLinesFromGoalPmfs(homeGoalPmf, awayGoalPmf, {
+    expectedTotalGoals: projectedHomeXg + projectedAwayXg,
+    expectedGoalDiff: projectedHomeXg - projectedAwayXg,
+  });
+
+  const totalMainIndex = findMainLineIndex(
+    pricing.totalLines,
+    (row) => row?.under?.fairOdds,
+    (row) => row?.over?.fairOdds
+  );
+  const handicapMainIndex = findMainLineIndex(
+    pricing.handicapLines,
     (row) => row?.home?.fairOdds,
     (row) => row?.away?.fairOdds,
   );
@@ -4722,15 +5046,16 @@ function buildMainlinePricingFromProjectedXg(homeXgValue, awayXgValue) {
   return {
     projectedHomeXg,
     projectedAwayXg,
-    matchOdds,
-    totalMainline: totalMainIndex >= 0 ? totalLines[totalMainIndex] : null,
-    handicapMainline: handicapMainIndex >= 0 ? handicapLines[handicapMainIndex] : null,
+    matchOdds: pricing.matchOdds,
+    totalMainline: totalMainIndex >= 0 ? pricing.totalLines[totalMainIndex] : null,
+    handicapMainline: handicapMainIndex >= 0 ? pricing.handicapLines[handicapMainIndex] : null,
   };
 }
 
-function buildGameMainlinePricingFromSeasonXg(game) {
-  const projectedHomeXg = toMetricNumberOrNull(game?.season_home_xg);
-  const projectedAwayXg = toMetricNumberOrNull(game?.season_away_xg);
+function buildGameMainlinePricingFromPeriodXg(game, periodKey = pricingPeriod) {
+  const period = normalizePricingPeriod(periodKey);
+  const projectedHomeXg = getPeriodMetricValue(game, period, "home_xg");
+  const projectedAwayXg = getPeriodMetricValue(game, period, "away_xg");
   if (projectedHomeXg == null || projectedAwayXg == null) return null;
   return buildMainlinePricingFromProjectedXg(projectedHomeXg, projectedAwayXg);
 }
@@ -5265,10 +5590,14 @@ function buildBetBuilderPricingHtml(model, homeLabel, awayLabel) {
 
 function buildGamePricingTabHtml(homeLabel, awayLabel, homeRows, awayRows, options = {}) {
   const model = buildGamePricingModel(homeRows, awayRows, options);
+  const periodLabel = getPricingPeriodLabel();
   const warningHtml = model.warnings.length
     ? `<div class="warning">${escapeHtml(model.warnings.join(" "))}</div>`
     : "";
   return `
+    <div class="pricing-toolbar">
+      ${buildPricingPeriodControlHtml()}
+    </div>
     ${warningHtml}
     ${buildMatchOddsPricingTableHtml(model.matchOdds)}
     <div class="pricing-tables-grid">
@@ -5278,7 +5607,7 @@ function buildGamePricingTabHtml(homeLabel, awayLabel, homeRows, awayRows, optio
     ${buildBetBuilderPricingHtml(model, homeLabel, awayLabel)}
     <h3 class="section-title">Pricing Inputs</h3>
     <section class="recent-team-block">
-      <h4>Projected Match Inputs (Season Averages)</h4>
+      <h4>Projected Match Inputs (${escapeHtml(periodLabel)})</h4>
       <div class="recent-table-wrap">
         <table class="lines-table recent-lines-table">
           <thead>
@@ -5305,7 +5634,7 @@ function buildGamePricingTabHtml(homeLabel, awayLabel, homeRows, awayRows, optio
       </div>
     </section>
     <section class="recent-team-block">
-      <h4>Season Shot Quality Inputs</h4>
+      <h4>Source Shot Quality Inputs</h4>
       <div class="recent-table-wrap">
         <table class="lines-table recent-lines-table">
           <thead>
@@ -6234,6 +6563,8 @@ function tierRowClass(tierValue) {
 }
 
 function dayHasComputedXgdMetrics(dayGames) {
+  const games = Array.isArray(dayGames) ? dayGames : [];
+  if (!games.length) return false;
   const metricKeys = [
     "season_xgd",
     "last5_xgd",
@@ -6245,11 +6576,25 @@ function dayHasComputedXgdMetrics(dayGames) {
     "last5_strength",
     "last3_strength",
   ];
-  return (dayGames || []).some((game) => {
+  const pricingMetricKeys = [
+    "season_home_xg",
+    "season_away_xg",
+    "last5_home_xg",
+    "last5_away_xg",
+    "last3_home_xg",
+    "last3_away_xg",
+  ];
+  const hasDisplayMetrics = games.some((game) => {
     return metricKeys.some((metricKey) => {
       return toMetricNumberOrNull(game?.[metricKey]) != null;
     });
   });
+  const hasPricingMetrics = games.every((game) => {
+    return pricingMetricKeys.every((metricKey) => {
+      return toMetricNumberOrNull(game?.[metricKey]) != null;
+    });
+  });
+  return hasDisplayMetrics && hasPricingMetrics;
 }
 
 async function calculateHistoricalDayXgd(dayIso) {
@@ -6602,6 +6947,10 @@ function createGamesTable(sortedGames, isHistorical, options = {}) {
     return table;
   }
 
+  if (isHistorical) {
+    tbody.insertAdjacentHTML("beforeend", buildHistoricalBetSummaryRowHtml(sortedGames));
+  }
+
   for (const game of sortedGames) {
     gamesById.set(game.market_id, game);
     const row = document.createElement("tr");
@@ -6675,39 +7024,14 @@ function createGamesTable(sortedGames, isHistorical, options = {}) {
     const homeTeamCell = teams.home ? buildTeamLinkHtml(teams.home, competitionName) : "-";
     const awayTeamCell = teams.away ? buildTeamLinkHtml(teams.away, competitionName) : "-";
     const kickoffLocalText = formatGameKickoffLocalTime(game);
-    const homeGoals = toMetricNumberOrNull(game?.home_goals);
-    const awayGoals = toMetricNumberOrNull(game?.away_goals);
-    const homeXgActual = toMetricNumberOrNull(game?.home_xg_actual);
-    const awayXgActual = toMetricNumberOrNull(game?.away_xg_actual);
-    const goalLine = toMetricNumberOrNull(game?.goal_mainline);
-    const hcBetSide = getHistoricalHcBetSide(xgdPeriodValues, handicap, threshold);
-    const goalsBetSide = getHistoricalGoalsBetSide(goalLine, minPeriodValues, maxPeriodValues, threshold);
-    let hcBetResult = null;
-    let hcBetResultXg = null;
-    let goalsBetResult = null;
-    let goalsBetResultXg = null;
-
-    if (hcBetSide && handicap != null && homeGoals != null && awayGoals != null) {
-      const homeHandicapDeltaResult = (homeGoals + handicap) - awayGoals;
-      const betDeltaResult = hcBetSide === "home" ? homeHandicapDeltaResult : -homeHandicapDeltaResult;
-      hcBetResult = settleAsianReturnFromDelta(betDeltaResult);
-    }
-    if (hcBetSide && handicap != null && homeXgActual != null && awayXgActual != null) {
-      const homeHandicapDeltaXg = (homeXgActual + handicap) - awayXgActual;
-      const betDeltaXg = hcBetSide === "home" ? homeHandicapDeltaXg : -homeHandicapDeltaXg;
-      hcBetResultXg = settleThresholdReturnFromDelta(betDeltaXg, threshold);
-    }
-
-    if (goalsBetSide && goalLine != null && homeGoals != null && awayGoals != null) {
-      const totalGoals = homeGoals + awayGoals;
-      const betDeltaResult = goalsBetSide === "over" ? (totalGoals - goalLine) : (goalLine - totalGoals);
-      goalsBetResult = settleAsianReturnFromDelta(betDeltaResult);
-    }
-    if (goalsBetSide && goalLine != null && homeXgActual != null && awayXgActual != null) {
-      const totalXg = homeXgActual + awayXgActual;
-      const betDeltaXg = goalsBetSide === "over" ? (totalXg - goalLine) : (goalLine - totalXg);
-      goalsBetResultXg = settleThresholdReturnFromDelta(betDeltaXg, threshold);
-    }
+    const historicalBetReturns = isHistorical
+      ? calculateHistoricalBetReturns(game, { threshold })
+      : {
+        hcBetResult: null,
+        hcBetResultXg: null,
+        goalsBetResult: null,
+        goalsBetResultXg: null,
+      };
 
     if (isHistorical) {
       row.innerHTML = `
@@ -6729,8 +7053,8 @@ function createGamesTable(sortedGames, isHistorical, options = {}) {
         <td class="xg-home-col">${escapeHtml(game.home_xg_actual || "-")}</td>
         <td class="line-col score-col">${escapeHtml(game.scoreline || "-")}</td>
         <td class="xg-away-col">${escapeHtml(game.away_xg_actual || "-")}</td>
-        <td class="metric-stack-cell">${buildBetResultStackCell(hcBetResult, hcBetResultXg)}</td>
-        <td class="metric-stack-cell">${buildBetResultStackCell(goalsBetResult, goalsBetResultXg)}</td>
+        <td class="metric-stack-cell">${buildBetResultStackCell(historicalBetReturns.hcBetResult, historicalBetReturns.hcBetResultXg)}</td>
+        <td class="metric-stack-cell">${buildBetResultStackCell(historicalBetReturns.goalsBetResult, historicalBetReturns.goalsBetResultXg)}</td>
       `;
     } else {
       row.innerHTML = `
@@ -6801,7 +7125,7 @@ function createModellingPricesTable(sortedGames, isHistorical, options = {}) {
         <th class="home-price-col">Home</th>
         <th class="line-col handicap-line-col">HC</th>
         <th class="away-price-col">Away</th>
-        <th class="model-xgd-col">xGD (S)</th>
+        <th class="model-xgd-col">xGD</th>
         <th class="goal-under-price-col">Under</th>
         <th class="goal-line-col">Goals</th>
         <th class="goal-over-price-col">Over</th>
@@ -6835,7 +7159,7 @@ function createModellingPricesTable(sortedGames, isHistorical, options = {}) {
     const awayTeamCell = teams.away ? buildTeamLinkHtml(teams.away, competitionName) : "-";
     const kickoffLocalText = formatGameKickoffLocalTime(game);
 
-    const model = buildGameMainlinePricingFromSeasonXg(game);
+    const model = buildGameMainlinePricingFromPeriodXg(game, pricingPeriod);
     const modelMatchOdds = model?.matchOdds || null;
     const modelHandicapMainline = model?.handicapMainline || null;
     const modelTotalMainline = model?.totalMainline || null;
@@ -6854,8 +7178,27 @@ function createModellingPricesTable(sortedGames, isHistorical, options = {}) {
     const modelUnderText = formatOddsValue(modelTotalMainline?.under?.fairOdds);
     const modelGoalLineText = formatQuarterLine(modelTotalMainline?.line, false);
     const modelOverText = formatOddsValue(modelTotalMainline?.over?.fairOdds);
-    const modelSeasonXgdValue = toMetricNumberOrNull(game?.season_strength);
-    const modelSeasonXgdText = formatSignedMetricValue(modelSeasonXgdValue, 2);
+    const noXgMetrics = hasNoXgMetricSignal(game);
+    const handicap = toMetricNumberOrNull(game?.mainline);
+    const threshold = getCurrentXgPushThreshold();
+    const xgdPeriodValues = [
+      toMetricNumberOrNull(game?.season_strength),
+      toMetricNumberOrNull(game?.last5_strength),
+      toMetricNumberOrNull(game?.last3_strength),
+    ];
+    const xgdHcHighlightClass = (xgdHcHighlightEnabled && !noXgMetrics)
+      ? getMainTableXgdHcHighlightClass(xgdPeriodValues, handicap, threshold)
+      : "";
+    const domesticFallbackClass = Boolean(game?.xgd_domestic_fallback) ? "xgd-domestic-fallback" : "";
+    const modelXgdCellClass = [
+      "model-xgd-col",
+      "metric-stack-cell",
+      xgdHcHighlightClass,
+      domesticFallbackClass,
+    ].filter(Boolean).join(" ");
+    const seasonXgdValue = noXgMetrics ? "-" : game.season_strength;
+    const last5XgdValue = noXgMetrics ? "-" : game.last5_strength;
+    const last3XgdValue = noXgMetrics ? "-" : game.last3_strength;
 
     row.innerHTML = `
       <td class="kickoff-col">${escapeHtml(kickoffLocalText)}</td>
@@ -6869,7 +7212,7 @@ function createModellingPricesTable(sortedGames, isHistorical, options = {}) {
       <td class="home-price-col">${buildModellingPriceStackCellHtml(game.home_price || "-", modelHomeHcText)}</td>
       <td class="line-col handicap-line-col">${buildModellingPriceStackCellHtml(game.mainline || "-", modelHcLineText)}</td>
       <td class="away-price-col">${buildModellingPriceStackCellHtml(game.away_price || "-", modelAwayHcText)}</td>
-      <td class="model-xgd-col">${escapeHtml(modelSeasonXgdText)}</td>
+      <td class="${modelXgdCellClass}">${buildPeriodMetricStackCell(seasonXgdValue, last5XgdValue, last3XgdValue)}</td>
       <td class="goal-under-price-col">${buildModellingPriceStackCellHtml(game.goal_under_price || "-", modelUnderText)}</td>
       <td class="goal-line-col">${buildModellingPriceStackCellHtml(game.goal_mainline || "-", modelGoalLineText)}</td>
       <td class="goal-over-price-col">${buildModellingPriceStackCellHtml(game.goal_over_price || "-", modelOverText)}</td>
@@ -6921,6 +7264,15 @@ function renderSavedGames() {
   }
 
   gamesById = new Map();
+  if (activeTab === "modelling") {
+    const toolbar = document.createElement("div");
+    toolbar.className = "saved-games-toolbar";
+    const pricingPeriodControl = createPricingPeriodControlElement();
+    if (pricingPeriodControl instanceof HTMLElement) {
+      toolbar.appendChild(pricingPeriodControl);
+    }
+    savedGamesView.appendChild(toolbar);
+  }
   for (const entry of visibleDays) {
     const day = entry.day;
     const sortedDayGames = entry.games;
@@ -7663,9 +8015,7 @@ function renderMatchupPage() {
     ...(Array.isArray(awayTeamVenueRows.home) ? awayTeamVenueRows.home : []),
     ...(Array.isArray(awayTeamVenueRows.away) ? awayTeamVenueRows.away : []),
   ];
-  const pricingSummary = activeView?.summary && typeof activeView.summary === "object"
-    ? activeView.summary
-    : (payload?.summary && typeof payload.summary === "object" ? payload.summary : null);
+  const pricingSummary = getPricingSummaryForPeriod(activeView, payload, pricingPeriod);
   const competitionText = String(payload?.competition || "").trim();
   const seasonText = String(payload?.season || "").trim();
   const warningText = String(activeView?.warning || payload?.warning || "").trim();
@@ -7693,6 +8043,7 @@ function renderMatchupPage() {
     ${buildGamePricingTabHtml(homeLabel, awayLabel, homeGeneralRows, awayGeneralRows, {
       projectedHomeXg: pricingSummary?.home_xg,
       projectedAwayXg: pricingSummary?.away_xg,
+      requireProjectedXg: true,
     })}
   `;
   bindTeamLinkButtons(matchupView);
@@ -7879,6 +8230,12 @@ function renderCurrentDay() {
 
   const headerActions = document.createElement("div");
   headerActions.className = "day-header-actions";
+  if (activeTab === "modelling") {
+    const pricingPeriodControl = createPricingPeriodControlElement();
+    if (pricingPeriodControl instanceof HTMLElement) {
+      headerActions.appendChild(pricingPeriodControl);
+    }
+  }
   if (tableControls) {
     headerActions.appendChild(tableControls);
   }
@@ -7923,6 +8280,8 @@ function renderCurrentDay() {
 
 function bindPricingControls(container, rerender) {
   if (!(container instanceof Element) || typeof rerender !== "function") return;
+
+  bindPricingPeriodButtons(container);
 
   const pricingExpandButtons = container.querySelectorAll(".pricing-expand-btn");
   for (const button of pricingExpandButtons) {
@@ -8323,9 +8682,7 @@ function renderXgd(payload) {
       "All matches"
     )}
   `;
-  const pricingSummary = activeView?.summary && typeof activeView.summary === "object"
-    ? activeView.summary
-    : (payload?.summary && typeof payload.summary === "object" ? payload.summary : null);
+  const pricingSummary = getPricingSummaryForPeriod(activeView, payload, pricingPeriod);
   const pricingTabContent = buildGamePricingTabHtml(
     homeLabel,
     awayLabel,
@@ -8334,6 +8691,7 @@ function renderXgd(payload) {
     {
       projectedHomeXg: pricingSummary?.home_xg,
       projectedAwayXg: pricingSummary?.away_xg,
+      requireProjectedXg: true,
     }
   );
   const hcPerfTabContent = `
@@ -9624,6 +9982,7 @@ document.addEventListener("click", (event) => {
 });
 document.addEventListener("keydown", (event) => {
   if (event.key === "Escape") {
+    closeSettingsSidebar();
     setLeagueFilterOpen(false);
     setTierFilterOpen(false);
     closeTeamDetailsPanel();
@@ -9741,6 +10100,7 @@ xgPushThreshold = getStoredXgPushThreshold();
 xgdHcHighlightEnabled = false;
 showGamesWithoutHandicap = getStoredShowGamesWithoutHandicap();
 modellingPriceEdge = getStoredModellingPriceEdge();
+applyPricingPeriod(loadStoredPricingPeriod(), { silent: true, rerender: false });
 updateXgMetricModeToggleButton();
 if (xgMetricModeToggleBtn instanceof HTMLButtonElement) {
   xgMetricModeToggleBtn.addEventListener("click", () => {
@@ -9794,6 +10154,27 @@ updateNoHandicapGamesToggleButton();
 if (noHandicapGamesToggleBtn instanceof HTMLButtonElement) {
   noHandicapGamesToggleBtn.addEventListener("click", () => {
     setShowGamesWithoutHandicap(!showGamesWithoutHandicap);
+  });
+}
+applyColorTheme(getStoredColorTheme(), false);
+if (themeToggleBtn instanceof HTMLButtonElement) {
+  themeToggleBtn.addEventListener("click", () => {
+    applyColorTheme(colorTheme === "dark" ? "light" : "dark");
+  });
+}
+if (settingsOpenBtn instanceof HTMLButtonElement) {
+  settingsOpenBtn.addEventListener("click", () => {
+    setSettingsSidebarOpen(true);
+  });
+}
+if (settingsCloseBtn instanceof HTMLButtonElement) {
+  settingsCloseBtn.addEventListener("click", () => {
+    closeSettingsSidebar();
+  });
+}
+if (settingsOverlay instanceof HTMLElement) {
+  settingsOverlay.addEventListener("click", () => {
+    closeSettingsSidebar();
   });
 }
 

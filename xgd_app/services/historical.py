@@ -107,6 +107,9 @@ class HistoricalService:
                     {
                         "market_id": mapped["market_id"],
                         "period": row.get("period"),
+                        "home_xg": row.get("home_xg"),
+                        "away_xg": row.get("away_xg"),
+                        "total_xg": row.get("total_xg"),
                         "xgd": row.get("xgd"),
                         "xgd_perf": row.get("xgd_perf"),
                         "strength": row.get("strength"),
@@ -141,10 +144,13 @@ class HistoricalService:
             raise ValueError("No historical games found for the selected day")
 
         metrics_df = self._build_day_metrics(day_games_df)
-        metric_cols = [col for col in self.period_metric_columns if col in historical_df.columns]
+        metric_cols = list(self.period_metric_columns)
 
         with self.state.lock:
             updated_df = self.state.historical_games_df.copy()
+            for col in metric_cols:
+                if col not in updated_df.columns:
+                    updated_df[col] = None
             update_mask = updated_df["kickoff_time"].dt.strftime("%Y-%m-%d") == day_text
             for col in metric_cols:
                 if pd.api.types.is_bool_dtype(updated_df[col].dtype):

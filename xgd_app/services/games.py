@@ -5,6 +5,7 @@ from __future__ import annotations
 import argparse
 import datetime as dt
 import importlib.util
+import math
 import os
 import re
 import sys
@@ -919,6 +920,16 @@ class GamesService:
             cache_by_mode["xg"] = metrics_cache
             self.state.upcoming_metrics_cache_by_mode = cache_by_mode
 
+    @staticmethod
+    def _raw_float_value(value: Any) -> float | None:
+        try:
+            if value is None or pd.isna(value):
+                return None
+            out = float(value)
+        except Exception:
+            return None
+        return out if math.isfinite(out) else None
+
     def _serialize_game_row(self, row: dict[str, Any]) -> dict[str, Any]:
         kickoff_ts = row.get("kickoff_time")
         kickoff_utc = pd.to_datetime(kickoff_ts, utc=True).strftime("%H:%M") if not pd.isna(kickoff_ts) else "-"
@@ -943,7 +954,17 @@ class GamesService:
             "win_away_price": str(row.get("win_away_price", "-") or "-"),
             "scoreline": str(row.get("scoreline", "")).strip(),
             "season_home_xg": self.format_float_value(row.get("season_home_xg"), decimals=2),
+            "season_home_xg_raw": self._raw_float_value(row.get("season_home_xg")),
             "season_away_xg": self.format_float_value(row.get("season_away_xg"), decimals=2),
+            "season_away_xg_raw": self._raw_float_value(row.get("season_away_xg")),
+            "last5_home_xg": self.format_float_value(row.get("last5_home_xg"), decimals=2),
+            "last5_home_xg_raw": self._raw_float_value(row.get("last5_home_xg")),
+            "last5_away_xg": self.format_float_value(row.get("last5_away_xg"), decimals=2),
+            "last5_away_xg_raw": self._raw_float_value(row.get("last5_away_xg")),
+            "last3_home_xg": self.format_float_value(row.get("last3_home_xg"), decimals=2),
+            "last3_home_xg_raw": self._raw_float_value(row.get("last3_home_xg")),
+            "last3_away_xg": self.format_float_value(row.get("last3_away_xg"), decimals=2),
+            "last3_away_xg_raw": self._raw_float_value(row.get("last3_away_xg")),
             "season_xgd": self.format_float_value(row.get("season_xgd"), decimals=2),
             "last5_xgd": self.format_float_value(row.get("last5_xgd"), decimals=2),
             "last3_xgd": self.format_float_value(row.get("last3_xgd"), decimals=2),
